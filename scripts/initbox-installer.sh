@@ -6,7 +6,7 @@
 
 # Loads a hardware profile, shows supported modules,
 
-# and runs selected module scripts with explicit confirmation.
+# runs sanity checks, and runs selected module scripts with explicit confirmation.
 
 #
 
@@ -193,6 +193,7 @@ index=$((index + 1))
 
 done
 
+echo "  c) Run sanity checks"
 echo "  l) Show install log path"
 echo "  s) Show install state"
 echo "  q) Quit"
@@ -218,6 +219,151 @@ fi
 show_state_info() {
 echo
 initbox_state_print || true
+}
+
+sanity_pass() {
+printf '[PASS] %s\n' "$1"
+}
+
+sanity_fail() {
+printf '[FAIL] %s\n' "$1"
+return 1
+}
+
+sanity_check_file() {
+local path="$1"
+
+if [ -f "$REPO_ROOT/$path" ]; then
+sanity_pass "file exists: $path"
+return 0
+fi
+
+sanity_fail "missing file: $path"
+return 1
+}
+
+sanity_check_profile_value() {
+local label="$1"
+local value="$2"
+
+if [ -n "$value" ]; then
+sanity_pass "$label is set"
+return 0
+fi
+
+sanity_fail "$label is missing"
+return 1
+}
+
+sanity_check_module_script() {
+local module_id="$1"
+local module_name
+local module_script
+
+module_name="$(initbox_module_display_name "$module_id")"
+
+if ! initbox_profile_supports_module "$module_id"; then
+sanity_pass "module blocked by profile: $module_id ($module_name)"
+return 0
+fi
+
+if ! module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
+sanity_fail "supported module has no script mapping: $module_id ($module_name)"
+return 1
+fi
+
+if [ -f "$module_script" ]; then
+sanity_pass "supported module script exists: $module_id ($module_name)"
+return 0
+fi
+
+sanity_fail "supported module script missing: $module_id ($module_name) -> $module_script"
+return 1
+}
+
+run_sanity_checks() {
+local failures
+local module_id
+
+failures=0
+
+echo
+echo "InitBox sanity checks"
+echo "====================="
+echo
+echo "Repository root:"
+echo "$REPO_ROOT"
+echo
+
+sanity_check_file "README.md" || failures=$((failures + 1))
+
+sanity_check_file "profiles/README.md" || failures=$((failures + 1))
+sanity_check_file "profiles/pi-zero2w.conf" || failures=$((failures + 1))
+sanity_check_file "profiles/pi-3-4-5.conf" || failures=$((failures + 1))
+
+sanity_check_file "scripts/initbox-installer.sh" || failures=$((failures + 1))
+sanity_check_file "scripts/initbox-status.sh" || failures=$((failures + 1))
+sanity_check_file "scripts/lib/profile.sh" || failures=$((failures + 1))
+sanity_check_file "scripts/lib/modules.sh" || failures=$((failures + 1))
+sanity_check_file "scripts/lib/state.sh" || failures=$((failures + 1))
+
+echo
+echo "Loaded profile checks"
+echo "---------------------"
+
+sanity_check_profile_value "PROFILE_ID" "${PROFILE_ID:-}" || failures=$((failures + 1))
+sanity_check_profile_value "PROFILE_NAME" "${PROFILE_NAME:-}" || failures=$((failures + 1))
+sanity_check_profile_value "DEFAULT_MODULES" "${DEFAULT_MODULES:-}" || failures=$((failures + 1))
+sanity_check_profile_value "PRIMARY_MANAGEMENT_INTERFACE" "${PRIMARY_MANAGEMENT_INTERFACE:-}" || failures=$((failures + 1))
+
+if [ "$PROFILE_ID" = "pi-zero2w" ]; then
+if [ "${SUPPORTS_DASHBOARD:-}" = "no" ] && [ "${MODULE_DASHBOARD:-}" = "no" ]; then
+sanity_pass "Pi Zero 2W dashboard is blocked"
+else
+sanity_fail "Pi Zero 2W dashboard must be blocked"
+failures=$((failures + 1))
+fi
+
+```
+if initbox_profile_supports_module "dashboard"; then
+  sanity_fail "Pi Zero 2W profile incorrectly supports dashboard"
+  failures=$((failures + 1))
+else
+  sanity_pass "Pi Zero 2W dashboard does not appear as supported module"
+fi
+
+if initbox_profile_supports_module "web-terminal"; then
+  sanity_pass "Pi Zero 2W supports Web Terminal"
+else
+  sanity_fail "Pi Zero 2W must support Web Terminal"
+  failures=$((failures + 1))
+fi
+```
+
+fi
+
+echo
+echo "Module mapping checks"
+echo "---------------------"
+
+while IFS= read -r module_id; do
+[ -z "$module_id" ] && continue
+sanity_check_module_script "$module_id" || failures=$((failures + 1))
+done < <(initbox_all_known_modules)
+
+echo
+echo "Summary"
+echo "-------"
+
+if [ "$failures" -eq 0 ]; then
+echo "All sanity checks passed."
+log_line "SANITY_CHECKS_PASSED profile=$PROFILE_ID"
+return 0
+fi
+
+echo "Sanity checks failed: $failures"
+log_line "SANITY_CHECKS_FAILED profile=$PROFILE_ID failures=$failures"
+return 1
 }
 
 confirm_run() {
@@ -356,7 +502,7 @@ print_menu
 ```
 max_choice="${#SUPPORTED_MODULES[@]}"
 
-printf 'Select a module [1-%s], l for log, s for state, or q: ' "$max_choice"
+printf 'Select a module [1-%s], c for checks, l for log, s for state, or q: ' "$max_choice"
 read -r choice
 
 case "$choice" in
@@ -364,6 +510,10 @@ case "$choice" in
     echo "Quit."
     log_line "INSTALLER_CLOSED profile=$PROFILE_ID"
     exit 0
+    ;;
+  c|C)
+    run_sanity_checks || true
+    pause
     ;;
   l|L)
     show_log_info
