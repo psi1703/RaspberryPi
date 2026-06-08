@@ -14,11 +14,12 @@ The intended workflow is:
 
 1. Prepare the Raspberry Pi in the lab.
 2. Make sure the Pi has Internet access.
-3. Run the correct installer for the target Raspberry Pi model.
-4. Install required packages and services.
-5. Reboot if required.
-6. Verify the device before field deployment.
-7. Deploy the prepared device in the field.
+3. Select the correct hardware profile.
+4. Run the installer for the selected profile.
+5. Install required packages and services.
+6. Reboot if required.
+7. Verify the device before field deployment.
+8. Deploy the prepared device in the field.
 
 This project is not designed around downloading packages in the field. All required packages should be installed during lab preparation.
 
@@ -26,16 +27,26 @@ This project is not designed around downloading packages in the field. All requi
 
 ## Supported Hardware Profiles
 
-| Hardware               | Intended Use             | Dashboard Support | Recommended Interface      |
-| ---------------------- | ------------------------ | ----------------: | -------------------------- |
-| Raspberry Pi Zero 2W   | Lightweight field device |                No | Web Terminal               |
-| Raspberry Pi 3 / 4 / 5 | Full field device        |               Yes | Dashboard and Web Terminal |
+| Profile     | Hardware               | Dashboard Support | Recommended Interface      |
+| ----------- | ---------------------- | ----------------: | -------------------------- |
+| `pi-zero2w` | Raspberry Pi Zero 2W   |                No | Web Terminal               |
+| `pi-3-4-5`  | Raspberry Pi 3 / 4 / 5 |               Yes | Dashboard and Web Terminal |
+
+Profile definitions are stored in:
+
+```text
+profiles/
+  pi-zero2w.conf
+  pi-3-4-5.conf
+```
+
+The profile files define which modules are allowed for each Raspberry Pi model.
 
 ---
 
 ## Raspberry Pi Zero 2W
 
-The Raspberry Pi Zero 2W is resource-constrained and should remain lightweight.
+The Raspberry Pi Zero 2W is resource-constrained and must remain lightweight.
 
 It should not run the full dashboard stack.
 
@@ -48,7 +59,7 @@ Recommended Pi Zero 2W features:
 
 The Web Terminal is the preferred management interface for the Pi Zero 2W.
 
-Dashboard components should not be installed on the Pi Zero 2W because they are too heavy for the device and may make it slow or unreliable in the field.
+Dashboard components must not be installed on the Pi Zero 2W because they are too heavy for the device and may make it slow or unreliable in the field.
 
 ---
 
@@ -66,7 +77,49 @@ Recommended Pi 3 / 4 / 5 features may include:
 * RTC
 * Sniffer / Bridge, where required
 
-Dashboard functionality is intended for these stronger Pi models only.
+For Pi 3 / 4 / 5, dashboard and web terminal functionality may be provided by the same dashboard module, depending on the current module implementation.
+
+---
+
+## Repository Layout
+
+```text
+README.md
+
+profiles/
+  README.md
+  pi-zero2w.conf
+  pi-3-4-5.conf
+
+scripts/
+  check-profile.sh
+  initbox-installer.sh
+  initbox-status.sh
+  show-state.sh
+  lib/
+    profile.sh
+    modules.sh
+    state.sh
+  pi-zero2w/
+    module-isi.sh
+    module-fms.sh
+    module-hotspot.sh
+    module-ttyd-portal.sh
+  pi-3-4-5/
+    module-isi.sh
+    module-fms.sh
+    module-hotspot.sh
+    module-dashboard.sh
+    module-rtc.sh
+    module-ws-br0.sh
+```
+
+Notes:
+
+* Pi Zero 2W uses `module-ttyd-portal.sh` for Web Terminal.
+* Pi Zero 2W does not support dashboard.
+* Pi 3 / 4 / 5 uses `module-dashboard.sh` for dashboard functionality.
+* If Web Terminal is bundled into the Pi 3 / 4 / 5 dashboard module, both `dashboard` and `web-terminal` can map to `module-dashboard.sh`.
 
 ---
 
@@ -79,7 +132,7 @@ Before running the installer, confirm the following:
 * Raspberry Pi OS has been installed.
 * SSH or local console access is available.
 * The correct hardware profile is known.
-* The correct installer is being used.
+* The correct installer/profile is being used.
 * The Pi has stable power.
 
 During setup, the installer may:
@@ -95,39 +148,108 @@ During setup, the installer may:
 
 ---
 
-## Field Deployment Assumption
+## Validate Profiles
 
-After lab setup, the field device should already have:
+Before running the installer, validate the selected profile.
 
-* Required packages installed
-* Required services configured
-* Required users created
-* Required network interfaces configured
-* Required systemd services enabled
-* Logs available for troubleshooting
+For Pi Zero 2W:
 
-Field troubleshooting should rely on local commands, service status, and logs. It should not require downloading missing packages from the Internet.
+```bash
+./scripts/check-profile.sh pi-zero2w
+```
+
+For Pi 3 / 4 / 5:
+
+```bash
+./scripts/check-profile.sh pi-3-4-5
+```
+
+Expected Pi Zero 2W behavior:
+
+```text
+Dashboard:       no
+Web Terminal:    yes
+```
+
+Expected Pi 3 / 4 / 5 behavior:
+
+```text
+Dashboard:       yes
+Web Terminal:    yes
+```
 
 ---
 
-## Recommended Lab Workflow
+## Run the Installer
 
-For each device:
+Run the installer with the correct profile.
 
-1. Flash Raspberry Pi OS.
-2. Boot the Pi in the lab.
-3. Connect it to the Internet.
-4. Run the correct setup script.
-5. Install the required features.
-6. Reboot if required.
-7. Verify all required services.
-8. Confirm required network interfaces.
-9. Confirm required ports.
-10. Check recent logs.
-11. Reboot once more and verify again.
-12. Label the device.
-13. Record required access details securely.
-14. Deploy the device in the field.
+For Pi Zero 2W:
+
+```bash
+sudo ./scripts/initbox-installer.sh pi-zero2w
+```
+
+For Pi 3 / 4 / 5:
+
+```bash
+sudo ./scripts/initbox-installer.sh pi-3-4-5
+```
+
+The installer will:
+
+* Load the selected hardware profile.
+* Show only modules supported by that profile.
+* Block unsupported modules.
+* Require explicit `RUN` confirmation before executing a module script.
+* Log installation activity to `/var/log/initbox/install.log`.
+
+For Pi Zero 2W, the dashboard module should not appear in the menu.
+
+---
+
+## Install State
+
+The project records install-state information under:
+
+```text
+/etc/initbox/install-state.env
+```
+
+Show install state with:
+
+```bash
+./scripts/show-state.sh
+```
+
+If no modules have been recorded yet, this command may report that no install state exists. That is expected before installation or before state tracking has been wired into the module flow.
+
+---
+
+## Field Diagnostics
+
+After lab setup, or during field support, run:
+
+```bash
+./scripts/initbox-status.sh
+```
+
+or with elevated permissions:
+
+```bash
+sudo ./scripts/initbox-status.sh
+```
+
+The status command prints local diagnostics, including:
+
+* System information
+* Install state
+* Network interfaces
+* Failed services
+* Listening ports
+* Known InitBox-related service status
+
+This command is designed to work without Internet access.
 
 ---
 
@@ -237,23 +359,9 @@ ip link show can0
 
 For Pi 3 / 4 / 5 devices, verify the installed feature set.
 
-### Web Terminal
+### Web Terminal / Dashboard
 
-```bash
-systemctl status ttyd --no-pager
-journalctl -u ttyd -n 100 --no-pager
-ss -tulpn
-```
-
-If the default ttyd port is used, check access from a browser:
-
-```text
-http://<pi-ip-address>:7681
-```
-
-### Dashboard
-
-If dashboard is installed, check dashboard-related services.
+If dashboard or web terminal support is installed through the dashboard module, check the dashboard-related services.
 
 Common examples:
 
@@ -439,15 +547,30 @@ The project should follow these rules:
 
 ---
 
-## Future Improvements
+## Development Checks
 
-Planned improvements may include:
+Run syntax checks before testing on hardware:
 
-* Separate hardware profiles.
-* Clear installer output names.
-* Module metadata files.
-* Install-state tracking.
-* A local `initbox-status` diagnostic command.
-* Automated validation to prevent Pi Zero dashboard inclusion.
-* Improved troubleshooting guides.
-* Release checklist for lab preparation.
+```bash
+bash -n scripts/check-profile.sh
+bash -n scripts/initbox-installer.sh
+bash -n scripts/initbox-status.sh
+bash -n scripts/show-state.sh
+bash -n scripts/lib/profile.sh
+bash -n scripts/lib/modules.sh
+bash -n scripts/lib/state.sh
+```
+
+If ShellCheck is available:
+
+```bash
+shellcheck scripts/*.sh scripts/lib/*.sh
+```
+
+---
+
+## Suggested Commit Message
+
+```text
+docs: update root readme for profile-aware installer
+```
