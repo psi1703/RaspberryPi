@@ -343,7 +343,7 @@ ss -tulpn
 Default access, if using the standard ttyd port:
 
 ```text
-http://<pi-ip-address>:7681
+http://PI_IP_ADDRESS:7681
 ```
 
 ### Dashboard / Portal
@@ -367,8 +367,8 @@ systemctl list-units --type=service | grep -i portal
 Common dashboard URLs:
 
 ```text
-http://<pi-ip-address>/
-http://<pi-ip-address>:1880
+http://PI_IP_ADDRESS/
+http://PI_IP_ADDRESS:1880
 ```
 
 ### Hotspot
