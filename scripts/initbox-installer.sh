@@ -165,39 +165,36 @@ fi
 }
 
 print_menu() {
-local index
-local module_id
-local module_name
-local module_script
+  local index
+  local module_id
+  local module_name
+  local module_script
 
-echo "Available modules"
-echo "-----------------"
+  echo "Available modules"
+  echo "-----------------"
 
-index=1
-for module_id in "${SUPPORTED_MODULES[@]}"; do
-module_name="$(initbox_module_display_name "$module_id")"
+  index=1
+  for module_id in "${SUPPORTED_MODULES[@]}"; do
+    module_name="$(initbox_module_display_name "$module_id")"
 
-```
-if module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
-  if [ -f "$module_script" ]; then
-    printf '  %d) %-16s %s\n' "$index" "$module_name" "[script found]"
-  else
-    printf '  %d) %-16s %s\n' "$index" "$module_name" "[script missing]"
-  fi
-else
-  printf '  %d) %-16s %s\n' "$index" "$module_name" "[not mapped]"
-fi
+    if module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
+      if [ -f "$module_script" ]; then
+        printf '  %d) %-16s %s\n' "$index" "$module_name" "[script found]"
+      else
+        printf '  %d) %-16s %s\n' "$index" "$module_name" "[script missing]"
+      fi
+    else
+      printf '  %d) %-16s %s\n' "$index" "$module_name" "[not mapped]"
+    fi
 
-index=$((index + 1))
-```
+    index=$((index + 1))
+  done
 
-done
-
-echo "  c) Run sanity checks"
-echo "  l) Show install log path"
-echo "  s) Show install state"
-echo "  q) Quit"
-echo
+  echo "  c) Run sanity checks"
+  echo "  l) Show install log path"
+  echo "  s) Show install state"
+  echo "  q) Quit"
+  echo
 }
 
 show_log_info() {
