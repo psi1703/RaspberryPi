@@ -62,12 +62,20 @@ initbox_load_profile "$PROFILE_ID"
 SUPPORTED_MODULES=()
 
 ensure_log_file() {
-if [ "$(id -u)" -eq 0 ]; then
-mkdir -p "$LOG_DIR"
-touch "$LOG_FILE"
-else
-echo "WARNING: not running as root. Log file may not be writable: $LOG_FILE"
-fi
+  if [ "$(id -u)" -eq 0 ]; then
+    mkdir -p "$LOG_DIR"
+    touch "$LOG_FILE"
+
+    mkdir -p "$LEGACY_MODULE_LOG_DIR"
+    touch "$LEGACY_MODULE_LOG_FILE"
+
+    if id initbox >/dev/null 2>&1; then
+      chown -R initbox:initbox "$LEGACY_MODULE_LOG_DIR" || true
+    fi
+  else
+    echo "WARNING: not running as root. Log file may not be writable: $LOG_FILE"
+    echo "WARNING: not running as root. Module log path may not be writable: $LEGACY_MODULE_LOG_FILE"
+  fi
 }
 
 log_line() {
