@@ -16,6 +16,10 @@
 
 # ./scripts/initbox-installer.sh pi-3-4-5
 
+# ./scripts/initbox-installer.sh pi-zero2w c
+
+# ./scripts/initbox-installer.sh pi-3-4-5 c
+
 #
 
 # Lab model:
@@ -27,6 +31,7 @@
 set -euo pipefail
 
 PROFILE_ID="${1:-}"
+ACTION="${2:-menu}"
 
 if [ -z "$PROFILE_ID" ]; then
 echo "ERROR: profile id is required."
@@ -34,6 +39,8 @@ echo
 echo "Usage:"
 echo "  ./scripts/initbox-installer.sh pi-zero2w"
 echo "  ./scripts/initbox-installer.sh pi-3-4-5"
+echo "  ./scripts/initbox-installer.sh pi-zero2w c"
+echo "  ./scripts/initbox-installer.sh pi-3-4-5 c"
 exit 1
 fi
 
@@ -47,15 +54,15 @@ LEGACY_MODULE_LOG_FILE="$LEGACY_MODULE_LOG_DIR/initbox-install.log"
 
 # shellcheck source=lib/profile.sh
 
-. "$REPO_ROOT/scripts/lib/profile.sh"
+"$REPO_ROOT/scripts/lib/profile.sh"
 
 # shellcheck source=lib/modules.sh
 
-. "$REPO_ROOT/scripts/lib/modules.sh"
+"$REPO_ROOT/scripts/lib/modules.sh"
 
 # shellcheck source=lib/state.sh
 
-. "$REPO_ROOT/scripts/lib/state.sh"
+"$REPO_ROOT/scripts/lib/state.sh"
 
 initbox_load_profile "$PROFILE_ID"
 
@@ -66,14 +73,14 @@ if [ "$(id -u)" -eq 0 ]; then
 mkdir -p "$LOG_DIR"
 touch "$LOG_FILE"
 
-```
+
 mkdir -p "$LEGACY_MODULE_LOG_DIR"
 touch "$LEGACY_MODULE_LOG_FILE"
 
 if id initbox >/dev/null 2>&1; then
   chown -R initbox:initbox "$LEGACY_MODULE_LOG_DIR" || true
 fi
-```
+
 
 else
 echo "WARNING: not running as root. Log file may not be writable: $LOG_FILE"
@@ -190,7 +197,7 @@ index=1
 for module_id in "${SUPPORTED_MODULES[@]}"; do
 module_name="$(initbox_module_display_name "$module_id")"
 
-```
+
 if module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
   if [ -f "$module_script" ]; then
     printf '  %d) %-16s %s\n' "$index" "$module_name" "[script found]"
@@ -202,7 +209,7 @@ else
 fi
 
 index=$((index + 1))
-```
+
 
 done
 
@@ -218,6 +225,10 @@ echo
 echo "Install log"
 echo "-----------"
 echo "$LOG_FILE"
+echo
+echo "Legacy module log"
+echo "-----------------"
+echo "$LEGACY_MODULE_LOG_FILE"
 echo
 
 if [ -f "$LOG_FILE" ]; then
@@ -337,7 +348,7 @@ sanity_fail "Pi Zero 2W dashboard must be blocked"
 failures=$((failures + 1))
 fi
 
-```
+
 if initbox_profile_supports_module "dashboard"; then
   sanity_fail "Pi Zero 2W profile incorrectly supports dashboard"
   failures=$((failures + 1))
@@ -351,7 +362,7 @@ else
   sanity_fail "Pi Zero 2W must support Web Terminal"
   failures=$((failures + 1))
 fi
-```
+
 
 fi
 
@@ -391,7 +402,7 @@ echo "Profile: $PROFILE_ID"
 echo "Module:  $module_name"
 echo "Script:  $module_script"
 echo "Log:     $LOG_FILE"
-echo "State:   $INITBOX_STATE_FILE"
+echo "State:   ${INITBOX_STATE_FILE:-/etc/initbox/install-state.env}"
 echo
 echo "This may install packages, modify system configuration, enable services, or require reboot."
 echo "Only continue if this Pi is in the lab with Internet access."
@@ -438,7 +449,7 @@ fi
 else
 echo "WARNING: log file is not writable. Running without log capture."
 
-```
+
 if bash "$module_script"; then
   record_module_success_state "$module_id" "$module_name"
   echo
@@ -449,7 +460,7 @@ else
   echo "ERROR: module script failed."
   return 1
 fi
-```
+
 
 fi
 }
@@ -492,27 +503,15 @@ run_module_script "$module_id" "$module_name" "$module_script"
 fi
 }
 
-main() {
+interactive_menu() {
 local choice
 local max_choice
-
-ensure_log_file
-build_supported_module_list
-record_profile_state
-
-log_line "INSTALLER_OPENED profile=$PROFILE_ID"
-
-if [ "${#SUPPORTED_MODULES[@]}" -eq 0 ]; then
-echo "ERROR: no supported modules found for profile '$PROFILE_ID'."
-log_line "ERROR no_supported_modules profile=$PROFILE_ID"
-exit 1
-fi
 
 while true; do
 print_header
 print_menu
 
-```
+
 max_choice="${#SUPPORTED_MODULES[@]}"
 
 printf 'Select a module [1-%s], c for checks, l for log, s for state, or q: ' "$max_choice"
@@ -554,9 +553,48 @@ case "$choice" in
     fi
     ;;
 esac
-```
+
 
 done
+}
+
+main() {
+ensure_log_file
+build_supported_module_list
+record_profile_state
+
+log_line "INSTALLER_OPENED profile=$PROFILE_ID"
+
+if [ "${#SUPPORTED_MODULES[@]}" -eq 0 ]; then
+echo "ERROR: no supported modules found for profile '$PROFILE_ID'."
+log_line "ERROR no_supported_modules profile=$PROFILE_ID"
+exit 1
+fi
+
+case "$ACTION" in
+menu|'')
+interactive_menu
+;;
+c|C|check|checks|sanity)
+run_sanity_checks
+;;
+l|L|log|logs)
+show_log_info
+;;
+s|S|state)
+show_state_info
+;;
+*)
+echo "ERROR: unknown action: $ACTION"
+echo
+echo "Usage:"
+echo "  ./scripts/initbox-installer.sh pi-zero2w"
+echo "  ./scripts/initbox-installer.sh pi-3-4-5"
+echo "  ./scripts/initbox-installer.sh pi-zero2w c"
+echo "  ./scripts/initbox-installer.sh pi-3-4-5 c"
+exit 1
+;;
+esac
 }
 
 main "$@"
