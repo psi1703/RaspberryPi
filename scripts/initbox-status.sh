@@ -12,7 +12,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 STATE_HELPER="$REPO_ROOT/scripts/lib/state.sh"
 
 if [ -f "$STATE_HELPER" ]; then
-  # shellcheck disable=SC1091
+  # shellcheck disable=SC1090
   . "$STATE_HELPER"
 fi
 
