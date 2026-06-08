@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # InitBox field diagnostics command
 #
 # This script prints local diagnostic information.
@@ -8,11 +9,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
 STATE_HELPER="$REPO_ROOT/scripts/lib/state.sh"
 
 if [ -f "$STATE_HELPER" ]; then
-  # shellcheck source=lib/state.sh
+  # shellcheck disable=SC1091
   . "$STATE_HELPER"
 fi
 
@@ -84,6 +84,7 @@ print_recent_service_log() {
 }
 
 print_known_services() {
+  local service_name
   local services
 
   services="
@@ -110,6 +111,7 @@ EOF
 }
 
 print_known_logs() {
+  local service_name
   local services
 
   services="
