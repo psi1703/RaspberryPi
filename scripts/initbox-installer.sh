@@ -102,13 +102,13 @@ bootstrap_repo_permissions() {
 
 bootstrap_repo_permissions
 
-# shellcheck source=lib/profile.sh
+# shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/profile.sh"
 
-# shellcheck source=lib/modules.sh
+# shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/modules.sh"
 
-# shellcheck source=lib/state.sh
+# shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/state.sh"
 
 initbox_load_profile "$PROFILE_ID"
