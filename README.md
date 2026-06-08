@@ -2,7 +2,7 @@
 
 This repository contains setup scripts and documentation for preparing Raspberry Pi devices used as InitBox field appliances.
 
-The Raspberry Pi devices are configured in a lab environment where Internet access is available. After setup and verification, the devices are deployed in the field as preconfigured appliances.
+Raspberry Pi devices are configured in a lab environment where Internet access is available. After setup and verification, the devices are deployed in the field as preconfigured appliances.
 
 Field deployment should not depend on Internet access for package installation.
 
@@ -21,7 +21,7 @@ The intended workflow is:
 7. Verify the device before field deployment.
 8. Deploy the prepared device in the field.
 
-This project is not designed around downloading packages in the field. All required packages should be installed during lab preparation.
+All required packages should be installed during lab preparation.
 
 ---
 
@@ -40,34 +40,30 @@ profiles/
   pi-3-4-5.conf
 ```
 
-The profile files define which modules are allowed for each Raspberry Pi model.
-
 ---
 
-## Raspberry Pi Zero 2W
+## Pi Zero 2W Policy
 
 The Raspberry Pi Zero 2W is resource-constrained and must remain lightweight.
 
-It should not run the full dashboard stack.
-
-Recommended Pi Zero 2W features:
+Recommended Pi Zero 2W modules:
 
 * ISI
 * FMS
 * Hotspot
 * Web Terminal
 
-The Web Terminal is the preferred management interface for the Pi Zero 2W.
+The Pi Zero 2W must not install dashboard components.
 
-Dashboard components must not be installed on the Pi Zero 2W because they are too heavy for the device and may make it slow or unreliable in the field.
+Use Web Terminal instead.
 
 ---
 
-## Raspberry Pi 3 / 4 / 5
+## Pi 3 / 4 / 5 Policy
 
-Raspberry Pi 3, Raspberry Pi 4, and Raspberry Pi 5 devices can support heavier services than the Pi Zero 2W.
+Raspberry Pi 3, Raspberry Pi 4, and Raspberry Pi 5 devices can support heavier services.
 
-Recommended Pi 3 / 4 / 5 features may include:
+Possible Pi 3 / 4 / 5 modules:
 
 * ISI
 * FMS
@@ -75,9 +71,9 @@ Recommended Pi 3 / 4 / 5 features may include:
 * Dashboard
 * Web Terminal
 * RTC
-* Sniffer / Bridge, where required
+* Sniffer / Bridge
 
-For Pi 3 / 4 / 5, dashboard and web terminal functionality may be provided by the same dashboard module, depending on the current module implementation.
+For Pi 3 / 4 / 5, Web Terminal may be bundled with the dashboard module depending on the current module implementation.
 
 ---
 
@@ -125,14 +121,14 @@ Notes:
 
 ## Lab Setup Requirements
 
-Before running the installer, confirm the following:
+Before running the installer, confirm:
 
 * The Raspberry Pi is in the lab.
 * Internet access is available.
 * Raspberry Pi OS has been installed.
 * SSH or local console access is available.
 * The correct hardware profile is known.
-* The correct installer/profile is being used.
+* The correct repository files are present on the Pi.
 * The Pi has stable power.
 
 During setup, the installer may:
@@ -150,12 +146,17 @@ During setup, the installer may:
 
 ## Validate Profiles
 
-Before running the installer, validate the selected profile.
-
 For Pi Zero 2W:
 
 ```bash
 ./scripts/check-profile.sh pi-zero2w
+```
+
+Expected:
+
+```text
+Dashboard:       no
+Web Terminal:    yes
 ```
 
 For Pi 3 / 4 / 5:
@@ -164,25 +165,18 @@ For Pi 3 / 4 / 5:
 ./scripts/check-profile.sh pi-3-4-5
 ```
 
-Expected Pi Zero 2W behavior:
-
-```text
-Dashboard:       no
-Web Terminal:    yes
-```
-
-Expected Pi 3 / 4 / 5 behavior:
+Expected:
 
 ```text
 Dashboard:       yes
 Web Terminal:    yes
 ```
 
+Do not continue if the selected profile does not match the hardware.
+
 ---
 
 ## Run the Installer
-
-Run the installer with the correct profile.
 
 For Pi Zero 2W:
 
@@ -204,37 +198,88 @@ The installer will:
 * Require explicit `RUN` confirmation before executing a module script.
 * Log installation activity to `/var/log/initbox/install.log`.
 
-For Pi Zero 2W, the dashboard module should not appear in the menu.
+For Pi Zero 2W, the dashboard module must not appear in the menu.
+
+---
+
+## Install Modules
+
+Install only the modules required for the device role.
+
+### Pi Zero 2W
+
+Recommended:
+
+* [ ] ISI
+* [ ] FMS
+* [ ] Hotspot
+* [ ] Web Terminal
+
+Do not install:
+
+* [ ] Dashboard
+
+### Pi 3 / 4 / 5
+
+Install only what is needed:
+
+* [ ] ISI
+* [ ] FMS
+* [ ] Hotspot
+* [ ] Dashboard
+* [ ] Web Terminal, if bundled with dashboard or separately available
+* [ ] RTC
+* [ ] Sniffer / Bridge
+
+---
+
+## Review Install Logs
+
+Installer log path:
+
+```text
+/var/log/initbox/install.log
+```
+
+Check recent installer activity:
+
+```bash
+sudo tail -n 100 /var/log/initbox/install.log
+```
+
+Look for:
+
+* Failed package installs
+* Missing files
+* Permission errors
+* Service enable failures
+* Reboot-required messages
+
+Do not deploy a device with unresolved installer errors.
 
 ---
 
 ## Install State
 
-The project records install-state information under:
+Install-state path:
 
 ```text
 /etc/initbox/install-state.env
 ```
 
-Show install state with:
+Show install state:
 
 ```bash
 ./scripts/show-state.sh
 ```
 
-If no modules have been recorded yet, this command may report that no install state exists. That is expected before installation or before state tracking has been wired into the module flow.
+If state tracking is not yet wired into the installer, this command may report that no install state exists. In that case, rely on the installer log and service checks.
 
 ---
 
 ## Field Diagnostics
 
-After lab setup, or during field support, run:
-
-```bash
-./scripts/initbox-status.sh
-```
-
-or with elevated permissions:
+Run:
 
 ```bash
 sudo ./scripts/initbox-status.sh
@@ -255,9 +300,9 @@ This command is designed to work without Internet access.
 
 ## Verification Before Field Deployment
 
-Before a Raspberry Pi leaves the lab, run basic verification checks.
+Before a Raspberry Pi leaves the lab, run these checks.
 
-### Confirm system information
+### System information
 
 ```bash
 hostname
@@ -265,7 +310,7 @@ uname -a
 cat /etc/os-release
 ```
 
-### Confirm network state
+### Network state
 
 ```bash
 ip addr
@@ -273,19 +318,19 @@ ip route
 ip link show
 ```
 
-### Confirm failed services
+### Failed services
 
 ```bash
 systemctl --failed
 ```
 
-There should be no failed services related to the installed InitBox features.
+There should be no failed services related to installed InitBox features.
 
 ---
 
-## Pi Zero 2W Verification
+## Service Checks
 
-For Pi Zero 2W devices, verify only the lightweight feature set.
+Check only the services relevant to installed modules.
 
 ### Web Terminal
 
@@ -295,75 +340,15 @@ journalctl -u ttyd -n 100 --no-pager
 ss -tulpn
 ```
 
-If the default ttyd port is used, check access from a browser:
+Default access, if using the standard ttyd port:
 
 ```text
 http://<pi-ip-address>:7681
 ```
 
-### Hotspot
+### Dashboard / Portal
 
-If hotspot is installed:
-
-```bash
-systemctl status hostapd --no-pager
-systemctl status dnsmasq --no-pager
-journalctl -u hostapd -n 100 --no-pager
-journalctl -u dnsmasq -n 100 --no-pager
-```
-
-### ISI
-
-If ISI is installed:
-
-```bash
-systemctl status isirunall --no-pager
-journalctl -u isirunall -n 100 --no-pager
-```
-
-If the service name differs, search for it:
-
-```bash
-systemctl list-units --type=service | grep -i isi
-```
-
-### FMS
-
-If FMS is installed:
-
-```bash
-systemctl status fms --no-pager
-journalctl -u fms -n 100 --no-pager
-ip link show can0
-```
-
-### Pi Zero 2W final checklist
-
-* [ ] Pi booted successfully after setup.
-* [ ] Pi rebooted successfully after setup.
-* [ ] Internet was available during lab setup.
-* [ ] Required packages installed successfully.
-* [ ] Dashboard was not installed.
-* [ ] Web Terminal is active.
-* [ ] Hotspot works if required.
-* [ ] ISI works if required.
-* [ ] FMS works if required.
-* [ ] Required interfaces are present.
-* [ ] Logs show no repeated failures.
-* [ ] Device is labelled.
-* [ ] Access details are recorded securely.
-
----
-
-## Pi 3 / 4 / 5 Verification
-
-For Pi 3 / 4 / 5 devices, verify the installed feature set.
-
-### Web Terminal / Dashboard
-
-If dashboard or web terminal support is installed through the dashboard module, check the dashboard-related services.
-
-Common examples:
+Dashboard verification applies to Pi 3 / 4 / 5 only.
 
 ```bash
 systemctl status nodered --no-pager
@@ -371,7 +356,7 @@ systemctl status pi-nodered --no-pager
 systemctl status portal --no-pager
 ```
 
-If the exact service names differ, search for them:
+If service names differ:
 
 ```bash
 systemctl list-units --type=service | grep -i node
@@ -379,15 +364,7 @@ systemctl list-units --type=service | grep -i red
 systemctl list-units --type=service | grep -i portal
 ```
 
-Check recent logs:
-
-```bash
-journalctl -u nodered -n 100 --no-pager
-journalctl -u pi-nodered -n 100 --no-pager
-journalctl -u portal -n 100 --no-pager
-```
-
-Common dashboard URLs may include:
+Common dashboard URLs:
 
 ```text
 http://<pi-ip-address>/
@@ -396,8 +373,6 @@ http://<pi-ip-address>:1880
 
 ### Hotspot
 
-If hotspot is installed:
-
 ```bash
 systemctl status hostapd --no-pager
 systemctl status dnsmasq --no-pager
@@ -406,8 +381,6 @@ journalctl -u dnsmasq -n 100 --no-pager
 ```
 
 ### ISI
-
-If ISI is installed:
 
 ```bash
 systemctl status isirunall --no-pager
@@ -422,8 +395,6 @@ systemctl list-units --type=service | grep -i isi
 
 ### FMS
 
-If FMS is installed:
-
 ```bash
 systemctl status fms --no-pager
 journalctl -u fms -n 100 --no-pager
@@ -431,8 +402,6 @@ ip link show can0
 ```
 
 ### RTC
-
-If RTC is installed:
 
 ```bash
 timedatectl
@@ -442,77 +411,94 @@ systemctl list-timers --all | grep -i rtc
 
 ### Sniffer / Bridge
 
-If Sniffer / Bridge is installed:
-
 ```bash
 ip link show br0
 systemctl status bridge-check --no-pager
 systemctl status wireshark-autostart --no-pager
 ```
 
-If the exact service names differ:
+If service names differ:
 
 ```bash
 systemctl list-units --type=service | grep -i bridge
 systemctl list-units --type=service | grep -i wireshark
 ```
 
-### Pi 3 / 4 / 5 final checklist
+---
 
-* [ ] Pi booted successfully after setup.
-* [ ] Pi rebooted successfully after setup.
-* [ ] Internet was available during lab setup.
-* [ ] Required packages installed successfully.
-* [ ] Required services are active.
-* [ ] Dashboard works if installed.
-* [ ] Web Terminal works if installed.
-* [ ] Hotspot works if required.
-* [ ] ISI works if required.
-* [ ] FMS works if required.
-* [ ] RTC works if required.
-* [ ] Bridge/sniffer works if required.
-* [ ] Required interfaces are present.
-* [ ] Logs show no repeated failures.
-* [ ] Device is labelled.
-* [ ] Access details are recorded securely.
+## Listening Ports
+
+Check ports:
+
+```bash
+ss -tulpn
+```
+
+Common expected ports:
+
+| Feature             | Typical Port |
+| ------------------- | -----------: |
+| Dashboard / Portal  |           80 |
+| Node-RED            |         1880 |
+| Web Terminal / ttyd |         7681 |
+
+Only verify ports for installed features.
 
 ---
 
 ## Reboot Test
 
-Before any device leaves the lab, reboot it at least once:
+Before field deployment, reboot once:
 
 ```bash
 sudo reboot
 ```
 
-After reboot, run:
+After the device comes back online, repeat:
 
 ```bash
+systemctl --failed
 ip addr
 ip link show
 ss -tulpn
-systemctl --failed
+sudo ./scripts/initbox-status.sh
 ```
 
-Then check all services required for the installed features.
-
-Expected result:
+Confirm:
 
 * Required services start automatically.
 * Required interfaces return.
 * Required ports are listening.
-* Web Terminal is reachable if installed.
-* Dashboard is reachable if installed.
-* No manual restart is required.
+* Web Terminal works if installed.
+* Dashboard works if installed.
+* Logs do not show repeated failures.
+
+---
+
+## Final Field Deployment Sign-Off
+
+Before the device leaves the lab:
+
+* [ ] Correct hardware profile was used.
+* [ ] Internet was available during setup.
+* [ ] Required modules were installed.
+* [ ] Unsupported modules were not installed.
+* [ ] Pi Zero 2W does not have dashboard installed.
+* [ ] Device was reboot-tested.
+* [ ] Required services are active.
+* [ ] Required interfaces are present.
+* [ ] Required UI is reachable.
+* [ ] Installer log was reviewed.
+* [ ] Field diagnostics command was run.
+* [ ] Device is physically labelled.
+* [ ] Access details are recorded securely.
+* [ ] Field team knows which profile/features are installed.
 
 ---
 
 ## Troubleshooting Principles
 
-When troubleshooting in the field, start with local checks.
-
-Useful commands:
+When troubleshooting in the field, start with local checks:
 
 ```bash
 systemctl --failed
@@ -522,28 +508,12 @@ ip addr
 ip route
 ip link show
 ss -tulpn
+sudo ./scripts/initbox-status.sh
 ```
 
 Do not assume Internet access is available in the field.
 
 If a package is missing in the field, the device was not fully prepared in the lab and should be returned to the lab or repaired using a controlled maintenance process.
-
----
-
-## Design Rules
-
-The project should follow these rules:
-
-* Lab setup requires Internet access.
-* Field deployment assumes the Pi is already configured.
-* Pi Zero 2W must remain lightweight.
-* Pi Zero 2W must not include the dashboard stack.
-* Pi 3 / 4 / 5 may include dashboard components.
-* Installer behavior should be repeatable.
-* Verification must be completed before field deployment.
-* Logs should be kept for support.
-* Unnecessary changes to working installer code should be avoided.
-* Hardware-specific behavior should be documented clearly.
 
 ---
 
@@ -569,8 +539,15 @@ shellcheck scripts/*.sh scripts/lib/*.sh
 
 ---
 
-## Suggested Commit Message
+## Design Rules
 
-```text
-docs: update root readme for profile-aware installer
-```
+* Lab setup requires Internet access.
+* Field deployment assumes the Pi is already configured.
+* Pi Zero 2W must remain lightweight.
+* Pi Zero 2W must not include dashboard components.
+* Pi 3 / 4 / 5 may include dashboard components.
+* Installer behavior should be repeatable.
+* Verification must be completed before field deployment.
+* Logs should be kept for support.
+* Unnecessary changes to working installer code should be avoided.
+* Hardware-specific behavior should be documented clearly.
