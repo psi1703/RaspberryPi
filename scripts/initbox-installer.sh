@@ -2,15 +2,11 @@
 
 # InitBox Raspberry Pi installer
 
-#
-
 # Loads a hardware profile, repairs required repo permissions,
 
 # shows supported modules, runs sanity checks, and runs selected module scripts
 
 # with explicit confirmation.
-
-#
 
 # Usage:
 
@@ -21,8 +17,6 @@
 # ./scripts/initbox-installer.sh pi-zero2w c
 
 # ./scripts/initbox-installer.sh pi-3-4-5 c
-
-#
 
 # Lab model:
 
