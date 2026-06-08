@@ -35,7 +35,7 @@ initbox_module_script_path() {
       printf '%s/scripts/pi-3-4-5/module-hotspot.sh\n' "$repo_root"
       ;;
     pi-3-4-5:web-terminal)
-      printf '%s/scripts/pi-3-4-5/module-ttyd-portal.sh\n' "$repo_root"
+      printf '%s/scripts/pi-3-4-5/module-dashboard.sh\n' "$repo_root"
       ;;
     pi-3-4-5:dashboard)
       printf '%s/scripts/pi-3-4-5/module-dashboard.sh\n' "$repo_root"
