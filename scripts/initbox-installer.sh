@@ -66,6 +66,7 @@ if [ "$(id -u)" -eq 0 ]; then
 mkdir -p "$LOG_DIR"
 touch "$LOG_FILE"
 
+```
 mkdir -p "$LEGACY_MODULE_LOG_DIR"
 touch "$LEGACY_MODULE_LOG_FILE"
 
@@ -189,6 +190,7 @@ index=1
 for module_id in "${SUPPORTED_MODULES[@]}"; do
 module_name="$(initbox_module_display_name "$module_id")"
 
+```
 if module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
   if [ -f "$module_script" ]; then
     printf '  %d) %-16s %s\n' "$index" "$module_name" "[script found]"
@@ -200,6 +202,7 @@ else
 fi
 
 index=$((index + 1))
+```
 
 done
 
@@ -334,6 +337,7 @@ sanity_fail "Pi Zero 2W dashboard must be blocked"
 failures=$((failures + 1))
 fi
 
+```
 if initbox_profile_supports_module "dashboard"; then
   sanity_fail "Pi Zero 2W profile incorrectly supports dashboard"
   failures=$((failures + 1))
@@ -347,6 +351,7 @@ else
   sanity_fail "Pi Zero 2W must support Web Terminal"
   failures=$((failures + 1))
 fi
+```
 
 fi
 
@@ -433,6 +438,7 @@ fi
 else
 echo "WARNING: log file is not writable. Running without log capture."
 
+```
 if bash "$module_script"; then
   record_module_success_state "$module_id" "$module_name"
   echo
@@ -443,6 +449,7 @@ else
   echo "ERROR: module script failed."
   return 1
 fi
+```
 
 fi
 }
@@ -505,6 +512,7 @@ while true; do
 print_header
 print_menu
 
+```
 max_choice="${#SUPPORTED_MODULES[@]}"
 
 printf 'Select a module [1-%s], c for checks, l for log, s for state, or q: ' "$max_choice"
@@ -546,6 +554,7 @@ case "$choice" in
     fi
     ;;
 esac
+```
 
 done
 }
