@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/28700018/README.md)
 # InitBox Raspberry Pi Setup
 
 This repository contains setup scripts and documentation for preparing Raspberry Pi devices used as InitBox field appliances.
