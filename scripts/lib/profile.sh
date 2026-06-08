@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # InitBox profile helper
 #
 # This file loads and validates Raspberry Pi hardware profiles.
@@ -25,15 +26,15 @@ initbox_profile_path() {
 }
 
 initbox_load_profile() {
-  local profile_id="$1"
+  local requested_profile_id="$1"
   local profile_file
 
-  if [ -z "$profile_id" ]; then
+  if [ -z "$requested_profile_id" ]; then
     echo "ERROR: profile id is required." >&2
     return 1
   fi
 
-  profile_file="$(initbox_profile_path "$profile_id")"
+  profile_file="$(initbox_profile_path "$requested_profile_id")"
 
   if [ ! -f "$profile_file" ]; then
     echo "ERROR: profile file not found: $profile_file" >&2
@@ -48,6 +49,11 @@ initbox_load_profile() {
   INITBOX_PROFILE_LOADED="yes"
 
   initbox_validate_loaded_profile
+
+  if [ "$PROFILE_ID" != "$requested_profile_id" ]; then
+    echo "ERROR: loaded profile id '$PROFILE_ID' does not match requested profile '$requested_profile_id'." >&2
+    return 1
+  fi
 }
 
 initbox_validate_loaded_profile() {
@@ -149,12 +155,14 @@ initbox_profile_supports_module() {
 
 initbox_require_supported_module() {
   local module_id="$1"
+  local loaded_profile_id="${PROFILE_ID:-unknown}"
+  local loaded_profile_name="${PROFILE_NAME:-unknown}"
 
   if initbox_profile_supports_module "$module_id"; then
     return 0
   fi
 
-  echo "ERROR: module '$module_id' is not supported by profile '$PROFILE_ID' ($PROFILE_NAME)." >&2
+  echo "ERROR: module '$module_id' is not supported by profile '$loaded_profile_id' ($loaded_profile_name)." >&2
   return 1
 }
 
