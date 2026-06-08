@@ -4,9 +4,11 @@
 
 #
 
-# Loads a hardware profile, shows supported modules,
+# Loads a hardware profile, repairs required repo permissions,
 
-# runs sanity checks, and runs selected module scripts with explicit confirmation.
+# shows supported modules, runs sanity checks, and runs selected module scripts
+
+# with explicit confirmation.
 
 #
 
@@ -52,17 +54,89 @@ LOG_FILE="$LOG_DIR/install.log"
 LEGACY_MODULE_LOG_DIR="/home/initbox/pi_logs"
 LEGACY_MODULE_LOG_FILE="$LEGACY_MODULE_LOG_DIR/initbox-install.log"
 
+bootstrap_repo_permissions() {
+  local repo_dirs
+  local readable_files
+  local executable_files
+  local module_script
+  local path
+
+  if [ "$(id -u)" -ne 0 ]; then
+    return 0
+  fi
+
+  mkdir -p "$LOG_DIR"
+  touch "$LOG_FILE"
+
+  mkdir -p "$LEGACY_MODULE_LOG_DIR"
+  touch "$LEGACY_MODULE_LOG_FILE"
+
+  if id initbox >/dev/null 2>&1; then
+    chown -R initbox:initbox "$LEGACY_MODULE_LOG_DIR" || true
+  fi
+
+  repo_dirs=(
+    "$REPO_ROOT"
+    "$REPO_ROOT/scripts"
+    "$REPO_ROOT/scripts/lib"
+    "$REPO_ROOT/scripts/pi-zero2w"
+    "$REPO_ROOT/scripts/pi-3-4-5"
+    "$REPO_ROOT/profiles"
+  )
+
+  readable_files=(
+    "$REPO_ROOT/scripts/lib/profile.sh"
+    "$REPO_ROOT/scripts/lib/modules.sh"
+    "$REPO_ROOT/scripts/lib/state.sh"
+    "$REPO_ROOT/profiles/pi-zero2w.conf"
+    "$REPO_ROOT/profiles/pi-3-4-5.conf"
+    "$REPO_ROOT/profiles/README.md"
+    "$REPO_ROOT/README.md"
+  )
+
+  executable_files=(
+    "$REPO_ROOT/scripts/initbox-installer.sh"
+    "$REPO_ROOT/scripts/initbox-status.sh"
+  )
+
+  for path in "${repo_dirs[@]}"; do
+    if [ -d "$path" ]; then
+      chmod 755 "$path"
+    fi
+  done
+
+  for path in "${readable_files[@]}"; do
+    if [ -f "$path" ]; then
+      chmod 644 "$path"
+    fi
+  done
+
+  for path in "${executable_files[@]}"; do
+    if [ -f "$path" ]; then
+      chmod 755 "$path"
+    fi
+  done
+
+  for module_script in "$REPO_ROOT/scripts/pi-zero2w"/*.sh "$REPO_ROOT/scripts/pi-3-4-5"/*.sh; do
+    if [ -f "$module_script" ]; then
+      chmod 755 "$module_script"
+    fi
+  done
+}
+
+bootstrap_repo_permissions
+
 # shellcheck source=lib/profile.sh
 
-"$REPO_ROOT/scripts/lib/profile.sh"
+. "$REPO_ROOT/scripts/lib/profile.sh"
 
 # shellcheck source=lib/modules.sh
 
-"$REPO_ROOT/scripts/lib/modules.sh"
+. "$REPO_ROOT/scripts/lib/modules.sh"
 
 # shellcheck source=lib/state.sh
 
-"$REPO_ROOT/scripts/lib/state.sh"
+. "$REPO_ROOT/scripts/lib/state.sh"
 
 initbox_load_profile "$PROFILE_ID"
 
@@ -73,14 +147,14 @@ if [ "$(id -u)" -eq 0 ]; then
 mkdir -p "$LOG_DIR"
 touch "$LOG_FILE"
 
-
+```
 mkdir -p "$LEGACY_MODULE_LOG_DIR"
 touch "$LEGACY_MODULE_LOG_FILE"
 
 if id initbox >/dev/null 2>&1; then
   chown -R initbox:initbox "$LEGACY_MODULE_LOG_DIR" || true
 fi
-
+```
 
 else
 echo "WARNING: not running as root. Log file may not be writable: $LOG_FILE"
@@ -197,7 +271,7 @@ index=1
 for module_id in "${SUPPORTED_MODULES[@]}"; do
 module_name="$(initbox_module_display_name "$module_id")"
 
-
+```
 if module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
   if [ -f "$module_script" ]; then
     printf '  %d) %-16s %s\n' "$index" "$module_name" "[script found]"
@@ -209,7 +283,7 @@ else
 fi
 
 index=$((index + 1))
-
+```
 
 done
 
@@ -266,6 +340,22 @@ sanity_fail "missing file: $path"
 return 1
 }
 
+sanity_check_no_markdown_fences() {
+local path="$1"
+
+if [ ! -f "$REPO_ROOT/$path" ]; then
+return 0
+fi
+
+if grep -q '```' "$REPO_ROOT/$path"; then
+sanity_fail "file contains Markdown fence contamination: $path"
+return 1
+fi
+
+sanity_pass "file has no Markdown fence contamination: $path"
+return 0
+}
+
 sanity_check_profile_value() {
 local label="$1"
 local value="$2"
@@ -305,6 +395,43 @@ sanity_fail "supported module script missing: $module_id ($module_name) -> $modu
 return 1
 }
 
+run_shellcheck_if_available() {
+local failures
+local path
+
+failures=0
+
+if ! command -v shellcheck >/dev/null 2>&1; then
+echo
+echo "ShellCheck"
+echo "----------"
+echo "ShellCheck is not installed. Skipping ShellCheck validation."
+return 0
+fi
+
+echo
+echo "ShellCheck"
+echo "----------"
+
+for path in 
+"$REPO_ROOT/scripts/initbox-installer.sh" 
+"$REPO_ROOT/scripts/initbox-status.sh" 
+"$REPO_ROOT/scripts/lib/profile.sh" 
+"$REPO_ROOT/scripts/lib/modules.sh" 
+"$REPO_ROOT/scripts/lib/state.sh"
+do
+if [ -f "$path" ]; then
+if shellcheck "$path"; then
+sanity_pass "shellcheck passed: ${path#"$REPO_ROOT/"}"
+else
+failures=$((failures + 1))
+fi
+fi
+done
+
+return "$failures"
+}
+
 run_sanity_checks() {
 local failures
 local module_id
@@ -319,6 +446,8 @@ echo "Repository root:"
 echo "$REPO_ROOT"
 echo
 
+bootstrap_repo_permissions
+
 sanity_check_file "README.md" || failures=$((failures + 1))
 
 sanity_check_file "profiles/README.md" || failures=$((failures + 1))
@@ -330,6 +459,12 @@ sanity_check_file "scripts/initbox-status.sh" || failures=$((failures + 1))
 sanity_check_file "scripts/lib/profile.sh" || failures=$((failures + 1))
 sanity_check_file "scripts/lib/modules.sh" || failures=$((failures + 1))
 sanity_check_file "scripts/lib/state.sh" || failures=$((failures + 1))
+
+sanity_check_no_markdown_fences "scripts/initbox-installer.sh" || failures=$((failures + 1))
+sanity_check_no_markdown_fences "scripts/initbox-status.sh" || failures=$((failures + 1))
+sanity_check_no_markdown_fences "scripts/lib/profile.sh" || failures=$((failures + 1))
+sanity_check_no_markdown_fences "scripts/lib/modules.sh" || failures=$((failures + 1))
+sanity_check_no_markdown_fences "scripts/lib/state.sh" || failures=$((failures + 1))
 
 echo
 echo "Loaded profile checks"
@@ -348,7 +483,7 @@ sanity_fail "Pi Zero 2W dashboard must be blocked"
 failures=$((failures + 1))
 fi
 
-
+```
 if initbox_profile_supports_module "dashboard"; then
   sanity_fail "Pi Zero 2W profile incorrectly supports dashboard"
   failures=$((failures + 1))
@@ -362,7 +497,7 @@ else
   sanity_fail "Pi Zero 2W must support Web Terminal"
   failures=$((failures + 1))
 fi
-
+```
 
 fi
 
@@ -374,6 +509,8 @@ while IFS= read -r module_id; do
 [ -z "$module_id" ] && continue
 sanity_check_module_script "$module_id" || failures=$((failures + 1))
 done < <(initbox_all_known_modules)
+
+run_shellcheck_if_available || failures=$((failures + $?))
 
 echo
 echo "Summary"
@@ -449,7 +586,7 @@ fi
 else
 echo "WARNING: log file is not writable. Running without log capture."
 
-
+```
 if bash "$module_script"; then
   record_module_success_state "$module_id" "$module_name"
   echo
@@ -460,7 +597,7 @@ else
   echo "ERROR: module script failed."
   return 1
 fi
-
+```
 
 fi
 }
@@ -511,7 +648,7 @@ while true; do
 print_header
 print_menu
 
-
+```
 max_choice="${#SUPPORTED_MODULES[@]}"
 
 printf 'Select a module [1-%s], c for checks, l for log, s for state, or q: ' "$max_choice"
@@ -553,7 +690,7 @@ case "$choice" in
     fi
     ;;
 esac
-
+```
 
 done
 }
