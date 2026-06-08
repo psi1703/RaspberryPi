@@ -42,6 +42,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 LOG_DIR="/var/log/initbox"
 LOG_FILE="$LOG_DIR/install.log"
+LEGACY_MODULE_LOG_DIR="/home/initbox/pi_logs"
+LEGACY_MODULE_LOG_FILE="$LEGACY_MODULE_LOG_DIR/initbox-install.log"
 
 # shellcheck source=lib/profile.sh
 
