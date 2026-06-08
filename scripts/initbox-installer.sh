@@ -477,68 +477,68 @@ fi
 }
 
 main() {
-local choice
-local max_choice
+  local choice
+  local max_choice
 
-ensure_log_file
-build_supported_module_list
-record_profile_state
+  ensure_log_file
+  build_supported_module_list
+  record_profile_state
 
-log_line "INSTALLER_OPENED profile=$PROFILE_ID"
+  log_line "INSTALLER_OPENED profile=$PROFILE_ID"
 
-if [ "${#SUPPORTED_MODULES[@]}" -eq 0 ]; then
-echo "ERROR: no supported modules found for profile '$PROFILE_ID'."
-log_line "ERROR no_supported_modules profile=$PROFILE_ID"
-exit 1
-fi
+  if [ "${#SUPPORTED_MODULES[@]}" -eq 0 ]; then
+    echo "ERROR: no supported modules found for profile '$PROFILE_ID'."
+    log_line "ERROR no_supported_modules profile=$PROFILE_ID"
+    exit 1
+  fi
 
-while true; do
-print_header
-print_menu
+  while true; do
+    print_header
+    print_menu
 
-```
-max_choice="${#SUPPORTED_MODULES[@]}"
+    max_choice="${#SUPPORTED_MODULES[@]}"
 
-printf 'Select a module [1-%s], c for checks, l for log, s for state, or q: ' "$max_choice"
-read -r choice
+    printf 'Select a module [1-%s], c for checks, l for log, s for state, or q: ' "$max_choice"
+    read -r choice
 
-case "$choice" in
-  q|Q)
-    echo "Quit."
-    log_line "INSTALLER_CLOSED profile=$PROFILE_ID"
-    exit 0
-    ;;
-  c|C)
-    run_sanity_checks || true
-    pause
-    ;;
-  l|L)
-    show_log_info
-    pause
-    ;;
-  s|S)
-    show_state_info
-    pause
-    ;;
-  ''|*[!0-9]*)
-    echo
-    echo "Invalid choice: $choice"
-    pause
-    ;;
-  *)
-    if [ "$choice" -ge 1 ] && [ "$choice" -le "$max_choice" ]; then
-      handle_selection "$choice"
-      pause
-    else
-      echo
-      echo "Invalid choice: $choice"
-      pause
-    fi
-    ;;
-esac
-```
+    # Remove possible carriage return from web/editor copy-paste issues.
+    choice="${choice//$'\r'/}"
 
-done
+    case "$choice" in
+      q|Q)
+        echo "Quit."
+        log_line "INSTALLER_CLOSED profile=$PROFILE_ID"
+        exit 0
+        ;;
+      c|C)
+        run_sanity_checks || true
+        pause
+        ;;
+      l|L)
+        show_log_info
+        pause
+        ;;
+      s|S)
+        show_state_info
+        pause
+        ;;
+      ''|*[!0-9]*)
+        echo
+        echo "Invalid choice: $choice"
+        pause
+        ;;
+      *)
+        if [ "$choice" -ge 1 ] && [ "$choice" -le "$max_choice" ]; then
+          handle_selection "$choice"
+          pause
+        else
+          echo
+          echo "Invalid choice: $choice"
+          pause
+        fi
+        ;;
+    esac
+  done
 }
 
-main
+main "$@"
