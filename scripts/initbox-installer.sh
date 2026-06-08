@@ -4,6 +4,8 @@
 # This script loads a hardware profile and displays the modules allowed
 # for that profile.
 #
+# It also checks whether the expected existing module scripts are present.
+#
 # It does not install packages yet.
 
 set -euo pipefail
@@ -25,6 +27,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=lib/profile.sh
 . "$REPO_ROOT/scripts/lib/profile.sh"
 
+# shellcheck source=lib/modules.sh
+. "$REPO_ROOT/scripts/lib/modules.sh"
+
 initbox_load_profile "$PROFILE_ID"
 
 clear || true
@@ -38,27 +43,19 @@ echo
 echo "Available modules for this profile"
 echo "-----------------------------------"
 
-AVAILABLE_MODULES=""
-
-add_module_if_supported() {
-  local module_id="$1"
-  local module_name="$2"
+while IFS= read -r module_id; do
+  module_name="$(initbox_module_display_name "$module_id")"
 
   if initbox_profile_supports_module "$module_id"; then
-    AVAILABLE_MODULES="$AVAILABLE_MODULES $module_id"
-    printf '  [yes] %-16s %s\n' "$module_id" "$module_name"
+    if initbox_module_script_exists "$PROFILE_ID" "$module_id" "$REPO_ROOT"; then
+      printf '  [yes/found]   %-16s %s\n' "$module_id" "$module_name"
+    else
+      printf '  [yes/missing] %-16s %s\n' "$module_id" "$module_name"
+    fi
   else
-    printf '  [no ] %-16s %s\n' "$module_id" "$module_name"
+    printf '  [no]          %-16s %s\n' "$module_id" "$module_name"
   fi
-}
-
-add_module_if_supported "isi" "ISI"
-add_module_if_supported "fms" "FMS"
-add_module_if_supported "hotspot" "Hotspot"
-add_module_if_supported "web-terminal" "Web Terminal"
-add_module_if_supported "dashboard" "Dashboard"
-add_module_if_supported "rtc" "RTC"
-add_module_if_supported "sniffer-bridge" "Sniffer / Bridge"
+done < <(initbox_all_known_modules)
 
 echo
 echo "Default modules:"
@@ -72,5 +69,8 @@ if [ "$PROFILE_ID" = "pi-zero2w" ]; then
   echo
 fi
 
+initbox_print_module_registry "$PROFILE_ID" "$REPO_ROOT"
+
+echo
 echo "No installation has been performed."
-echo "This skeleton only validates profile loading and module filtering."
+echo "This skeleton only validates profile loading, module filtering, and module script paths."
