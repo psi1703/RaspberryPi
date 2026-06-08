@@ -10,21 +10,21 @@ jobs:
   lint-and-fix:
     runs-on: ubuntu-latest
     
-    # Permissions required to let the runner write changes back to your repository
+    # Allows the runner to commit changes back to your repository
     permissions:
       contents: write
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
-          # Fetches the specific pull request or branch head rather than a detached commit
           ref: ${{ github.head_ref || github.ref }}
 
       - name: Run shfmt (Auto-Correct Syntax)
-        uses: luizm/action-shfmt@v3
+        uses: reviewdog/action-shfmt@v1
         with:
-          args: -w -i 2 -sr .
+          # -w overwrites the files with fixes, -i 2 uses 2 spaces for indentation
+          shfmt_flags: "-w -i 2 -sr"
 
       - name: Run ShellCheck (Quality Validation)
         uses: ludeeus/action-shellcheck@master
