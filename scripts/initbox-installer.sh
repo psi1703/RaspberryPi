@@ -62,20 +62,22 @@ initbox_load_profile "$PROFILE_ID"
 SUPPORTED_MODULES=()
 
 ensure_log_file() {
-  if [ "$(id -u)" -eq 0 ]; then
-    mkdir -p "$LOG_DIR"
-    touch "$LOG_FILE"
+if [ "$(id -u)" -eq 0 ]; then
+mkdir -p "$LOG_DIR"
+touch "$LOG_FILE"
 
-    mkdir -p "$LEGACY_MODULE_LOG_DIR"
-    touch "$LEGACY_MODULE_LOG_FILE"
+mkdir -p "$LEGACY_MODULE_LOG_DIR"
+touch "$LEGACY_MODULE_LOG_FILE"
 
-    if id initbox >/dev/null 2>&1; then
-      chown -R initbox:initbox "$LEGACY_MODULE_LOG_DIR" || true
-    fi
-  else
-    echo "WARNING: not running as root. Log file may not be writable: $LOG_FILE"
-    echo "WARNING: not running as root. Module log path may not be writable: $LEGACY_MODULE_LOG_FILE"
-  fi
+if id initbox >/dev/null 2>&1; then
+  chown -R initbox:initbox "$LEGACY_MODULE_LOG_DIR" || true
+fi
+```
+
+else
+echo "WARNING: not running as root. Log file may not be writable: $LOG_FILE"
+echo "WARNING: not running as root. Module log path may not be writable: $LEGACY_MODULE_LOG_FILE"
+fi
 }
 
 log_line() {
@@ -175,36 +177,37 @@ fi
 }
 
 print_menu() {
-  local index
-  local module_id
-  local module_name
-  local module_script
+local index
+local module_id
+local module_name
+local module_script
 
-  echo "Available modules"
-  echo "-----------------"
+echo "Available modules"
+echo "-----------------"
 
-  index=1
-  for module_id in "${SUPPORTED_MODULES[@]}"; do
-    module_name="$(initbox_module_display_name "$module_id")"
+index=1
+for module_id in "${SUPPORTED_MODULES[@]}"; do
+module_name="$(initbox_module_display_name "$module_id")"
 
-    if module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
-      if [ -f "$module_script" ]; then
-        printf '  %d) %-16s %s\n' "$index" "$module_name" "[script found]"
-      else
-        printf '  %d) %-16s %s\n' "$index" "$module_name" "[script missing]"
-      fi
-    else
-      printf '  %d) %-16s %s\n' "$index" "$module_name" "[not mapped]"
-    fi
+if module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
+  if [ -f "$module_script" ]; then
+    printf '  %d) %-16s %s\n' "$index" "$module_name" "[script found]"
+  else
+    printf '  %d) %-16s %s\n' "$index" "$module_name" "[script missing]"
+  fi
+else
+  printf '  %d) %-16s %s\n' "$index" "$module_name" "[not mapped]"
+fi
 
-    index=$((index + 1))
-  done
+index=$((index + 1))
 
-  echo "  c) Run sanity checks"
-  echo "  l) Show install log path"
-  echo "  s) Show install state"
-  echo "  q) Quit"
-  echo
+done
+
+echo "  c) Run sanity checks"
+echo "  l) Show install log path"
+echo "  s) Show install state"
+echo "  q) Quit"
+echo
 }
 
 show_log_info() {
@@ -331,7 +334,6 @@ sanity_fail "Pi Zero 2W dashboard must be blocked"
 failures=$((failures + 1))
 fi
 
-```
 if initbox_profile_supports_module "dashboard"; then
   sanity_fail "Pi Zero 2W profile incorrectly supports dashboard"
   failures=$((failures + 1))
@@ -345,7 +347,6 @@ else
   sanity_fail "Pi Zero 2W must support Web Terminal"
   failures=$((failures + 1))
 fi
-```
 
 fi
 
@@ -432,7 +433,6 @@ fi
 else
 echo "WARNING: log file is not writable. Running without log capture."
 
-```
 if bash "$module_script"; then
   record_module_success_state "$module_id" "$module_name"
   echo
@@ -443,7 +443,6 @@ else
   echo "ERROR: module script failed."
   return 1
 fi
-```
 
 fi
 }
@@ -487,68 +486,68 @@ fi
 }
 
 main() {
-  local choice
-  local max_choice
+local choice
+local max_choice
 
-  ensure_log_file
-  build_supported_module_list
-  record_profile_state
+ensure_log_file
+build_supported_module_list
+record_profile_state
 
-  log_line "INSTALLER_OPENED profile=$PROFILE_ID"
+log_line "INSTALLER_OPENED profile=$PROFILE_ID"
 
-  if [ "${#SUPPORTED_MODULES[@]}" -eq 0 ]; then
-    echo "ERROR: no supported modules found for profile '$PROFILE_ID'."
-    log_line "ERROR no_supported_modules profile=$PROFILE_ID"
-    exit 1
-  fi
+if [ "${#SUPPORTED_MODULES[@]}" -eq 0 ]; then
+echo "ERROR: no supported modules found for profile '$PROFILE_ID'."
+log_line "ERROR no_supported_modules profile=$PROFILE_ID"
+exit 1
+fi
 
-  while true; do
-    print_header
-    print_menu
+while true; do
+print_header
+print_menu
 
-    max_choice="${#SUPPORTED_MODULES[@]}"
+max_choice="${#SUPPORTED_MODULES[@]}"
 
-    printf 'Select a module [1-%s], c for checks, l for log, s for state, or q: ' "$max_choice"
-    read -r choice
+printf 'Select a module [1-%s], c for checks, l for log, s for state, or q: ' "$max_choice"
+read -r choice
 
-    # Remove possible carriage return from web/editor copy-paste issues.
-    choice="${choice//$'\r'/}"
+choice="${choice//$'\r'/}"
 
-    case "$choice" in
-      q|Q)
-        echo "Quit."
-        log_line "INSTALLER_CLOSED profile=$PROFILE_ID"
-        exit 0
-        ;;
-      c|C)
-        run_sanity_checks || true
-        pause
-        ;;
-      l|L)
-        show_log_info
-        pause
-        ;;
-      s|S)
-        show_state_info
-        pause
-        ;;
-      ''|*[!0-9]*)
-        echo
-        echo "Invalid choice: $choice"
-        pause
-        ;;
-      *)
-        if [ "$choice" -ge 1 ] && [ "$choice" -le "$max_choice" ]; then
-          handle_selection "$choice"
-          pause
-        else
-          echo
-          echo "Invalid choice: $choice"
-          pause
-        fi
-        ;;
-    esac
-  done
+case "$choice" in
+  q|Q)
+    echo "Quit."
+    log_line "INSTALLER_CLOSED profile=$PROFILE_ID"
+    exit 0
+    ;;
+  c|C)
+    run_sanity_checks || true
+    pause
+    ;;
+  l|L)
+    show_log_info
+    pause
+    ;;
+  s|S)
+    show_state_info
+    pause
+    ;;
+  ''|*[!0-9]*)
+    echo
+    echo "Invalid choice: $choice"
+    pause
+    ;;
+  *)
+    if [ "$choice" -ge 1 ] && [ "$choice" -le "$max_choice" ]; then
+      handle_selection "$choice"
+      pause
+    else
+      echo
+      echo "Invalid choice: $choice"
+      pause
+    fi
+    ;;
+esac
+
+done
 }
 
 main "$@"
