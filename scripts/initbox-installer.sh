@@ -1,4 +1,3 @@
-```bash
 #!/usr/bin/env bash
 # InitBox Raspberry Pi installer
 #
@@ -322,4 +321,3 @@ main() {
 }
 
 main
-```
