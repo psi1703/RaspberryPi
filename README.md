@@ -1,3 +1,4 @@
+[README.md](https://github.com/user-attachments/files/28700018/README.md)
 # InitBox Raspberry Pi Setup
 
 This repository contains setup scripts and documentation for preparing Raspberry Pi devices used as InitBox field appliances.
@@ -88,10 +89,8 @@ profiles/
   pi-3-4-5.conf
 
 scripts/
-  check-profile.sh
   initbox-installer.sh
   initbox-status.sh
-  show-state.sh
   lib/
     profile.sh
     modules.sh
@@ -144,32 +143,34 @@ During setup, the installer may:
 
 ---
 
-## Validate Profiles
+## Profile Validation
 
-For Pi Zero 2W:
+The installer loads and validates the selected hardware profile before showing the module menu.
 
-```bash
-./scripts/check-profile.sh pi-zero2w
-```
-
-Expected:
-
-```text
-Dashboard:       no
-Web Terminal:    yes
-```
-
-For Pi 3 / 4 / 5:
+For Pi Zero 2W, run:
 
 ```bash
-./scripts/check-profile.sh pi-3-4-5
+sudo ./scripts/initbox-installer.sh pi-zero2w
 ```
 
-Expected:
+Expected behavior:
 
 ```text
-Dashboard:       yes
-Web Terminal:    yes
+Dashboard is disabled.
+Web Terminal is available.
+```
+
+For Pi 3 / 4 / 5, run:
+
+```bash
+sudo ./scripts/initbox-installer.sh pi-3-4-5
+```
+
+Expected behavior:
+
+```text
+Dashboard is available.
+Web Terminal is available.
 ```
 
 Do not continue if the selected profile does not match the hardware.
@@ -267,13 +268,13 @@ Install-state path:
 /etc/initbox/install-state.env
 ```
 
-Show install state:
+Install state can be viewed from the installer menu by pressing `s`.
+
+It is also included in the field diagnostics output:
 
 ```bash
-./scripts/show-state.sh
+sudo ./scripts/initbox-status.sh
 ```
-
-If state tracking is not yet wired into the installer, this command may report that no install state exists. In that case, rely on the installer log and service checks.
 
 ---
 
@@ -522,10 +523,8 @@ If a package is missing in the field, the device was not fully prepared in the l
 Run syntax checks before testing on hardware:
 
 ```bash
-bash -n scripts/check-profile.sh
 bash -n scripts/initbox-installer.sh
 bash -n scripts/initbox-status.sh
-bash -n scripts/show-state.sh
 bash -n scripts/lib/profile.sh
 bash -n scripts/lib/modules.sh
 bash -n scripts/lib/state.sh
