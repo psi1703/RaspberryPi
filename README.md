@@ -60,6 +60,74 @@ Use Web Terminal instead.
 
 ---
 
+## Pi Zero 2W Captive Portal and Web Terminal Model
+
+The Raspberry Pi Zero 2W uses a lightweight captive portal design.
+
+It does not install dashboard components, Node-RED, nginx, lighttpd, Python captive portal services, BusyBox HTTP server, or other full web server packages for the portal path.
+
+The Pi Zero 2W portal model is:
+
+```text
+Wi-Fi client
+  -> hotspot DNS wildcard
+  -> Raspberry Pi hotspot IP
+  -> port 80 systemd socket responder
+  -> HTTP 302 redirect to http://initbox.wlan:7681/
+  -> ttyd Web Terminal
+```
+
+Service ownership is split intentionally:
+
+```text
+module-hotspot.sh
+  owns hostapd
+  owns dnsmasq
+  owns wlan0 hotspot IP
+  owns DHCP gateway option
+  owns DHCP DNS option
+  owns wildcard captive DNS
+
+module-ttyd-portal.sh
+  owns ttyd installation
+  owns ttyd.service on port 7681
+  owns initbox-captive-http.socket on port 80
+  owns socket-activated HTTP 302 responder
+```
+
+The hotspot module must provide wildcard DNS similar to:
+
+```text
+address=/#/192.168.20.1
+```
+
+The Web Terminal module must not replace or duplicate hotspot DNS, DHCP, hostapd, or wlan0 ownership.
+
+The port 80 captive responder is intentionally implemented using systemd socket activation. It is not a persistent web server. It starts only when a client connects to port 80 and returns a simple HTTP redirect to the ttyd Web Terminal.
+
+Expected Pi Zero 2W URLs:
+
+```text
+Captive portal URL: http://initbox.wlan/
+Web Terminal URL:   http://initbox.wlan:7681/
+```
+
+Expected Windows behavior:
+
+* Windows may show `Action needed` after joining the InitBox hotspot.
+* The automatic captive portal page should open to the InitBox portal URL.
+* The portal redirects to the ttyd Web Terminal on port `7681`.
+
+Important design rule:
+
+```text
+Do not run ttyd directly on port 80 for Pi Zero 2W.
+```
+
+Windows captive portal detection expects a normal HTTP response on port 80. The working Pi Zero 2W design uses a lightweight HTTP 302 responder on port 80 and keeps ttyd on port 7681.
+
+---
+
 ## Pi 3 / 4 / 5 Policy
 
 Raspberry Pi 3, Raspberry Pi 4, and Raspberry Pi 5 devices can support heavier services.
@@ -111,7 +179,7 @@ scripts/
 
 Notes:
 
-* Pi Zero 2W uses `module-ttyd-portal.sh` for Web Terminal.
+* Pi Zero 2W uses `module-ttyd-portal.sh` for Web Terminal and captive portal redirection.
 * Pi Zero 2W does not support dashboard.
 * Pi 3 / 4 / 5 uses `module-dashboard.sh` for dashboard functionality.
 * If Web Terminal is bundled into the Pi 3 / 4 / 5 dashboard module, both `dashboard` and `web-terminal` can map to `module-dashboard.sh`.
@@ -221,6 +289,16 @@ Recommended:
 Do not install:
 
 * [ ] Dashboard
+
+For Pi Zero 2W, install the hotspot module before the Web Terminal module. The Web Terminal captive portal depends on the hotspot module for wlan0, DHCP, DNS, and wildcard captive DNS ownership.
+
+Recommended Pi Zero 2W order:
+
+```text
+1. Hotspot
+2. Web Terminal
+3. ISI and FMS as required by the appliance role
+```
 
 ### Pi 3 / 4 / 5
 
@@ -353,17 +431,117 @@ Check only the services relevant to installed modules.
 
 ### Web Terminal
 
-```bash
-systemctl status ttyd --no-pager
-journalctl -u ttyd -n 100 --no-pager
-ss -tulpn
-```
+Pi Zero 2W and Pi 3 / 4 / 5 Web Terminal behavior may differ.
 
-Default access, if using the standard ttyd port:
+#### Pi Zero 2W
+
+For Pi Zero 2W, Web Terminal is provided by:
 
 ```text
-http://PI_IP_ADDRESS:7681
+ttyd.service
+initbox-captive-http.socket
+initbox-captive-http@.service
 ```
+
+Check service status:
+
+```bash
+systemctl status ttyd --no-pager
+systemctl status initbox-captive-http.socket --no-pager
+journalctl -u ttyd -n 100 --no-pager
+journalctl -u initbox-captive-http.socket -n 100 --no-pager
+```
+
+Check listening ports:
+
+```bash
+ss -tulpn | grep -E ':80|:7681'
+```
+
+Expected Pi Zero 2W ports:
+
+```text
+0.0.0.0:80    systemd captive HTTP socket
+0.0.0.0:7681  ttyd Web Terminal
+```
+
+Test the captive responder locally:
+
+```bash
+curl -I http://127.0.0.1/
+```
+
+Expected result:
+
+```text
+HTTP/1.1 302 Found
+Location: http://initbox.wlan:7681/
+```
+
+Test ttyd locally:
+
+```bash
+curl -I http://127.0.0.1:7681/
+```
+
+From a Wi-Fi client connected to the InitBox hotspot, open:
+
+```text
+http://initbox.wlan/
+```
+
+The expected behavior is:
+
+```text
+http://initbox.wlan/
+  -> HTTP 302 redirect
+  -> http://initbox.wlan:7681/
+  -> ttyd Web Terminal
+```
+
+The ttyd service must run as the `initbox` user and must enable keyboard input with `-W`.
+
+To verify the generated ttyd service:
+
+```bash
+systemctl cat ttyd
+```
+
+Expected service details include:
+
+```text
+User=initbox
+Group=initbox
+ExecStart=/usr/local/bin/ttyd -W --interface 0.0.0.0 --port 7681 /bin/bash -l
+```
+
+To verify the captive portal socket:
+
+```bash
+systemctl cat initbox-captive-http.socket
+systemctl cat 'initbox-captive-http@.service'
+```
+
+Expected socket behavior:
+
+```text
+ListenStream=0.0.0.0:80
+Accept=yes
+```
+
+Expected responder behavior:
+
+```text
+StandardInput=socket
+StandardOutput=socket
+Environment=INITBOX_TERMINAL_URL=http://initbox.wlan:7681/
+```
+
+#### Pi 3 / 4 / 5
+
+For Pi 3 / 4 / 5, Web Terminal may be bundled with the dashboard module depending on the current module implementation.
+
+Check dashboard and portal services as documented in the Dashboard / Portal section.
 
 ### Dashboard / Portal
 
@@ -398,6 +576,38 @@ systemctl status dnsmasq --no-pager
 journalctl -u hostapd -n 100 --no-pager
 journalctl -u dnsmasq -n 100 --no-pager
 ```
+
+For Pi Zero 2W captive portal behavior, confirm that dnsmasq provides the Pi as DNS server and resolves captive-check domains to the hotspot IP.
+
+Check dnsmasq configuration:
+
+```bash
+sudo grep -nE '^(interface|bind|dhcp-range|dhcp-option|address=/#)' /etc/dnsmasq.conf
+sudo dnsmasq --test
+```
+
+Expected Pi Zero 2W hotspot DNS lines include:
+
+```text
+interface=wlan0
+dhcp-option=3,192.168.20.1
+dhcp-option=6,192.168.20.1
+address=/#/192.168.20.1
+```
+
+From a Windows Wi-Fi client, direct DNS testing can be done with:
+
+```cmd
+nslookup www.msftconnecttest.com 192.168.20.1
+```
+
+Expected result:
+
+```text
+Address: 192.168.20.1
+```
+
+The exact displayed name may include a local DNS suffix, but the returned address should be the Pi hotspot IP.
 
 ### ISI
 
@@ -455,13 +665,95 @@ ss -tulpn
 
 Common expected ports:
 
-| Feature             | Typical Port |
-| ------------------- | -----------: |
-| Dashboard / Portal  |           80 |
-| Node-RED            |         1880 |
-| Web Terminal / ttyd |         7681 |
+| Profile     | Feature                         | Typical Port |
+| ----------- | ------------------------------- | -----------: |
+| `pi-zero2w` | Captive HTTP socket responder   |           80 |
+| `pi-zero2w` | Web Terminal / ttyd             |         7681 |
+| `pi-3-4-5`  | Dashboard / Portal              |           80 |
+| `pi-3-4-5`  | Node-RED                        |         1880 |
+| `pi-3-4-5`  | Web Terminal / ttyd, if enabled |         7681 |
 
 Only verify ports for installed features.
+
+For Pi Zero 2W, port `80` should be owned by systemd socket activation, not by ttyd directly and not by an additional web server package.
+
+Expected Pi Zero 2W check:
+
+```bash
+systemctl status initbox-captive-http.socket --no-pager
+systemctl status ttyd --no-pager
+ss -tulpn | grep -E ':80|:7681'
+```
+
+Expected Pi Zero 2W behavior:
+
+```text
+port 80    captive portal HTTP 302 responder
+port 7681  ttyd Web Terminal
+```
+
+Do not change the Pi Zero 2W Web Terminal module to run ttyd directly on port `80`. That removes the normal captive HTTP response required for the Windows `Action needed` captive portal flow.
+
+---
+
+## Captive Portal Client Verification
+
+For Pi Zero 2W, test the captive portal from a Wi-Fi client before field deployment.
+
+### Windows client check
+
+Connect the Windows laptop to the InitBox hotspot.
+
+Windows may display:
+
+```text
+Action needed
+```
+
+Open the captive portal prompt if shown. It should open the InitBox portal and redirect to the Web Terminal.
+
+Manual browser check:
+
+```text
+http://initbox.wlan/
+```
+
+Expected redirect:
+
+```text
+http://initbox.wlan/
+  -> http://initbox.wlan:7681/
+```
+
+Command-line check from Windows:
+
+```cmd
+ipconfig /flushdns
+nslookup www.msftconnecttest.com 192.168.20.1
+curl -I --noproxy "*" http://initbox.wlan/
+curl -I --noproxy "*" http://initbox.wlan:7681/
+```
+
+Expected captive response from port 80:
+
+```text
+HTTP/1.1 302 Found
+Location: http://initbox.wlan:7681/
+```
+
+Expected ttyd response from port 7681:
+
+```text
+HTTP/1.1 200 OK
+```
+
+If `curl http://www.msftconnecttest.com/connecttest.txt` returns the real text below, the client is still reaching Microsoft rather than the InitBox captive path:
+
+```text
+Microsoft Connect Test
+```
+
+That normally indicates DNS routing, proxy, cache, or another active network path is bypassing the Pi hotspot.
 
 ---
 
@@ -492,6 +784,21 @@ Confirm:
 * Dashboard works if installed.
 * Logs do not show repeated failures.
 
+For Pi Zero 2W with Web Terminal installed, also confirm:
+
+```bash
+systemctl status hostapd dnsmasq ttyd initbox-captive-http.socket --no-pager
+curl -I http://127.0.0.1/
+curl -I http://127.0.0.1:7681/
+```
+
+Expected port 80 response:
+
+```text
+HTTP/1.1 302 Found
+Location: http://initbox.wlan:7681/
+```
+
 ---
 
 ## Final Field Deployment Sign-Off
@@ -514,6 +821,18 @@ Before the device leaves the lab:
 * [ ] Device is physically labelled.
 * [ ] Access details are recorded securely.
 * [ ] Field team knows which profile/features are installed.
+
+Pi Zero 2W Web Terminal and captive portal checks, if installed:
+
+* [ ] `hostapd` is active.
+* [ ] `dnsmasq` is active.
+* [ ] `ttyd` is active.
+* [ ] `initbox-captive-http.socket` is active.
+* [ ] Pi Zero 2W ttyd is listening on port `7681`, not port `80`.
+* [ ] Pi Zero 2W port `80` returns HTTP `302` to `http://initbox.wlan:7681/`.
+* [ ] Pi Zero 2W hotspot DNS wildcard returns the hotspot IP.
+* [ ] Windows `Action needed` captive portal behavior was tested from a Wi-Fi client.
+* [ ] Manual browser access to `http://initbox.wlan/` redirects to the Web Terminal.
 
 ---
 
@@ -538,6 +857,99 @@ If a package is missing in the field, the device was not fully prepared in the l
 
 ---
 
+## Pi Zero 2W Captive Portal Troubleshooting
+
+Use this section only for Pi Zero 2W devices with the Web Terminal module installed.
+
+### Check core services
+
+```bash
+sudo systemctl status hostapd dnsmasq ttyd initbox-captive-http.socket --no-pager
+```
+
+All four should be active.
+
+### Check port ownership
+
+```bash
+sudo ss -tulpn | grep -E ':80|:7681'
+```
+
+Expected:
+
+```text
+:80    systemd
+:7681  ttyd
+```
+
+Port `80` should not be owned directly by ttyd.
+
+### Check captive HTTP redirect
+
+```bash
+curl -I http://127.0.0.1/
+```
+
+Expected:
+
+```text
+HTTP/1.1 302 Found
+Location: http://initbox.wlan:7681/
+```
+
+### Check ttyd
+
+```bash
+curl -I http://127.0.0.1:7681/
+systemctl cat ttyd
+```
+
+Expected service configuration includes:
+
+```text
+User=initbox
+Group=initbox
+ExecStart=/usr/local/bin/ttyd -W --interface 0.0.0.0 --port 7681 /bin/bash -l
+```
+
+If the Web Terminal opens but keyboard input does not work, confirm that the ttyd command includes `-W`.
+
+### Check hotspot DNS
+
+```bash
+sudo grep -nE '^(interface|bind|dhcp-range|dhcp-option|address=/#)' /etc/dnsmasq.conf
+sudo dnsmasq --test
+```
+
+Expected DNS behavior:
+
+```text
+dhcp-option=6,192.168.20.1
+address=/#/192.168.20.1
+```
+
+### Check Windows client path
+
+From Windows:
+
+```cmd
+ipconfig /flushdns
+nslookup www.msftconnecttest.com 192.168.20.1
+curl -I --noproxy "*" http://initbox.wlan/
+```
+
+Expected:
+
+```text
+Address: 192.168.20.1
+HTTP/1.1 302 Found
+Location: http://initbox.wlan:7681/
+```
+
+If Windows does not show `Action needed`, but the manual tests above pass, verify that the laptop is not using another active network path, VPN, proxy, cached DNS, or secure DNS mechanism that bypasses the InitBox hotspot.
+
+---
+
 ## Development Checks
 
 Run syntax checks before testing on hardware:
@@ -548,6 +960,7 @@ bash -n scripts/initbox-status.sh
 bash -n scripts/lib/profile.sh
 bash -n scripts/lib/modules.sh
 bash -n scripts/lib/state.sh
+bash -n scripts/pi-zero2w/module-ttyd-portal.sh
 ```
 
 If ShellCheck is available:
@@ -564,6 +977,10 @@ shellcheck scripts/initbox-installer.sh scripts/initbox-status.sh scripts/lib/*.
 * Field deployment assumes the Pi is already configured.
 * Pi Zero 2W must remain lightweight.
 * Pi Zero 2W must not include dashboard components.
+* Pi Zero 2W Web Terminal uses ttyd on port `7681`.
+* Pi Zero 2W captive portal uses systemd socket activation on port `80`.
+* Pi Zero 2W must not run ttyd directly on port `80`.
+* Pi Zero 2W must not install a dashboard, Node-RED, nginx, lighttpd, or Python captive portal service for the portal path.
 * Pi 3 / 4 / 5 may include dashboard components.
 * Installer behavior should be repeatable.
 * Verification must be completed before field deployment.
