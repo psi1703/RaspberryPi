@@ -4,23 +4,25 @@
 #
 # Installs and enables:
 #   - ttyd Web Terminal on port 7681
-#   - lightweight Python captive portal landing service on port 80
+#   - lightweight captive portal HTTP landing service on port 80
 #
 # User-facing URLs:
 #   http://initbox.wlan/
 #   http://initbox.wlan:7681/
 #
-# This module assumes the hotspot/dnsmasq module provides:
+# This module assumes the hotspot module provides:
 #   - hostapd access point
 #   - wlan0 static hotspot IP
 #   - DHCP service through dnsmasq
+#   - wildcard captive DNS:
+#       address=/#/<hotspot-ip>
 #
-# This module adds:
-#   - local hostname/captive-check DNS overrides
-#   - ttyd service running as the normal initbox user
-#   - captive portal HTTP service on port 80
+# This module owns only:
+#   - ttyd service
+#   - port-80 captive portal HTTP responder
 #
-# It must not replace the hotspot module's DHCP, wlan0 IP, or hostapd ownership.
+# It must not replace or duplicate the hotspot module's DHCP, DNS,
+# wlan0 IP, dnsmasq.conf, or hostapd ownership.
 
 set -euo pipefail
 
@@ -35,8 +37,6 @@ HOTSPOT_INTERFACE="${HOTSPOT_INTERFACE:-wlan0}"
 TTYD_SERVICE_FILE="/etc/systemd/system/ttyd.service"
 CAPTIVE_SCRIPT="/usr/local/sbin/initbox-captive-portal.py"
 CAPTIVE_SERVICE_FILE="/etc/systemd/system/initbox-captive-portal.service"
-DNSMASQ_DIR="/etc/dnsmasq.d"
-DNSMASQ_INITBOX_FILE="$DNSMASQ_DIR/initbox-wlan.conf"
 
 log() {
   printf '[%s] %s\n' "$MODULE_NAME" "$1"
@@ -45,6 +45,10 @@ log() {
 fail() {
   log "ERROR: $1"
   exit 1
+}
+
+warn() {
+  log "WARN: $1"
 }
 
 require_root() {
@@ -118,6 +122,33 @@ get_hotspot_ip() {
   printf '%s\n' "$hotspot_ip"
 }
 
+check_hotspot_dns_owner() {
+  local hotspot_ip="$1"
+
+  if [ ! -f /etc/dnsmasq.conf ]; then
+    fail "/etc/dnsmasq.conf does not exist. Run the hotspot module first."
+  fi
+
+  if ! grep -q "^address=/#/${hotspot_ip}$" /etc/dnsmasq.conf; then
+    warn "wildcard captive DNS was not found in /etc/dnsmasq.conf"
+    warn "expected: address=/#/${hotspot_ip}"
+    warn "the hotspot may still work, but captive portal detection may not trigger"
+  fi
+
+  if ! grep -q "^dhcp-option=6,${hotspot_ip}$" /etc/dnsmasq.conf; then
+    warn "DHCP DNS option was not found in /etc/dnsmasq.conf"
+    warn "expected: dhcp-option=6,${hotspot_ip}"
+    warn "clients must receive the Pi as DNS server for captive portal detection"
+  fi
+}
+
+remove_old_web_terminal_dns_fragments() {
+  log "removing old web-terminal dnsmasq fragments if present"
+
+  rm -f /etc/dnsmasq.d/initbox-wlan.conf
+  rm -f /etc/dnsmasq.d/initbox-captive-portal.conf
+}
+
 write_ttyd_service() {
   local ttyd_bin="$1"
 
@@ -145,50 +176,8 @@ WantedBy=multi-user.target
 EOF
 }
 
-write_dnsmasq_hostname_config() {
-  local hotspot_ip="$1"
-
-  log "writing captive portal DNS overrides to $DNSMASQ_INITBOX_FILE"
-
-  mkdir -p "$DNSMASQ_DIR"
-
-  cat >"$DNSMASQ_INITBOX_FILE" <<EOF
-# InitBox captive portal DNS overrides
-# Managed by scripts/pi-zero2w/module-ttyd-portal.sh
-#
-# The hotspot module owns DHCP, wlan0 IP, hostapd, and the main dnsmasq.conf.
-# This file only ensures known captive-check hostnames resolve to the Pi.
-
-address=/$PORTAL_HOSTNAME/$hotspot_ip
-address=/initbox.local/$hotspot_ip
-
-# Android captive portal checks
-address=/connectivitycheck.gstatic.com/$hotspot_ip
-address=/connectivitycheck.android.com/$hotspot_ip
-address=/clients3.google.com/$hotspot_ip
-address=/www.gstatic.com/$hotspot_ip
-address=/www.google.com/$hotspot_ip
-
-# Apple captive portal checks
-address=/captive.apple.com/$hotspot_ip
-address=/www.apple.com/$hotspot_ip
-address=/www.appleiphonecell.com/$hotspot_ip
-
-# Windows NCSI / captive portal checks
-address=/msftconnecttest.com/$hotspot_ip
-address=/www.msftconnecttest.com/$hotspot_ip
-address=/ipv6.msftconnecttest.com/$hotspot_ip
-address=/msftncsi.com/$hotspot_ip
-address=/www.msftncsi.com/$hotspot_ip
-address=/dns.msftncsi.com/$hotspot_ip
-
-# Firefox captive portal check
-address=/detectportal.firefox.com/$hotspot_ip
-EOF
-}
-
 write_captive_portal_script() {
-  log "writing Python captive portal HTTP server"
+  log "writing captive portal HTTP responder"
 
   cat >"$CAPTIVE_SCRIPT" <<'PYEOF'
 #!/usr/bin/env python3
@@ -212,7 +201,7 @@ TERMINAL_URL = os.environ.get(
 
 
 class CaptivePortalHandler(BaseHTTPRequestHandler):
-    server_version = "InitBoxCaptivePortal/1.2"
+    server_version = "InitBoxCaptivePortal/1.0"
 
     def log_message(self, fmt, *args):
         sys.stdout.write("%s - %s\n" % (self.client_address[0], fmt % args))
@@ -398,10 +387,10 @@ restart_services() {
     log "testing dnsmasq configuration"
     dnsmasq --test
 
-    log "restarting dnsmasq"
+    log "restarting dnsmasq after removing old fragments"
     systemctl restart dnsmasq.service
   else
-    log "dnsmasq service not found; run hotspot module first"
+    fail "dnsmasq service not found. Run the hotspot module first."
   fi
 
   log "enabling ttyd"
@@ -414,21 +403,28 @@ restart_services() {
 }
 
 print_summary() {
+  local hotspot_ip="$1"
+
   echo
   echo "Web Terminal and captive portal installed"
   echo "----------------------------------------"
   echo "Captive portal URL: http://$PORTAL_HOSTNAME/"
   echo "Web Terminal URL:   http://$PORTAL_HOSTNAME:$TERMINAL_PORT/"
+  echo "Hotspot IP:         $hotspot_ip"
   echo
   echo "Expected ttyd behavior:"
   echo "  - Login user: $OWNER"
   echo "  - Keyboard input: enabled by ttyd -W"
   echo
-  echo "Phone/Windows testing steps:"
+  echo "DNS ownership:"
+  echo "  - Hotspot module owns /etc/dnsmasq.conf"
+  echo "  - Web terminal module does not write dnsmasq captive DNS"
+  echo "  - Expected wildcard rule: address=/#/$hotspot_ip"
+  echo
+  echo "Fresh client test:"
   echo "  1. Forget the InitBox Wi-Fi network."
   echo "  2. Reconnect to the InitBox hotspot."
-  echo "  3. On Windows, the Wi-Fi panel should show Action needed."
-  echo "  4. On Android/iOS, the sign-in/captive prompt should open automatically or after tapping the network."
+  echo "  3. Windows should show Action needed if NCSI probe is redirected."
   echo
   echo "Manual captive portal test URLs:"
   echo "  http://$PORTAL_HOSTNAME/"
@@ -437,17 +433,13 @@ print_summary() {
   echo "  http://captive.apple.com/hotspot-detect.html"
   echo
   echo "Check services:"
-  echo "  sudo systemctl status ttyd --no-pager"
-  echo "  sudo systemctl status initbox-captive-portal --no-pager"
-  echo "  sudo systemctl status dnsmasq --no-pager"
-  echo "  sudo systemctl status hostapd --no-pager"
+  echo "  sudo systemctl status hostapd dnsmasq ttyd initbox-captive-portal --no-pager"
   echo
   echo "Check ports:"
   echo "  sudo ss -tulpn | grep -E ':80|:53|:67|:7681'"
   echo
-  echo "Check generated services:"
+  echo "Check generated ttyd service:"
   echo "  systemctl cat ttyd"
-  echo "  systemctl cat initbox-captive-portal"
 }
 
 main() {
@@ -463,12 +455,13 @@ main() {
   ttyd_bin="$(get_required_command_path ttyd)"
   hotspot_ip="$(get_hotspot_ip)"
 
+  check_hotspot_dns_owner "$hotspot_ip"
+  remove_old_web_terminal_dns_fragments
   write_ttyd_service "$ttyd_bin"
-  write_dnsmasq_hostname_config "$hotspot_ip"
   write_captive_portal_script
   write_captive_portal_service "$python_bin"
   restart_services
-  print_summary
+  print_summary "$hotspot_ip"
 }
 
 main "$@"
