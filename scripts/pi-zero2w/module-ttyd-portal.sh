@@ -18,6 +18,7 @@
 #       address=/#/<hotspot-ip>
 #
 # This module owns only:
+#   - ttyd binary installation if missing
 #   - ttyd service
 #   - port-80 captive portal HTTP responder
 #
@@ -33,7 +34,9 @@ PORTAL_HOSTNAME="${PORTAL_HOSTNAME:-initbox.wlan}"
 TERMINAL_PORT="${TERMINAL_PORT:-7681}"
 CAPTIVE_PORTAL_PORT="${CAPTIVE_PORTAL_PORT:-80}"
 HOTSPOT_INTERFACE="${HOTSPOT_INTERFACE:-wlan0}"
+TTYD_VERSION="${TTYD_VERSION:-1.7.7}"
 
+TTYD_INSTALL_PATH="/usr/local/bin/ttyd"
 TTYD_SERVICE_FILE="/etc/systemd/system/ttyd.service"
 CAPTIVE_SCRIPT="/usr/local/sbin/initbox-captive-portal.py"
 CAPTIVE_SERVICE_FILE="/etc/systemd/system/initbox-captive-portal.service"
@@ -67,25 +70,91 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
-install_packages() {
+install_base_packages() {
   local packages=()
 
-  if ! command_exists ttyd; then
-    packages+=("ttyd")
+  if ! command_exists curl; then
+    packages+=("curl")
   fi
 
   if ! command_exists python3; then
     packages+=("python3")
   fi
 
+  if ! command_exists update-ca-certificates; then
+    packages+=("ca-certificates")
+  fi
+
   if [ "${#packages[@]}" -eq 0 ]; then
-    log "required packages already installed"
+    log "base packages already installed"
     return 0
   fi
 
-  log "installing packages: ${packages[*]}"
+  log "installing base packages: ${packages[*]}"
   apt-get update
   apt-get install -y "${packages[@]}"
+}
+
+detect_ttyd_asset() {
+  local machine=""
+
+  machine="$(uname -m)"
+
+  case "$machine" in
+    aarch64|arm64)
+      printf '%s\n' "ttyd.aarch64"
+      ;;
+    armv7l|armv6l)
+      printf '%s\n' "ttyd.armhf"
+      ;;
+    arm*)
+      printf '%s\n' "ttyd.arm"
+      ;;
+    x86_64|amd64)
+      printf '%s\n' "ttyd.x86_64"
+      ;;
+    i386|i686)
+      printf '%s\n' "ttyd.i686"
+      ;;
+    *)
+      fail "unsupported CPU architecture for ttyd binary: $machine"
+      ;;
+  esac
+}
+
+install_ttyd_binary() {
+  local ttyd_asset=""
+  local ttyd_url=""
+  local tmp_file=""
+
+  ttyd_asset="$(detect_ttyd_asset)"
+  ttyd_url="https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/${ttyd_asset}"
+  tmp_file="/tmp/${ttyd_asset}"
+
+  log "ttyd not available locally; installing upstream binary"
+  log "ttyd version: ${TTYD_VERSION}"
+  log "ttyd asset: ${ttyd_asset}"
+
+  curl -fL --retry 5 --retry-delay 3 "$ttyd_url" -o "$tmp_file"
+  install -m 0755 "$tmp_file" "$TTYD_INSTALL_PATH"
+  rm -f "$tmp_file"
+
+  if ! "$TTYD_INSTALL_PATH" --version >/dev/null 2>&1; then
+    fail "installed ttyd binary did not run successfully: $TTYD_INSTALL_PATH"
+  fi
+
+  log "installed ttyd at $TTYD_INSTALL_PATH"
+}
+
+install_packages() {
+  install_base_packages
+
+  if command_exists ttyd; then
+    log "ttyd already installed at $(command -v ttyd)"
+    return 0
+  fi
+
+  install_ttyd_binary
 }
 
 get_required_command_path() {
