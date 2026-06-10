@@ -4,7 +4,7 @@
 #
 # Installs and enables:
 #   - ttyd Web Terminal on port 7681
-#   - lightweight captive portal HTTP landing service on port 80
+#   - captive portal redirect from wlan0:80 to ttyd:7681
 #
 # User-facing URLs:
 #   http://initbox.wlan/
@@ -20,7 +20,7 @@
 # This module owns only:
 #   - ttyd binary installation if missing
 #   - ttyd service
-#   - port-80 captive portal HTTP responder
+#   - iptables redirect from port 80 to port 7681
 #
 # It must not replace or duplicate the hotspot module's DHCP, DNS,
 # wlan0 IP, dnsmasq.conf, or hostapd ownership.
@@ -38,8 +38,10 @@ TTYD_VERSION="${TTYD_VERSION:-1.7.7}"
 
 TTYD_INSTALL_PATH="/usr/local/bin/ttyd"
 TTYD_SERVICE_FILE="/etc/systemd/system/ttyd.service"
-CAPTIVE_SCRIPT="/usr/local/sbin/initbox-captive-portal.py"
-CAPTIVE_SERVICE_FILE="/etc/systemd/system/initbox-captive-portal.service"
+PORTAL_SCRIPT="/usr/local/bin/initbox-ttyd-portal.sh"
+PORTAL_SERVICE_FILE="/etc/systemd/system/initbox-ttyd-portal.service"
+OLD_CAPTIVE_SCRIPT="/usr/local/sbin/initbox-captive-portal.py"
+OLD_CAPTIVE_SERVICE_FILE="/etc/systemd/system/initbox-captive-portal.service"
 
 log() {
   printf '[%s] %s\n' "$MODULE_NAME" "$1"
@@ -77,12 +79,12 @@ install_base_packages() {
     packages+=("curl")
   fi
 
-  if ! command_exists python3; then
-    packages+=("python3")
-  fi
-
   if ! command_exists update-ca-certificates; then
     packages+=("ca-certificates")
+  fi
+
+  if ! command_exists iptables; then
+    packages+=("iptables")
   fi
 
   if [ "${#packages[@]}" -eq 0 ]; then
@@ -218,6 +220,14 @@ remove_old_web_terminal_dns_fragments() {
   rm -f /etc/dnsmasq.d/initbox-captive-portal.conf
 }
 
+remove_old_python_captive_portal() {
+  log "removing old Python captive portal service if present"
+
+  systemctl disable --now initbox-captive-portal.service 2>/dev/null || true
+  rm -f "$OLD_CAPTIVE_SERVICE_FILE"
+  rm -f "$OLD_CAPTIVE_SCRIPT"
+}
+
 write_ttyd_service() {
   local ttyd_bin="$1"
 
@@ -236,7 +246,7 @@ Group=$OWNER
 WorkingDirectory=/home/$OWNER
 Environment=HOME=/home/$OWNER
 Environment=USER=$OWNER
-ExecStart=$ttyd_bin -W --interface 0.0.0.0 --port $TERMINAL_PORT /bin/bash
+ExecStart=$ttyd_bin -W --interface 0.0.0.0 --port $TERMINAL_PORT /bin/bash -l
 Restart=always
 RestartSec=2
 
@@ -245,203 +255,44 @@ WantedBy=multi-user.target
 EOF
 }
 
-write_captive_portal_script() {
-  log "writing captive portal HTTP responder"
+write_portal_redirect_script() {
+  log "writing portal redirect script"
 
-  cat >"$CAPTIVE_SCRIPT" <<'PYEOF'
-#!/usr/bin/env python3
+  cat >"$PORTAL_SCRIPT" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
 
-import html
-import os
-import signal
-import sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+IFACE="${HOTSPOT_INTERFACE:-wlan0}"
+FROM_PORT="${CAPTIVE_PORTAL_PORT:-80}"
+TO_PORT="${TERMINAL_PORT:-7681}"
 
+if ! iptables -t nat -C PREROUTING -i "$IFACE" -p tcp --dport "$FROM_PORT" \
+  -j REDIRECT --to-ports "$TO_PORT" 2>/dev/null; then
+  iptables -t nat -A PREROUTING -i "$IFACE" -p tcp --dport "$FROM_PORT" \
+    -j REDIRECT --to-ports "$TO_PORT"
+fi
+EOF
 
-PORT = int(os.environ.get("INITBOX_CAPTIVE_PORT", "80"))
-HOSTNAME = os.environ.get("INITBOX_PORTAL_HOSTNAME", "initbox.wlan")
-TERMINAL_PORT = os.environ.get("INITBOX_TERMINAL_PORT", "7681")
-
-PORTAL_URL = "http://" + HOSTNAME + "/"
-TERMINAL_URL = os.environ.get(
-    "INITBOX_TERMINAL_URL",
-    "http://" + HOSTNAME + ":" + TERMINAL_PORT + "/",
-)
-
-
-class CaptivePortalHandler(BaseHTTPRequestHandler):
-    server_version = "InitBoxCaptivePortal/1.0"
-
-    def log_message(self, fmt, *args):
-        sys.stdout.write("%s - %s\n" % (self.client_address[0], fmt % args))
-        sys.stdout.flush()
-
-    def do_GET(self):
-        if self.is_probe_request():
-            self.redirect_to_portal()
-            return
-
-        self.show_portal()
-
-    def do_HEAD(self):
-        if self.is_probe_request():
-            self.redirect_to_portal(body=False)
-            return
-
-        self.show_portal(body=False)
-
-    def do_POST(self):
-        self.show_portal()
-
-    def is_probe_request(self):
-        host = self.headers.get("Host", "").lower()
-        path = self.path.split("?", 1)[0].lower()
-
-        probe_hosts = (
-            "msftconnecttest.com",
-            "www.msftconnecttest.com",
-            "ipv6.msftconnecttest.com",
-            "msftncsi.com",
-            "www.msftncsi.com",
-            "dns.msftncsi.com",
-            "connectivitycheck.gstatic.com",
-            "connectivitycheck.android.com",
-            "clients3.google.com",
-            "captive.apple.com",
-            "detectportal.firefox.com",
-        )
-
-        probe_paths = (
-            "/connecttest.txt",
-            "/ncsi.txt",
-            "/generate_204",
-            "/gen_204",
-            "/hotspot-detect.html",
-            "/success.txt",
-            "/canonical.html",
-        )
-
-        if any(name in host for name in probe_hosts):
-            return True
-
-        return path in probe_paths
-
-    def redirect_to_portal(self, body=True):
-        content = b"InitBox captive portal redirect\n"
-
-        self.send_response(302)
-        self.send_header("Location", PORTAL_URL)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(content)))
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-        self.send_header("Pragma", "no-cache")
-        self.send_header("Connection", "close")
-        self.end_headers()
-
-        if body:
-            self.wfile.write(content)
-
-    def show_portal(self, body=True):
-        terminal_url = html.escape(TERMINAL_URL, quote=True)
-        hostname = html.escape(HOSTNAME, quote=True)
-
-        content = """<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>InitBox</title>
-  <style>
-    body {
-      font-family: sans-serif;
-      padding: 24px;
-      max-width: 720px;
-      margin: auto;
-      line-height: 1.45;
-    }
-    .button {
-      display: inline-block;
-      padding: 12px 16px;
-      background: #111;
-      color: #fff;
-      text-decoration: none;
-      border-radius: 6px;
-      font-weight: 700;
-    }
-    code {
-      background: #eee;
-      padding: 2px 5px;
-      border-radius: 4px;
-    }
-  </style>
-</head>
-<body>
-  <h1>InitBox</h1>
-  <p>This Wi-Fi network provides local InitBox access only.</p>
-  <p>Use the Web Terminal to manage this unit.</p>
-  <p><a class="button" href="{terminal_url}">Open InitBox Web Terminal</a></p>
-  <p>Portal URL: <code>http://{hostname}/</code></p>
-  <p>Terminal URL: <code>{terminal_url}</code></p>
-</body>
-</html>
-""".format(
-            terminal_url=terminal_url,
-            hostname=hostname,
-        ).encode("utf-8")
-
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(content)))
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-        self.send_header("Pragma", "no-cache")
-        self.send_header("Connection", "close")
-        self.end_headers()
-
-        if body:
-            self.wfile.write(content)
-
-
-def main():
-    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
-
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), CaptivePortalHandler)
-    print("InitBox captive portal listening on 0.0.0.0:%d" % PORT)
-    print("Portal URL: %s" % PORTAL_URL)
-    print("Terminal URL: %s" % TERMINAL_URL)
-    sys.stdout.flush()
-    server.serve_forever()
-
-
-if __name__ == "__main__":
-    main()
-PYEOF
-
-  chmod 755 "$CAPTIVE_SCRIPT"
+  chmod 755 "$PORTAL_SCRIPT"
+  chown root:root "$PORTAL_SCRIPT" 2>/dev/null || true
 }
 
-write_captive_portal_service() {
-  local python_bin="$1"
-  local terminal_url=""
+write_portal_redirect_service() {
+  log "writing portal redirect systemd service"
 
-  terminal_url="http://$PORTAL_HOSTNAME:$TERMINAL_PORT/"
-
-  log "writing captive portal service for $terminal_url"
-
-  cat >"$CAPTIVE_SERVICE_FILE" <<EOF
+  cat >"$PORTAL_SERVICE_FILE" <<EOF
 [Unit]
-Description=InitBox captive portal landing page for Web Terminal
-After=network.target dnsmasq.service ttyd.service
-Wants=ttyd.service
+Description=InitBox captive portal redirect (${CAPTIVE_PORTAL_PORT} -> ${TERMINAL_PORT})
+After=network.target hostapd.service dnsmasq.service ttyd.service
+Wants=hostapd.service dnsmasq.service ttyd.service
 
 [Service]
-Type=simple
-Environment=INITBOX_PORTAL_HOSTNAME=$PORTAL_HOSTNAME
-Environment=INITBOX_TERMINAL_PORT=$TERMINAL_PORT
-Environment=INITBOX_CAPTIVE_PORT=$CAPTIVE_PORTAL_PORT
-Environment=INITBOX_TERMINAL_URL=$terminal_url
-ExecStart=$python_bin $CAPTIVE_SCRIPT
-Restart=always
-RestartSec=2
+Type=oneshot
+Environment=HOTSPOT_INTERFACE=$HOTSPOT_INTERFACE
+Environment=CAPTIVE_PORTAL_PORT=$CAPTIVE_PORTAL_PORT
+Environment=TERMINAL_PORT=$TERMINAL_PORT
+ExecStart=$PORTAL_SCRIPT
+RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
@@ -466,69 +317,62 @@ restart_services() {
   systemctl enable --now ttyd.service
   systemctl restart ttyd.service
 
-  log "enabling captive portal"
-  systemctl enable --now initbox-captive-portal.service
-  systemctl restart initbox-captive-portal.service
+  log "enabling portal redirect"
+  systemctl enable --now initbox-ttyd-portal.service
+  systemctl restart initbox-ttyd-portal.service
 }
 
 print_summary() {
   local hotspot_ip="$1"
 
   echo
-  echo "Web Terminal and captive portal installed"
-  echo "----------------------------------------"
+  echo "Web Terminal and captive portal redirect installed"
+  echo "--------------------------------------------------"
   echo "Captive portal URL: http://$PORTAL_HOSTNAME/"
   echo "Web Terminal URL:   http://$PORTAL_HOSTNAME:$TERMINAL_PORT/"
   echo "Hotspot IP:         $hotspot_ip"
   echo
-  echo "Expected ttyd behavior:"
-  echo "  - Login user: $OWNER"
-  echo "  - Keyboard input: enabled by ttyd -W"
+  echo "Expected behavior:"
+  echo "  - http://$PORTAL_HOSTNAME/ redirects at iptables level to ttyd on port $TERMINAL_PORT"
+  echo "  - http://$PORTAL_HOSTNAME:$TERMINAL_PORT/ opens ttyd directly"
+  echo "  - ttyd login user: $OWNER"
+  echo "  - ttyd keyboard input: enabled by -W"
   echo
   echo "DNS ownership:"
   echo "  - Hotspot module owns /etc/dnsmasq.conf"
   echo "  - Web terminal module does not write dnsmasq captive DNS"
   echo "  - Expected wildcard rule: address=/#/$hotspot_ip"
   echo
-  echo "Fresh client test:"
-  echo "  1. Forget the InitBox Wi-Fi network."
-  echo "  2. Reconnect to the InitBox hotspot."
-  echo "  3. Windows should show Action needed if NCSI probe is redirected."
-  echo
-  echo "Manual captive portal test URLs:"
-  echo "  http://$PORTAL_HOSTNAME/"
-  echo "  http://www.msftconnecttest.com/connecttest.txt"
-  echo "  http://connectivitycheck.gstatic.com/generate_204"
-  echo "  http://captive.apple.com/hotspot-detect.html"
-  echo
   echo "Check services:"
-  echo "  sudo systemctl status hostapd dnsmasq ttyd initbox-captive-portal --no-pager"
+  echo "  sudo systemctl status hostapd dnsmasq ttyd initbox-ttyd-portal --no-pager"
   echo
-  echo "Check ports:"
-  echo "  sudo ss -tulpn | grep -E ':80|:53|:67|:7681'"
+  echo "Check ports and redirect:"
+  echo "  sudo ss -tulpn | grep -E ':53|:67|:$TERMINAL_PORT'"
+  echo "  sudo iptables -t nat -S PREROUTING"
   echo
-  echo "Check generated ttyd service:"
-  echo "  systemctl cat ttyd"
+  echo "Manual tests:"
+  echo "  curl -I http://127.0.0.1:$TERMINAL_PORT/"
+  echo "  curl -I http://$PORTAL_HOSTNAME:$TERMINAL_PORT/"
+  echo "  From a Wi-Fi client: open http://$PORTAL_HOSTNAME/"
 }
 
 main() {
   local hotspot_ip=""
-  local python_bin=""
   local ttyd_bin=""
 
   require_root
   require_user
   install_packages
 
-  python_bin="$(get_required_command_path python3)"
   ttyd_bin="$(get_required_command_path ttyd)"
   hotspot_ip="$(get_hotspot_ip)"
 
   check_hotspot_dns_owner "$hotspot_ip"
   remove_old_web_terminal_dns_fragments
+  remove_old_python_captive_portal
   write_ttyd_service "$ttyd_bin"
-  write_captive_portal_script
-  write_captive_portal_service "$python_bin"
+  write_portal_redirect_script
+  write_portal_redirect_service
   restart_services
   print_summary "$hotspot_ip"
 }
