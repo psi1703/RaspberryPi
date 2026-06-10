@@ -15,16 +15,18 @@
 #   - wlan0 static hotspot IP
 #   - DHCP service through dnsmasq
 #
-# This module only adds:
+# This module adds:
 #   - local hostname/captive-check DNS overrides
-#   - ttyd service
-#   - captive portal HTTP landing service
+#   - ttyd service running as the normal initbox user
+#   - captive portal HTTP service on port 80
 #
-# It must not replace the hotspot module's DHCP or hostapd ownership.
+# It must not replace the hotspot module's DHCP, wlan0 IP, or hostapd ownership.
 
 set -euo pipefail
 
 MODULE_NAME="Web Terminal and Captive Portal"
+
+OWNER="${OWNER:-initbox}"
 PORTAL_HOSTNAME="${PORTAL_HOSTNAME:-initbox.wlan}"
 TERMINAL_PORT="${TERMINAL_PORT:-7681}"
 CAPTIVE_PORTAL_PORT="${CAPTIVE_PORTAL_PORT:-80}"
@@ -48,6 +50,12 @@ fail() {
 require_root() {
   if [ "$(id -u)" -ne 0 ]; then
     fail "this module must be run as root"
+  fi
+}
+
+require_user() {
+  if ! id "$OWNER" >/dev/null 2>&1; then
+    fail "user '$OWNER' does not exist"
   fi
 }
 
@@ -78,7 +86,7 @@ install_packages() {
 
 get_required_command_path() {
   local command_name="$1"
-  local command_path
+  local command_path=""
 
   command_path="$(command -v "$command_name" || true)"
 
@@ -94,7 +102,7 @@ get_required_command_path() {
 }
 
 get_hotspot_ip() {
-  local hotspot_ip
+  local hotspot_ip=""
 
   hotspot_ip="$(
     ip -4 addr show "$HOTSPOT_INTERFACE" 2>/dev/null |
@@ -104,7 +112,7 @@ get_hotspot_ip() {
   )"
 
   if [ -z "$hotspot_ip" ]; then
-    fail "could not detect IPv4 address on $HOTSPOT_INTERFACE. Install/start hotspot first."
+    fail "could not detect IPv4 address on $HOTSPOT_INTERFACE. Run the hotspot module first."
   fi
 
   printf '%s\n' "$hotspot_ip"
@@ -123,7 +131,12 @@ Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=$ttyd_bin --interface 0.0.0.0 --port $TERMINAL_PORT /bin/bash
+User=$OWNER
+Group=$OWNER
+WorkingDirectory=/home/$OWNER
+Environment=HOME=/home/$OWNER
+Environment=USER=$OWNER
+ExecStart=$ttyd_bin -W --interface 0.0.0.0 --port $TERMINAL_PORT /bin/bash
 Restart=always
 RestartSec=2
 
@@ -140,13 +153,14 @@ write_dnsmasq_hostname_config() {
   mkdir -p "$DNSMASQ_DIR"
 
   cat >"$DNSMASQ_INITBOX_FILE" <<EOF
-# InitBox local hostname and captive portal DNS overrides
+# InitBox captive portal DNS overrides
 # Managed by scripts/pi-zero2w/module-ttyd-portal.sh
 #
-# The hotspot module owns DHCP, wlan0 IP, and hostapd.
-# This file only points selected captive-portal detection names to the Pi.
+# The hotspot module owns DHCP, wlan0 IP, hostapd, and the main dnsmasq.conf.
+# This file only ensures known captive-check hostnames resolve to the Pi.
 
 address=/$PORTAL_HOSTNAME/$hotspot_ip
+address=/initbox.local/$hotspot_ip
 
 # Android captive portal checks
 address=/connectivitycheck.gstatic.com/$hotspot_ip
@@ -160,12 +174,16 @@ address=/captive.apple.com/$hotspot_ip
 address=/www.apple.com/$hotspot_ip
 address=/www.appleiphonecell.com/$hotspot_ip
 
-# Windows captive portal checks
+# Windows NCSI / captive portal checks
 address=/msftconnecttest.com/$hotspot_ip
 address=/www.msftconnecttest.com/$hotspot_ip
 address=/ipv6.msftconnecttest.com/$hotspot_ip
 address=/msftncsi.com/$hotspot_ip
 address=/www.msftncsi.com/$hotspot_ip
+address=/dns.msftncsi.com/$hotspot_ip
+
+# Firefox captive portal check
+address=/detectportal.firefox.com/$hotspot_ip
 EOF
 }
 
@@ -185,6 +203,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PORT = int(os.environ.get("INITBOX_CAPTIVE_PORT", "80"))
 HOSTNAME = os.environ.get("INITBOX_PORTAL_HOSTNAME", "initbox.wlan")
 TERMINAL_PORT = os.environ.get("INITBOX_TERMINAL_PORT", "7681")
+
+PORTAL_URL = "http://" + HOSTNAME + "/"
 TERMINAL_URL = os.environ.get(
     "INITBOX_TERMINAL_URL",
     "http://" + HOSTNAME + ":" + TERMINAL_PORT + "/",
@@ -192,22 +212,78 @@ TERMINAL_URL = os.environ.get(
 
 
 class CaptivePortalHandler(BaseHTTPRequestHandler):
-    server_version = "InitBoxCaptivePortal/1.0"
+    server_version = "InitBoxCaptivePortal/1.2"
 
     def log_message(self, fmt, *args):
         sys.stdout.write("%s - %s\n" % (self.client_address[0], fmt % args))
         sys.stdout.flush()
 
     def do_GET(self):
-        self.respond_with_portal()
+        if self.is_probe_request():
+            self.redirect_to_portal()
+            return
+
+        self.show_portal()
 
     def do_HEAD(self):
-        self.respond_with_portal(body=False)
+        if self.is_probe_request():
+            self.redirect_to_portal(body=False)
+            return
+
+        self.show_portal(body=False)
 
     def do_POST(self):
-        self.respond_with_portal()
+        self.show_portal()
 
-    def respond_with_portal(self, body=True):
+    def is_probe_request(self):
+        host = self.headers.get("Host", "").lower()
+        path = self.path.split("?", 1)[0].lower()
+
+        probe_hosts = (
+            "msftconnecttest.com",
+            "www.msftconnecttest.com",
+            "ipv6.msftconnecttest.com",
+            "msftncsi.com",
+            "www.msftncsi.com",
+            "dns.msftncsi.com",
+            "connectivitycheck.gstatic.com",
+            "connectivitycheck.android.com",
+            "clients3.google.com",
+            "captive.apple.com",
+            "detectportal.firefox.com",
+        )
+
+        probe_paths = (
+            "/connecttest.txt",
+            "/ncsi.txt",
+            "/generate_204",
+            "/gen_204",
+            "/hotspot-detect.html",
+            "/success.txt",
+            "/canonical.html",
+        )
+
+        if any(name in host for name in probe_hosts):
+            return True
+
+        return path in probe_paths
+
+    def redirect_to_portal(self, body=True):
+        content = b"InitBox captive portal redirect\n"
+
+        self.send_response(302)
+        self.send_header("Location", PORTAL_URL)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        if body:
+            self.wfile.write(content)
+
+    def show_portal(self, body=True):
         terminal_url = html.escape(TERMINAL_URL, quote=True)
         hostname = html.escape(HOSTNAME, quote=True)
 
@@ -272,6 +348,7 @@ def main():
 
     server = ThreadingHTTPServer(("0.0.0.0", PORT), CaptivePortalHandler)
     print("InitBox captive portal listening on 0.0.0.0:%d" % PORT)
+    print("Portal URL: %s" % PORTAL_URL)
     print("Terminal URL: %s" % TERMINAL_URL)
     sys.stdout.flush()
     server.serve_forever()
@@ -286,7 +363,7 @@ PYEOF
 
 write_captive_portal_service() {
   local python_bin="$1"
-  local terminal_url
+  local terminal_url=""
 
   terminal_url="http://$PORTAL_HOSTNAME:$TERMINAL_PORT/"
 
@@ -324,7 +401,7 @@ restart_services() {
     log "restarting dnsmasq"
     systemctl restart dnsmasq.service
   else
-    log "dnsmasq service not found; hotspot module may not be installed yet"
+    log "dnsmasq service not found; run hotspot module first"
   fi
 
   log "enabling ttyd"
@@ -343,17 +420,21 @@ print_summary() {
   echo "Captive portal URL: http://$PORTAL_HOSTNAME/"
   echo "Web Terminal URL:   http://$PORTAL_HOSTNAME:$TERMINAL_PORT/"
   echo
-  echo "Phone testing steps:"
-  echo "  1. Forget the InitBox Wi-Fi network on the phone."
-  echo "  2. Disable mobile data temporarily if captive prompt does not appear."
-  echo "  3. Reconnect to the InitBox hotspot."
-  echo "  4. Wait for the Action needed / Sign in prompt."
+  echo "Expected ttyd behavior:"
+  echo "  - Login user: $OWNER"
+  echo "  - Keyboard input: enabled by ttyd -W"
+  echo
+  echo "Phone/Windows testing steps:"
+  echo "  1. Forget the InitBox Wi-Fi network."
+  echo "  2. Reconnect to the InitBox hotspot."
+  echo "  3. On Windows, the Wi-Fi panel should show Action needed."
+  echo "  4. On Android/iOS, the sign-in/captive prompt should open automatically or after tapping the network."
   echo
   echo "Manual captive portal test URLs:"
   echo "  http://$PORTAL_HOSTNAME/"
+  echo "  http://www.msftconnecttest.com/connecttest.txt"
   echo "  http://connectivitycheck.gstatic.com/generate_204"
   echo "  http://captive.apple.com/hotspot-detect.html"
-  echo "  http://www.msftconnecttest.com/connecttest.txt"
   echo
   echo "Check services:"
   echo "  sudo systemctl status ttyd --no-pager"
@@ -364,19 +445,18 @@ print_summary() {
   echo "Check ports:"
   echo "  sudo ss -tulpn | grep -E ':80|:53|:67|:7681'"
   echo
-  echo "Check captive DNS:"
-  echo "  getent hosts $PORTAL_HOSTNAME"
-  echo "  getent hosts connectivitycheck.gstatic.com"
-  echo "  getent hosts captive.apple.com"
-  echo "  getent hosts www.msftconnecttest.com"
+  echo "Check generated services:"
+  echo "  systemctl cat ttyd"
+  echo "  systemctl cat initbox-captive-portal"
 }
 
 main() {
-  local hotspot_ip
-  local python_bin
-  local ttyd_bin
+  local hotspot_ip=""
+  local python_bin=""
+  local ttyd_bin=""
 
   require_root
+  require_user
   install_packages
 
   python_bin="$(get_required_command_path python3)"
