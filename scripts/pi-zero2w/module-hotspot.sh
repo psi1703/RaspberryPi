@@ -10,15 +10,34 @@ HOSTAPD_CONF="/etc/hostapd/hostapd.conf"
 HOSTAPD_DEFAULT="/etc/default/hostapd"
 HOSTAPD_OVERRIDE_DIR="/etc/systemd/system/hostapd.service.d"
 HOSTAPD_OVERRIDE_FILE="${HOSTAPD_OVERRIDE_DIR}/initbox-hotspot.conf"
+
 DNSMASQ_CONF="/etc/dnsmasq.conf"
+DNSMASQ_DIR="/etc/dnsmasq.d"
+DNSMASQ_OVERRIDE_DIR="/etc/systemd/system/dnsmasq.service.d"
+DNSMASQ_OVERRIDE_FILE="${DNSMASQ_OVERRIDE_DIR}/initbox-hotspot.conf"
+
 DHCPCD_CONF="/etc/dhcpcd.conf"
 BOXNO_FILE="/etc/pi-boxno"
 
-ts() { date +"%Y-%m-%d %H:%M:%S"; }
-log() { echo "[HOTSPOT $(ts)] $*" | tee -a "$LOGFILE"; }
-ok() { echo "[HOTSPOT $(ts)] [OK] $*" | tee -a "$LOGFILE"; }
-warn() { echo "[HOTSPOT $(ts)] [WARN] $*" | tee -a "$LOGFILE" >&2; }
-err() { echo "[HOTSPOT $(ts)] [ERR] $*" | tee -a "$LOGFILE" >&2; }
+ts() {
+  date +"%Y-%m-%d %H:%M:%S"
+}
+
+log() {
+  echo "[HOTSPOT $(ts)] $*" | tee -a "$LOGFILE"
+}
+
+ok() {
+  echo "[HOTSPOT $(ts)] [OK] $*" | tee -a "$LOGFILE"
+}
+
+warn() {
+  echo "[HOTSPOT $(ts)] [WARN] $*" | tee -a "$LOGFILE" >&2
+}
+
+err() {
+  echo "[HOTSPOT $(ts)] [ERR] $*" | tee -a "$LOGFILE" >&2
+}
 
 apt_safe() {
   apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"
@@ -91,26 +110,25 @@ get_box_number() {
 
 install_dependencies() {
   log "Installing hotspot dependencies"
-  apt_safe update -y
+  apt_safe update
   apt_safe install -y dnsmasq hostapd dhcpcd5 iproute2 iptables rfkill
 }
 
 stop_conflicting_wifi_clients() {
-  log "Stopping common wlan0 client-mode services if present"
+  log "Disabling interface-specific client Wi-Fi services for ${HOTSPOT_INTERFACE}"
 
   systemctl stop "wpa_supplicant@${HOTSPOT_INTERFACE}.service" 2>/dev/null || true
   systemctl disable "wpa_supplicant@${HOTSPOT_INTERFACE}.service" 2>/dev/null || true
 
-  systemctl stop wpa_supplicant.service 2>/dev/null || true
-  systemctl disable wpa_supplicant.service 2>/dev/null || true
-
   if systemctl list-unit-files NetworkManager.service >/dev/null 2>&1; then
-    warn "NetworkManager exists on this system. Leaving it installed, but marking ${HOTSPOT_INTERFACE} unmanaged if possible."
+    warn "NetworkManager exists; marking ${HOTSPOT_INTERFACE} unmanaged"
     mkdir -p /etc/NetworkManager/conf.d
+
     cat >/etc/NetworkManager/conf.d/initbox-unmanaged-wlan0.conf <<EOF
 [keyfile]
 unmanaged-devices=interface-name:${HOTSPOT_INTERFACE}
 EOF
+
     systemctl reload NetworkManager.service 2>/dev/null || systemctl restart NetworkManager.service 2>/dev/null || true
   fi
 }
@@ -146,7 +164,16 @@ EOF
 
   cat >"$HOSTAPD_DEFAULT" <<EOF
 DAEMON_CONF="${HOSTAPD_CONF}"
+DAEMON_OPTS=""
 EOF
+}
+
+remove_legacy_dnsmasq_fragments() {
+  log "Removing old InitBox dnsmasq fragments to avoid conflicting captive DNS"
+
+  rm -f "${DNSMASQ_DIR}/initbox-wlan.conf"
+  rm -f "${DNSMASQ_DIR}/initbox-captive-portal.conf"
+  rm -f "${DNSMASQ_DIR}/initbox-hotspot.conf"
 }
 
 write_dnsmasq_conf() {
@@ -155,6 +182,8 @@ write_dnsmasq_conf() {
 
   log "Writing ${DNSMASQ_CONF}"
 
+  mkdir -p "$DNSMASQ_DIR"
+
   if [ -f "$DNSMASQ_CONF" ] && ! grep -q '^# initbox-hotspot' "$DNSMASQ_CONF"; then
     cp "$DNSMASQ_CONF" "${DNSMASQ_CONF}.initbox.bak" 2>/dev/null || true
   fi
@@ -162,11 +191,13 @@ write_dnsmasq_conf() {
   cat >"$DNSMASQ_CONF" <<EOF
 # initbox-hotspot
 interface=${HOTSPOT_INTERFACE}
-bind-interfaces
+bind-dynamic
 dhcp-authoritative
+
 dhcp-range=${range}
 dhcp-option=3,${hip}
 dhcp-option=6,${hip}
+
 domain=initbox.wlan
 local=/initbox.wlan/
 
@@ -174,8 +205,9 @@ local=/initbox.wlan/
 address=/initbox.wlan/${hip}
 address=/initbox.local/${hip}
 
-# Field mode: resolve unknown names to the InitBox hotspot IP.
-# This supports captive portal behavior when there is no Internet uplink.
+# Field captive mode:
+# Resolve all DNS names to the InitBox hotspot IP.
+# This is the simple wildcard captive DNS trick.
 address=/#/${hip}
 
 # Android captive portal checks
@@ -196,6 +228,7 @@ address=/www.msftconnecttest.com/${hip}
 address=/ipv6.msftconnecttest.com/${hip}
 address=/msftncsi.com/${hip}
 address=/www.msftncsi.com/${hip}
+address=/dns.msftncsi.com/${hip}
 
 # Firefox captive portal check
 address=/detectportal.firefox.com/${hip}
@@ -209,8 +242,8 @@ write_dhcpcd_conf() {
 
   touch "$DHCPCD_CONF"
 
-  if grep -q '^# initbox-hotspot' "$DHCPCD_CONF"; then
-    sed -i '/^# initbox-hotspot/,+5d' "$DHCPCD_CONF"
+  if grep -q '^# initbox-hotspot$' "$DHCPCD_CONF"; then
+    sed -i '/^# initbox-hotspot$/,/^$/d' "$DHCPCD_CONF"
   fi
 
   cat >>"$DHCPCD_CONF" <<EOF
@@ -219,6 +252,7 @@ write_dhcpcd_conf() {
 interface ${HOTSPOT_INTERFACE}
     static ip_address=${hip}/24
     nohook wpa_supplicant
+
 EOF
 }
 
@@ -244,15 +278,44 @@ ExecStartPre=/usr/sbin/ip addr replace ${hip}/24 dev ${HOTSPOT_INTERFACE}
 EOF
 }
 
+write_dnsmasq_systemd_override() {
+  local hip="$1"
+
+  log "Writing dnsmasq systemd boot-order override"
+
+  mkdir -p "$DNSMASQ_OVERRIDE_DIR"
+
+  cat >"$DNSMASQ_OVERRIDE_FILE" <<EOF
+[Unit]
+After=dhcpcd.service hostapd.service
+Wants=dhcpcd.service hostapd.service
+
+[Service]
+Restart=always
+RestartSec=3
+ExecStartPre=/usr/sbin/ip link set ${HOTSPOT_INTERFACE} up
+ExecStartPre=/usr/sbin/ip addr replace ${hip}/24 dev ${HOTSPOT_INTERFACE}
+EOF
+}
+
 validate_configs() {
   log "Validating dnsmasq configuration"
   dnsmasq --test 2>&1 | tee -a "$LOGFILE"
 
-  log "Validating hostapd configuration"
-  hostapd -t "$HOSTAPD_CONF" 2>&1 | tee -a "$LOGFILE"
+  if [ ! -s "$HOSTAPD_CONF" ]; then
+    err "hostapd config is missing or empty: $HOSTAPD_CONF"
+    exit 1
+  fi
+
+  if ! grep -q "^interface=${HOTSPOT_INTERFACE}$" "$HOSTAPD_CONF"; then
+    err "hostapd config does not target ${HOTSPOT_INTERFACE}"
+    exit 1
+  fi
 }
 
 restart_hotspot_stack() {
+  local hip="$1"
+
   log "Unmasking and enabling hotspot stack"
 
   systemctl unmask hostapd 2>/dev/null || true
@@ -261,18 +324,20 @@ restart_hotspot_stack() {
   systemctl daemon-reload
 
   systemctl enable dhcpcd.service 2>/dev/null || true
-  systemctl enable dnsmasq.service 2>/dev/null || true
   systemctl enable hostapd.service 2>/dev/null || true
+  systemctl enable dnsmasq.service 2>/dev/null || true
 
   log "Restarting dhcpcd"
   systemctl restart dhcpcd.service 2>/dev/null || systemctl start dhcpcd.service 2>/dev/null || true
 
   log "Preparing ${HOTSPOT_INTERFACE}"
   ip link set "$HOTSPOT_INTERFACE" up
-  ip addr replace "${HIP}/24" dev "$HOTSPOT_INTERFACE"
+  ip addr replace "${hip}/24" dev "$HOTSPOT_INTERFACE"
 
   log "Restarting hostapd"
   systemctl restart hostapd.service
+
+  sleep 2
 
   log "Restarting dnsmasq"
   systemctl restart dnsmasq.service
@@ -281,14 +346,21 @@ restart_hotspot_stack() {
 }
 
 print_summary() {
+  local ssid="$1"
+  local hip="$2"
+  local range="$3"
+
   echo
   echo "InitBox hotspot installed"
   echo "-------------------------"
-  echo "SSID:       ${SSID}"
+  echo "SSID:       ${ssid}"
   echo "Password:   ${HOTSPOT_PASS}"
   echo "Interface:  ${HOTSPOT_INTERFACE}"
-  echo "IP:         ${HIP}/24"
-  echo "DHCP range: ${RANGE}"
+  echo "IP:         ${hip}/24"
+  echo "DHCP range: ${range}"
+  echo
+  echo "Captive DNS:"
+  echo "  address=/#/${hip}"
   echo
   echo "Check services:"
   echo "  sudo systemctl status hostapd dnsmasq dhcpcd --no-pager"
@@ -296,37 +368,46 @@ print_summary() {
   echo "Check wlan0:"
   echo "  ip -4 addr show ${HOTSPOT_INTERFACE}"
   echo
+  echo "Check DNS config:"
+  echo "  sudo dnsmasq --test"
+  echo "  sudo grep -n 'address=/#' /etc/dnsmasq.conf"
+  echo
   echo "Check logs:"
   echo "  sudo journalctl -u hostapd -u dnsmasq -u dhcpcd -b --no-pager -n 120"
 }
 
 main() {
   local boxno=""
+  local ssid=""
   local baseip=""
+  local hip=""
+  local range=""
 
   require_root
   ensure_log_dir
   install_dependencies
 
   boxno="$(get_box_number)"
-  SSID="initbox_${boxno}"
+  ssid="initbox_${boxno}"
   baseip="$(calc_hotspot_subnet)"
-  HIP="${baseip}.${boxno}"
-  RANGE="${baseip}.10,${baseip}.20,24h"
+  hip="${baseip}.${boxno}"
+  range="${baseip}.10,${baseip}.20,24h"
 
-  log "Hotspot SSID=${SSID}, IP=${HIP}, range=${RANGE}"
+  log "Hotspot SSID=${ssid}, IP=${hip}, range=${range}"
   log "HOTSPOT_PASS is set but not logged"
 
   stop_conflicting_wifi_clients
-  write_hostapd_conf "$SSID"
-  write_dnsmasq_conf "$HIP" "$RANGE"
-  write_dhcpcd_conf "$HIP"
-  write_hostapd_systemd_override "$HIP"
+  write_hostapd_conf "$ssid"
+  remove_legacy_dnsmasq_fragments
+  write_dnsmasq_conf "$hip" "$range"
+  write_dhcpcd_conf "$hip"
+  write_hostapd_systemd_override "$hip"
+  write_dnsmasq_systemd_override "$hip"
   validate_configs
-  restart_hotspot_stack
-  print_summary
+  restart_hotspot_stack "$hip"
+  print_summary "$ssid" "$hip" "$range"
 
-  ok "Hotspot module installed. Connect to SSID '${SSID}'."
+  ok "Hotspot module installed. Connect to SSID '${ssid}'."
 }
 
 main "$@"
