@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 
-# InitBox Pi Zero 2W Web Terminal and captive portal module
+# InitBox Pi Zero 2W Web Terminal module
 #
 # Installs and enables:
-#   - ttyd Web Terminal on port 7681
-#   - captive portal redirect from wlan0:80 to ttyd:7681
+#   - ttyd Web Terminal directly on port 80
 #
-# User-facing URLs:
+# User-facing URL:
 #   http://initbox.wlan/
-#   http://initbox.wlan:7681/
 #
 # This module assumes the hotspot module provides:
 #   - hostapd access point
@@ -19,27 +17,26 @@
 #
 # This module owns only:
 #   - ttyd binary installation if missing
-#   - ttyd service
-#   - iptables redirect from port 80 to port 7681
+#   - ttyd.service on port 80
 #
 # It must not replace or duplicate the hotspot module's DHCP, DNS,
-# wlan0 IP, dnsmasq.conf, or hostapd ownership.
+# wlan0 IP, dnsmasq.conf, hostapd ownership, or captive DNS.
 
 set -euo pipefail
 
-MODULE_NAME="Web Terminal and Captive Portal"
+MODULE_NAME="Web Terminal"
 
 OWNER="${OWNER:-initbox}"
 PORTAL_HOSTNAME="${PORTAL_HOSTNAME:-initbox.wlan}"
-TERMINAL_PORT="${TERMINAL_PORT:-7681}"
-CAPTIVE_PORTAL_PORT="${CAPTIVE_PORTAL_PORT:-80}"
+TERMINAL_PORT="${TERMINAL_PORT:-80}"
 HOTSPOT_INTERFACE="${HOTSPOT_INTERFACE:-wlan0}"
 TTYD_VERSION="${TTYD_VERSION:-1.7.7}"
 
 TTYD_INSTALL_PATH="/usr/local/bin/ttyd"
 TTYD_SERVICE_FILE="/etc/systemd/system/ttyd.service"
-PORTAL_SCRIPT="/usr/local/bin/initbox-ttyd-portal.sh"
-PORTAL_SERVICE_FILE="/etc/systemd/system/initbox-ttyd-portal.service"
+
+OLD_PORTAL_SCRIPT="/usr/local/bin/initbox-ttyd-portal.sh"
+OLD_PORTAL_SERVICE_FILE="/etc/systemd/system/initbox-ttyd-portal.service"
 OLD_CAPTIVE_SCRIPT="/usr/local/sbin/initbox-captive-portal.py"
 OLD_CAPTIVE_SERVICE_FILE="/etc/systemd/system/initbox-captive-portal.service"
 
@@ -81,10 +78,6 @@ install_base_packages() {
 
   if ! command_exists update-ca-certificates; then
     packages+=("ca-certificates")
-  fi
-
-  if ! command_exists iptables; then
-    packages+=("iptables")
   fi
 
   if [ "${#packages[@]}" -eq 0 ]; then
@@ -203,13 +196,12 @@ check_hotspot_dns_owner() {
   if ! grep -q "^address=/#/${hotspot_ip}$" /etc/dnsmasq.conf; then
     warn "wildcard captive DNS was not found in /etc/dnsmasq.conf"
     warn "expected: address=/#/${hotspot_ip}"
-    warn "the hotspot may still work, but captive portal detection may not trigger"
+    warn "captive portal detection may not trigger"
   fi
 
   if ! grep -q "^dhcp-option=6,${hotspot_ip}$" /etc/dnsmasq.conf; then
     warn "DHCP DNS option was not found in /etc/dnsmasq.conf"
     warn "expected: dhcp-option=6,${hotspot_ip}"
-    warn "clients must receive the Pi as DNS server for captive portal detection"
   fi
 }
 
@@ -220,18 +212,32 @@ remove_old_web_terminal_dns_fragments() {
   rm -f /etc/dnsmasq.d/initbox-captive-portal.conf
 }
 
-remove_old_python_captive_portal() {
-  log "removing old Python captive portal service if present"
+remove_old_portal_services() {
+  log "removing old captive portal services and scripts if present"
 
   systemctl disable --now initbox-captive-portal.service 2>/dev/null || true
+  systemctl disable --now initbox-ttyd-portal.service 2>/dev/null || true
+
   rm -f "$OLD_CAPTIVE_SERVICE_FILE"
   rm -f "$OLD_CAPTIVE_SCRIPT"
+  rm -f "$OLD_PORTAL_SERVICE_FILE"
+  rm -f "$OLD_PORTAL_SCRIPT"
+}
+
+remove_old_portal_redirect_rule() {
+  log "removing old wlan0 port 80 to 7681 redirect rule if present"
+
+  while iptables -t nat -C PREROUTING -i "$HOTSPOT_INTERFACE" -p tcp --dport 80 \
+    -j REDIRECT --to-ports 7681 2>/dev/null; do
+    iptables -t nat -D PREROUTING -i "$HOTSPOT_INTERFACE" -p tcp --dport 80 \
+      -j REDIRECT --to-ports 7681
+  done
 }
 
 write_ttyd_service() {
   local ttyd_bin="$1"
 
-  log "writing ttyd systemd service using $ttyd_bin"
+  log "writing ttyd systemd service using $ttyd_bin on port $TERMINAL_PORT"
 
   cat >"$TTYD_SERVICE_FILE" <<EOF
 [Unit]
@@ -246,53 +252,12 @@ Group=$OWNER
 WorkingDirectory=/home/$OWNER
 Environment=HOME=/home/$OWNER
 Environment=USER=$OWNER
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=false
 ExecStart=$ttyd_bin -W --interface 0.0.0.0 --port $TERMINAL_PORT /bin/bash -l
 Restart=always
 RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
-}
-
-write_portal_redirect_script() {
-  log "writing portal redirect script"
-
-  cat >"$PORTAL_SCRIPT" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-IFACE="${HOTSPOT_INTERFACE:-wlan0}"
-FROM_PORT="${CAPTIVE_PORTAL_PORT:-80}"
-TO_PORT="${TERMINAL_PORT:-7681}"
-
-if ! iptables -t nat -C PREROUTING -i "$IFACE" -p tcp --dport "$FROM_PORT" \
-  -j REDIRECT --to-ports "$TO_PORT" 2>/dev/null; then
-  iptables -t nat -A PREROUTING -i "$IFACE" -p tcp --dport "$FROM_PORT" \
-    -j REDIRECT --to-ports "$TO_PORT"
-fi
-EOF
-
-  chmod 755 "$PORTAL_SCRIPT"
-  chown root:root "$PORTAL_SCRIPT" 2>/dev/null || true
-}
-
-write_portal_redirect_service() {
-  log "writing portal redirect systemd service"
-
-  cat >"$PORTAL_SERVICE_FILE" <<EOF
-[Unit]
-Description=InitBox captive portal redirect (${CAPTIVE_PORTAL_PORT} -> ${TERMINAL_PORT})
-After=network.target hostapd.service dnsmasq.service ttyd.service
-Wants=hostapd.service dnsmasq.service ttyd.service
-
-[Service]
-Type=oneshot
-Environment=HOTSPOT_INTERFACE=$HOTSPOT_INTERFACE
-Environment=CAPTIVE_PORTAL_PORT=$CAPTIVE_PORTAL_PORT
-Environment=TERMINAL_PORT=$TERMINAL_PORT
-ExecStart=$PORTAL_SCRIPT
-RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
@@ -316,43 +281,36 @@ restart_services() {
   log "enabling ttyd"
   systemctl enable --now ttyd.service
   systemctl restart ttyd.service
-
-  log "enabling portal redirect"
-  systemctl enable --now initbox-ttyd-portal.service
-  systemctl restart initbox-ttyd-portal.service
 }
 
 print_summary() {
   local hotspot_ip="$1"
 
   echo
-  echo "Web Terminal and captive portal redirect installed"
-  echo "--------------------------------------------------"
-  echo "Captive portal URL: http://$PORTAL_HOSTNAME/"
-  echo "Web Terminal URL:   http://$PORTAL_HOSTNAME:$TERMINAL_PORT/"
-  echo "Hotspot IP:         $hotspot_ip"
+  echo "Web Terminal installed"
+  echo "----------------------"
+  echo "Web Terminal URL: http://$PORTAL_HOSTNAME/"
+  echo "Hotspot IP:       $hotspot_ip"
   echo
   echo "Expected behavior:"
-  echo "  - http://$PORTAL_HOSTNAME/ redirects at iptables level to ttyd on port $TERMINAL_PORT"
-  echo "  - http://$PORTAL_HOSTNAME:$TERMINAL_PORT/ opens ttyd directly"
+  echo "  - http://$PORTAL_HOSTNAME/ opens ttyd directly on port $TERMINAL_PORT"
   echo "  - ttyd login user: $OWNER"
   echo "  - ttyd keyboard input: enabled by -W"
+  echo "  - no Python captive portal"
+  echo "  - no iptables redirect service"
   echo
   echo "DNS ownership:"
   echo "  - Hotspot module owns /etc/dnsmasq.conf"
-  echo "  - Web terminal module does not write dnsmasq captive DNS"
   echo "  - Expected wildcard rule: address=/#/$hotspot_ip"
   echo
   echo "Check services:"
-  echo "  sudo systemctl status hostapd dnsmasq ttyd initbox-ttyd-portal --no-pager"
+  echo "  sudo systemctl status hostapd dnsmasq ttyd --no-pager"
   echo
-  echo "Check ports and redirect:"
-  echo "  sudo ss -tulpn | grep -E ':53|:67|:$TERMINAL_PORT'"
-  echo "  sudo iptables -t nat -S PREROUTING"
+  echo "Check port:"
+  echo "  sudo ss -tulpn | grep ':80'"
   echo
   echo "Manual tests:"
-  echo "  curl -I http://127.0.0.1:$TERMINAL_PORT/"
-  echo "  curl -I http://$PORTAL_HOSTNAME:$TERMINAL_PORT/"
+  echo "  curl -I http://127.0.0.1/"
   echo "  From a Wi-Fi client: open http://$PORTAL_HOSTNAME/"
 }
 
@@ -369,10 +327,9 @@ main() {
 
   check_hotspot_dns_owner "$hotspot_ip"
   remove_old_web_terminal_dns_fragments
-  remove_old_python_captive_portal
+  remove_old_portal_services
+  remove_old_portal_redirect_rule
   write_ttyd_service "$ttyd_bin"
-  write_portal_redirect_script
-  write_portal_redirect_service
   restart_services
   print_summary "$hotspot_ip"
 }
