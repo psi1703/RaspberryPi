@@ -335,7 +335,7 @@ sanity_check_no_markdown_fences() {
     return 1
   fi
 
-  sanity_pass "file has no Markdown fence contamination: $path"
+  sanity_pass "file has no error: $path"
   return 0
 }
 
