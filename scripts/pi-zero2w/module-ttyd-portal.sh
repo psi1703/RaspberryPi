@@ -4,14 +4,15 @@
 #
 # Installs and enables:
 #   - ttyd Web Terminal on port 7681
-#   - lightweight captive portal redirect service on port 80
+#   - lightweight captive portal landing service on port 80
 #
 # User-facing URL:
 #   http://initbox.wlan/
 #   http://initbox.wlan:7681/
 #
 # This module assumes the hotspot/dnsmasq module provides DHCP/DNS.
-# It also ensures dnsmasq resolves initbox.wlan to the wlan0 hotspot IP.
+# It ensures dnsmasq resolves initbox.wlan and common captive-check
+# domains to the wlan0 hotspot IP.
 
 set -euo pipefail
 
@@ -21,7 +22,7 @@ TERMINAL_PORT="7681"
 CAPTIVE_PORTAL_PORT="80"
 HOTSPOT_INTERFACE="${HOTSPOT_INTERFACE:-wlan0}"
 
-TTyd_SERVICE_FILE="/etc/systemd/system/ttyd.service"
+TTYD_SERVICE_FILE="/etc/systemd/system/ttyd.service"
 CAPTIVE_SCRIPT="/usr/local/sbin/initbox-captive-portal.sh"
 CAPTIVE_SERVICE_FILE="/etc/systemd/system/initbox-captive-portal.service"
 DNSMASQ_DIR="/etc/dnsmasq.d"
@@ -87,7 +88,7 @@ get_hotspot_ip() {
 write_ttyd_service() {
   log "writing ttyd systemd service"
 
-  cat >"$TTyd_SERVICE_FILE" <<EOF
+  cat >"$TTYD_SERVICE_FILE" <<EOF
 [Unit]
 Description=InitBox Web Terminal
 After=network-online.target
@@ -107,19 +108,40 @@ EOF
 write_dnsmasq_hostname_config() {
   local hotspot_ip="$1"
 
-  log "ensuring dnsmasq hostname: $PORTAL_HOSTNAME -> $hotspot_ip"
+  log "ensuring captive portal DNS resolves to $hotspot_ip"
 
   mkdir -p "$DNSMASQ_DIR"
 
   cat >"$DNSMASQ_INITBOX_FILE" <<EOF
-# InitBox local hotspot hostname
+# InitBox local hotspot hostname and captive portal DNS
 # Managed by scripts/pi-zero2w/module-ttyd-portal.sh
+
+# Friendly local InitBox name.
 address=/$PORTAL_HOSTNAME/$hotspot_ip
+
+# Android captive portal checks.
+address=/connectivitycheck.gstatic.com/$hotspot_ip
+address=/clients3.google.com/$hotspot_ip
+address=/connectivitycheck.android.com/$hotspot_ip
+address=/www.google.com/$hotspot_ip
+
+# Apple captive portal checks.
+address=/captive.apple.com/$hotspot_ip
+address=/www.apple.com/$hotspot_ip
+
+# Windows captive portal checks.
+address=/www.msftconnecttest.com/$hotspot_ip
+address=/msftconnecttest.com/$hotspot_ip
+
+# Field mode: resolve all other names to the InitBox hotspot IP while clients
+# are connected to the InitBox Wi-Fi. This helps captive portal detection land
+# on the local port-80 portal page instead of failing silently.
+address=/#/$hotspot_ip
 EOF
 }
 
 write_captive_portal_script() {
-  log "writing captive portal redirect script"
+  log "writing captive portal landing script"
 
   cat >"$CAPTIVE_SCRIPT" <<'EOF'
 #!/usr/bin/env bash
@@ -138,9 +160,10 @@ require_nc() {
 
 serve_once() {
   {
-    printf 'HTTP/1.1 302 Found\r\n'
-    printf 'Location: %s\r\n' "$TARGET_URL"
+    printf 'HTTP/1.1 200 OK\r\n'
     printf 'Content-Type: text/html; charset=utf-8\r\n'
+    printf 'Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n'
+    printf 'Pragma: no-cache\r\n'
     printf 'Connection: close\r\n'
     printf '\r\n'
     printf '<!doctype html>\n'
@@ -148,13 +171,14 @@ serve_once() {
     printf '<head>\n'
     printf '  <meta charset="utf-8">\n'
     printf '  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
-    printf '  <meta http-equiv="refresh" content="0; url=%s">\n' "$TARGET_URL"
-    printf '  <title>InitBox</title>\n'
+    printf '  <title>InitBox Login</title>\n'
     printf '</head>\n'
-    printf '<body>\n'
+    printf '<body style="font-family:sans-serif;padding:24px;max-width:640px;margin:auto;">\n'
     printf '  <h1>InitBox</h1>\n'
-    printf '  <p>Opening Web Terminal...</p>\n'
-    printf '  <p><a href="%s">Open InitBox Web Terminal</a></p>\n' "$TARGET_URL"
+    printf '  <p>This Wi-Fi network provides local InitBox access only.</p>\n'
+    printf '  <p>Use the Web Terminal to manage this unit.</p>\n'
+    printf '  <p><a style="display:inline-block;padding:12px 16px;background:#111;color:#fff;text-decoration:none;border-radius:6px;" href="%s">Open InitBox Web Terminal</a></p>\n' "$TARGET_URL"
+    printf '  <p>Direct URL: <a href="%s">%s</a></p>\n' "$TARGET_URL" "$TARGET_URL"
     printf '</body>\n'
     printf '</html>\n'
   } | nc -l -p "$PORT" -q 1
@@ -180,11 +204,11 @@ write_captive_portal_service() {
 
   terminal_url="http://$PORTAL_HOSTNAME:$TERMINAL_PORT/"
 
-  log "writing captive portal service redirecting to $terminal_url"
+  log "writing captive portal service for $terminal_url"
 
   cat >"$CAPTIVE_SERVICE_FILE" <<EOF
 [Unit]
-Description=InitBox captive portal redirect to Web Terminal
+Description=InitBox captive portal landing page for Web Terminal
 After=network-online.target dnsmasq.service ttyd.service
 Wants=network-online.target
 
@@ -216,6 +240,7 @@ restart_services() {
 
   log "enabling captive portal"
   systemctl enable --now initbox-captive-portal.service
+  systemctl restart initbox-captive-portal.service
 }
 
 print_summary() {
@@ -225,6 +250,12 @@ print_summary() {
   echo "Captive portal URL: http://$PORTAL_HOSTNAME/"
   echo "Web Terminal URL:   http://$PORTAL_HOSTNAME:$TERMINAL_PORT/"
   echo
+  echo "Phone testing steps:"
+  echo "  1. Forget the InitBox Wi-Fi network on the phone."
+  echo "  2. Disable mobile data temporarily if captive prompt does not appear."
+  echo "  3. Reconnect to the InitBox hotspot."
+  echo "  4. Wait for the Action needed / Sign in prompt."
+  echo
   echo "Check services:"
   echo "  sudo systemctl status ttyd --no-pager"
   echo "  sudo systemctl status initbox-captive-portal --no-pager"
@@ -232,6 +263,12 @@ print_summary() {
   echo
   echo "Check ports:"
   echo "  sudo ss -tulpn | grep -E ':80|:53|:67|:7681'"
+  echo
+  echo "Check captive DNS:"
+  echo "  getent hosts initbox.wlan"
+  echo "  getent hosts connectivitycheck.gstatic.com"
+  echo "  getent hosts captive.apple.com"
+  echo "  getent hosts www.msftconnecttest.com"
 }
 
 main() {
