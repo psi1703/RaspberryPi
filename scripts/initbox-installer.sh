@@ -14,10 +14,10 @@
 
 set -euo pipefail
 
-PROFILE_ID="${1:-}"
+REQUESTED_PROFILE_ID="${1:-}"
 ACTION="${2:-menu}"
 
-if [ -z "$PROFILE_ID" ]; then
+if [ -z "$REQUESTED_PROFILE_ID" ]; then
   echo "ERROR: profile id is required."
   echo
   echo "Usage:"
@@ -35,6 +35,19 @@ LOG_DIR="/var/log/initbox"
 LOG_FILE="$LOG_DIR/install.log"
 LEGACY_MODULE_LOG_DIR="/home/initbox/pi_logs"
 LEGACY_MODULE_LOG_FILE="$LEGACY_MODULE_LOG_DIR/initbox-install.log"
+
+PROFILE_ID=""
+PROFILE_NAME=""
+PROFILE_DESCRIPTION=""
+PROFILE_NOTES=""
+REQUIRES_LAB_INTERNET=""
+FIELD_INSTALL_ALLOWED=""
+SUPPORTS_DASHBOARD=""
+SUPPORTS_WEB_TERMINAL=""
+DEFAULT_MODULES=""
+PRIMARY_MANAGEMENT_INTERFACE=""
+MODULE_DASHBOARD=""
+INITBOX_STATE_FILE="/etc/initbox/install-state.env"
 
 bootstrap_repo_permissions() {
   local path
@@ -111,7 +124,7 @@ bootstrap_repo_permissions
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/state.sh"
 
-initbox_load_profile "$PROFILE_ID"
+initbox_load_profile "$REQUESTED_PROFILE_ID"
 
 SUPPORTED_MODULES=()
 
