@@ -317,12 +317,20 @@ sanity_check_file() {
 
 sanity_check_no_markdown_fences() {
   local path="$1"
+  local file_path=""
+  local backtick=""
+  local markdown_fence=""
 
-  if [ ! -f "$REPO_ROOT/$path" ]; then
+  file_path="$REPO_ROOT/$path"
+
+  if [ ! -f "$file_path" ]; then
     return 0
   fi
 
-  if grep -q '```' "$REPO_ROOT/$path"; then
+  backtick="$(printf '\140')"
+  markdown_fence="${backtick}${backtick}${backtick}"
+
+  if grep -qF "$markdown_fence" "$file_path"; then
     sanity_fail "file contains Markdown fence contamination: $path"
     return 1
   fi
