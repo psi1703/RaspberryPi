@@ -3,87 +3,135 @@ set -euo pipefail
 
 : "${OWNER:=initbox}"
 : "${HOTSPOT_PASS:=TomatoH34d}"
+: "${HOTSPOT_INTERFACE:=wlan0}"
 : "${LOGFILE:=/home/${OWNER}/pi_logs/initbox-install.log}"
 
-ts(){ date +"%Y-%m-%d %H:%M:%S"; }
-log(){  echo "[HOTSPOT $(ts)] $*" | tee -a "$LOGFILE"; }
-ok(){   echo "[HOTSPOT $(ts)] [OK] $*" | tee -a "$LOGFILE"; }
-warn(){ echo "[HOTSPOT $(ts)] [WARN] $*" | tee -a "$LOGFILE" >&2; }
-err(){  echo "[HOTSPOT $(ts)] [ERR] $*" | tee -a "$LOGFILE" >&2; }
+HOSTAPD_CONF="/etc/hostapd/hostapd.conf"
+HOSTAPD_DEFAULT="/etc/default/hostapd"
+HOSTAPD_OVERRIDE_DIR="/etc/systemd/system/hostapd.service.d"
+HOSTAPD_OVERRIDE_FILE="${HOSTAPD_OVERRIDE_DIR}/initbox-hotspot.conf"
+DNSMASQ_CONF="/etc/dnsmasq.conf"
+DHCPCD_CONF="/etc/dhcpcd.conf"
+BOXNO_FILE="/etc/pi-boxno"
 
-apt_safe(){ apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"; }
+ts() { date +"%Y-%m-%d %H:%M:%S"; }
+log() { echo "[HOTSPOT $(ts)] $*" | tee -a "$LOGFILE"; }
+ok() { echo "[HOTSPOT $(ts)] [OK] $*" | tee -a "$LOGFILE"; }
+warn() { echo "[HOTSPOT $(ts)] [WARN] $*" | tee -a "$LOGFILE" >&2; }
+err() { echo "[HOTSPOT $(ts)] [ERR] $*" | tee -a "$LOGFILE" >&2; }
 
-ask(){
-  local prompt="$1" default="$2" reply
+apt_safe() {
+  apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"
+}
+
+ask() {
+  local prompt="$1"
+  local default="$2"
+  local reply=""
+
   if [ -t 0 ]; then
-    read -rp "$prompt [$default]: " reply
+    read -r -p "$prompt [$default]: " reply
     echo "${reply:-$default}"
   else
     echo "$default"
   fi
 }
 
-calc_hotspot_subnet(){
-  local m
-  m="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo "")"
-  case "$m" in
-    *Zero*)                 echo "192.168.20" ;;
-    *"Raspberry Pi 3"*)     echo "192.168.30" ;;
-    *"Raspberry Pi 4"*)     echo "192.168.40" ;;
-    *"Raspberry Pi 5"*)     echo "192.168.50" ;;
-    *)                      echo "192.168.20" ;;
+require_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    err "this module must be run as root"
+    exit 1
+  fi
+}
+
+ensure_log_dir() {
+  mkdir -p "$(dirname "$LOGFILE")"
+  touch "$LOGFILE"
+  chown "$OWNER:$OWNER" "$LOGFILE" 2>/dev/null || true
+}
+
+calc_hotspot_subnet() {
+  local model=""
+
+  model="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo "")"
+
+  case "$model" in
+    *Zero*) echo "192.168.20" ;;
+    *"Raspberry Pi 3"*) echo "192.168.30" ;;
+    *"Raspberry Pi 4"*) echo "192.168.40" ;;
+    *"Raspberry Pi 5"*) echo "192.168.50" ;;
+    *) echo "192.168.20" ;;
   esac
 }
 
-hostapd_stack_up(){
-  log "Unmasking and enabling hotspot stack …"
-  systemctl unmask hostapd 2>/dev/null || true
+get_box_number() {
+  local boxno=""
 
-  if [[ -f /etc/default/hostapd ]]; then
-    sed -i 's|^#\?DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd 2>/dev/null || true
+  if [ -r "$BOXNO_FILE" ]; then
+    boxno="$(cat "$BOXNO_FILE" 2>/dev/null || echo "1")"
   else
-    echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' >/etc/default/hostapd
+    boxno="$(ask 'Enter BOX number (last octet, e.g., 1)' '1')"
+    echo "$boxno" >"$BOXNO_FILE"
   fi
 
-  rfkill unblock wifi 2>/dev/null || rfkill unblock all 2>/dev/null || true
+  if ! echo "$boxno" | grep -Eq '^[0-9]+$'; then
+    warn "invalid BOX number '$boxno'; using 1"
+    boxno="1"
+    echo "$boxno" >"$BOXNO_FILE"
+  fi
 
-  systemctl daemon-reload
-  systemctl enable dhcpcd dnsmasq hostapd 2>/dev/null || true
-  systemctl restart dhcpcd 2>/dev/null || systemctl start dhcpcd || true
-  systemctl restart dnsmasq 2>/dev/null || systemctl start dnsmasq || true
-  systemctl restart hostapd 2>/dev/null || systemctl start hostapd || true
+  if [ "$boxno" -lt 1 ] || [ "$boxno" -gt 254 ]; then
+    warn "BOX number '$boxno' outside valid range 1-254; using 1"
+    boxno="1"
+    echo "$boxno" >"$BOXNO_FILE"
+  fi
+
+  echo "$boxno"
 }
 
-log "Installing hotspot dependencies …"
-apt_safe update -y
-apt_safe install -y dnsmasq hostapd dhcpcd5 iproute2 iptables
+install_dependencies() {
+  log "Installing hotspot dependencies"
+  apt_safe update -y
+  apt_safe install -y dnsmasq hostapd dhcpcd5 iproute2 iptables rfkill
+}
 
-BOXNO_FILE="/etc/pi-boxno"
-if [[ -r "$BOXNO_FILE" ]]; then
-  BOXNO="$(cat "$BOXNO_FILE" 2>/dev/null || echo 1)"
-else
-  BOXNO="$(ask 'Enter BOX number (last octet, e.g., 1)' '1')"
-  echo "$BOXNO" >"$BOXNO_FILE"
-fi
+stop_conflicting_wifi_clients() {
+  log "Stopping common wlan0 client-mode services if present"
 
-SSID="initbox_${BOXNO}"
-BASEIP="$(calc_hotspot_subnet)"
-HIP="${BASEIP}.${BOXNO}"
-RANGE="${BASEIP}.10,${BASEIP}.20,24h"
+  systemctl stop "wpa_supplicant@${HOTSPOT_INTERFACE}.service" 2>/dev/null || true
+  systemctl disable "wpa_supplicant@${HOTSPOT_INTERFACE}.service" 2>/dev/null || true
 
-log "Hotspot SSID=${SSID}, IP=${HIP}, range=${RANGE}"
-log "HOTSPOT_PASS is set (not logged)."
+  systemctl stop wpa_supplicant.service 2>/dev/null || true
+  systemctl disable wpa_supplicant.service 2>/dev/null || true
 
-log "Writing /etc/hostapd/hostapd.conf …"
-cat >/etc/hostapd/hostapd.conf <<EOF
+  if systemctl list-unit-files NetworkManager.service >/dev/null 2>&1; then
+    warn "NetworkManager exists on this system. Leaving it installed, but marking ${HOTSPOT_INTERFACE} unmanaged if possible."
+    mkdir -p /etc/NetworkManager/conf.d
+    cat >/etc/NetworkManager/conf.d/initbox-unmanaged-wlan0.conf <<EOF
+[keyfile]
+unmanaged-devices=interface-name:${HOTSPOT_INTERFACE}
+EOF
+    systemctl reload NetworkManager.service 2>/dev/null || systemctl restart NetworkManager.service 2>/dev/null || true
+  fi
+}
+
+write_hostapd_conf() {
+  local ssid="$1"
+
+  log "Writing ${HOSTAPD_CONF}"
+
+  mkdir -p /etc/hostapd
+
+  cat >"$HOSTAPD_CONF" <<EOF
 # initbox-hotspot
 country_code=AE
-interface=wlan0
+interface=${HOTSPOT_INTERFACE}
 driver=nl80211
-ssid=${SSID}
+ssid=${ssid}
 hw_mode=g
-channel=7
-wmm_enabled=0
+channel=6
+wmm_enabled=1
+ieee80211n=1
 macaddr_acl=0
 auth_algs=1
 ignore_broadcast_ssid=0
@@ -92,58 +140,193 @@ wpa_passphrase=${HOTSPOT_PASS}
 wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 EOF
-chown root:root /etc/hostapd/hostapd.conf
-chmod 600 /etc/hostapd/hostapd.conf
 
-log "Configuring dnsmasq for wlan0 …"
-if [[ -f /etc/dnsmasq.conf ]] && ! grep -q 'initbox-hotspot' /etc/dnsmasq.conf; then
-  cp /etc/dnsmasq.conf /etc/dnsmasq.conf.initbox.bak 2>/dev/null || true
-fi
+  chown root:root "$HOSTAPD_CONF"
+  chmod 600 "$HOSTAPD_CONF"
 
-cat >/etc/dnsmasq.conf <<EOF
-# initbox-hotspot
-interface=wlan0
-dhcp-range=${RANGE}
-domain=wlan0
-
-# Local dashboard name
-address=/#/${HIP}
-
-# Captive portal / connectivity-check domains
-# Android
-address=/connectivitycheck.gstatic.com/${HIP}
-address=/clients3.google.com/${HIP}
-
-# Apple
-address=/captive.apple.com/${HIP}
-address=/www.apple.com/${HIP}
-
-# Windows
-address=/msftconnecttest.com/${HIP}
-address=/msftncsi.com/${HIP}
-
-# Firefox
-address=/detectportal.firefox.com/${HIP}
+  cat >"$HOSTAPD_DEFAULT" <<EOF
+DAEMON_CONF="${HOSTAPD_CONF}"
 EOF
+}
 
-DHCPCD_CONF="/etc/dhcpcd.conf"
-log "Ensuring static IP for wlan0 in ${DHCPCD_CONF} …"
-if [[ -f "$DHCPCD_CONF" ]]; then
-  if grep -q '^# initbox-hotspot' "$DHCPCD_CONF"; then
-    sed -i '/^# initbox-hotspot/,+4d' "$DHCPCD_CONF"
+write_dnsmasq_conf() {
+  local hip="$1"
+  local range="$2"
+
+  log "Writing ${DNSMASQ_CONF}"
+
+  if [ -f "$DNSMASQ_CONF" ] && ! grep -q '^# initbox-hotspot' "$DNSMASQ_CONF"; then
+    cp "$DNSMASQ_CONF" "${DNSMASQ_CONF}.initbox.bak" 2>/dev/null || true
   fi
-else
-  touch "$DHCPCD_CONF"
-fi
 
-cat >>"$DHCPCD_CONF" <<EOF
+  cat >"$DNSMASQ_CONF" <<EOF
+# initbox-hotspot
+interface=${HOTSPOT_INTERFACE}
+bind-interfaces
+dhcp-authoritative
+dhcp-range=${range}
+dhcp-option=3,${hip}
+dhcp-option=6,${hip}
+domain=initbox.wlan
+local=/initbox.wlan/
+
+# Local InitBox names
+address=/initbox.wlan/${hip}
+address=/initbox.local/${hip}
+
+# Field mode: resolve unknown names to the InitBox hotspot IP.
+# This supports captive portal behavior when there is no Internet uplink.
+address=/#/${hip}
+
+# Android captive portal checks
+address=/connectivitycheck.gstatic.com/${hip}
+address=/connectivitycheck.android.com/${hip}
+address=/clients3.google.com/${hip}
+address=/www.gstatic.com/${hip}
+address=/www.google.com/${hip}
+
+# Apple captive portal checks
+address=/captive.apple.com/${hip}
+address=/www.apple.com/${hip}
+address=/www.appleiphonecell.com/${hip}
+
+# Windows captive portal checks
+address=/msftconnecttest.com/${hip}
+address=/www.msftconnecttest.com/${hip}
+address=/ipv6.msftconnecttest.com/${hip}
+address=/msftncsi.com/${hip}
+address=/www.msftncsi.com/${hip}
+
+# Firefox captive portal check
+address=/detectportal.firefox.com/${hip}
+EOF
+}
+
+write_dhcpcd_conf() {
+  local hip="$1"
+
+  log "Ensuring static IP for ${HOTSPOT_INTERFACE} in ${DHCPCD_CONF}"
+
+  touch "$DHCPCD_CONF"
+
+  if grep -q '^# initbox-hotspot' "$DHCPCD_CONF"; then
+    sed -i '/^# initbox-hotspot/,+5d' "$DHCPCD_CONF"
+  fi
+
+  cat >>"$DHCPCD_CONF" <<EOF
 
 # initbox-hotspot
-interface wlan0
-    static ip_address=${HIP}/24
+interface ${HOTSPOT_INTERFACE}
+    static ip_address=${hip}/24
     nohook wpa_supplicant
 EOF
+}
 
-hostapd_stack_up
+write_hostapd_systemd_override() {
+  local hip="$1"
 
-log "Hotspot module installed. Connect to SSID '${SSID}' with password '${HOTSPOT_PASS}' for SSH."
+  log "Writing hostapd systemd boot-order override"
+
+  mkdir -p "$HOSTAPD_OVERRIDE_DIR"
+
+  cat >"$HOSTAPD_OVERRIDE_FILE" <<EOF
+[Unit]
+After=systemd-rfkill.service dhcpcd.service
+Wants=systemd-rfkill.service dhcpcd.service
+
+[Service]
+Restart=always
+RestartSec=3
+ExecStartPre=/bin/sleep 5
+ExecStartPre=/usr/sbin/rfkill unblock wifi
+ExecStartPre=/usr/sbin/ip link set ${HOTSPOT_INTERFACE} up
+ExecStartPre=/usr/sbin/ip addr replace ${hip}/24 dev ${HOTSPOT_INTERFACE}
+EOF
+}
+
+validate_configs() {
+  log "Validating dnsmasq configuration"
+  dnsmasq --test 2>&1 | tee -a "$LOGFILE"
+
+  log "Validating hostapd configuration"
+  hostapd -t "$HOSTAPD_CONF" 2>&1 | tee -a "$LOGFILE"
+}
+
+restart_hotspot_stack() {
+  log "Unmasking and enabling hotspot stack"
+
+  systemctl unmask hostapd 2>/dev/null || true
+  rfkill unblock wifi 2>/dev/null || rfkill unblock all 2>/dev/null || true
+
+  systemctl daemon-reload
+
+  systemctl enable dhcpcd.service 2>/dev/null || true
+  systemctl enable dnsmasq.service 2>/dev/null || true
+  systemctl enable hostapd.service 2>/dev/null || true
+
+  log "Restarting dhcpcd"
+  systemctl restart dhcpcd.service 2>/dev/null || systemctl start dhcpcd.service 2>/dev/null || true
+
+  log "Preparing ${HOTSPOT_INTERFACE}"
+  ip link set "$HOTSPOT_INTERFACE" up
+  ip addr replace "${HIP}/24" dev "$HOTSPOT_INTERFACE"
+
+  log "Restarting hostapd"
+  systemctl restart hostapd.service
+
+  log "Restarting dnsmasq"
+  systemctl restart dnsmasq.service
+
+  ok "Hotspot stack restarted"
+}
+
+print_summary() {
+  echo
+  echo "InitBox hotspot installed"
+  echo "-------------------------"
+  echo "SSID:       ${SSID}"
+  echo "Password:   ${HOTSPOT_PASS}"
+  echo "Interface:  ${HOTSPOT_INTERFACE}"
+  echo "IP:         ${HIP}/24"
+  echo "DHCP range: ${RANGE}"
+  echo
+  echo "Check services:"
+  echo "  sudo systemctl status hostapd dnsmasq dhcpcd --no-pager"
+  echo
+  echo "Check wlan0:"
+  echo "  ip -4 addr show ${HOTSPOT_INTERFACE}"
+  echo
+  echo "Check logs:"
+  echo "  sudo journalctl -u hostapd -u dnsmasq -u dhcpcd -b --no-pager -n 120"
+}
+
+main() {
+  local boxno=""
+  local baseip=""
+
+  require_root
+  ensure_log_dir
+  install_dependencies
+
+  boxno="$(get_box_number)"
+  SSID="initbox_${boxno}"
+  baseip="$(calc_hotspot_subnet)"
+  HIP="${baseip}.${boxno}"
+  RANGE="${baseip}.10,${baseip}.20,24h"
+
+  log "Hotspot SSID=${SSID}, IP=${HIP}, range=${RANGE}"
+  log "HOTSPOT_PASS is set but not logged"
+
+  stop_conflicting_wifi_clients
+  write_hostapd_conf "$SSID"
+  write_dnsmasq_conf "$HIP" "$RANGE"
+  write_dhcpcd_conf "$HIP"
+  write_hostapd_systemd_override "$HIP"
+  validate_configs
+  restart_hotspot_stack
+  print_summary
+
+  ok "Hotspot module installed. Connect to SSID '${SSID}'."
+}
+
+main "$@"
