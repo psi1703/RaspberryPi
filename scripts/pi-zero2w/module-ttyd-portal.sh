@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 
-# InitBox Pi Zero 2W Web Terminal module
+# InitBox Pi Zero 2W Web Terminal and captive portal module
 #
 # Installs and enables:
-#   - ttyd Web Terminal directly on port 80
+#   - ttyd Web Terminal on port 7681
+#   - systemd socket-activated captive HTTP responder on port 80
 #
-# User-facing URL:
+# User-facing URLs:
 #   http://initbox.wlan/
+#   http://initbox.wlan:7681/
+#
+# Captive portal behavior:
+#   - dnsmasq wildcard DNS from the hotspot module sends captive-check
+#     domains to the Pi hotspot IP.
+#   - systemd listens on port 80.
+#   - each HTTP request receives a lightweight 302 redirect to ttyd.
 #
 # This module assumes the hotspot module provides:
 #   - hostapd access point
@@ -17,23 +25,29 @@
 #
 # This module owns only:
 #   - ttyd binary installation if missing
-#   - ttyd.service on port 80
+#   - ttyd.service on port 7681
+#   - socket-activated port-80 captive responder
 #
 # It must not replace or duplicate the hotspot module's DHCP, DNS,
 # wlan0 IP, dnsmasq.conf, hostapd ownership, or captive DNS.
 
 set -euo pipefail
 
-MODULE_NAME="Web Terminal"
+MODULE_NAME="Web Terminal and Captive Portal"
 
 OWNER="${OWNER:-initbox}"
 PORTAL_HOSTNAME="${PORTAL_HOSTNAME:-initbox.wlan}"
-TERMINAL_PORT="${TERMINAL_PORT:-80}"
+TERMINAL_PORT="${TERMINAL_PORT:-7681}"
+CAPTIVE_PORTAL_PORT="${CAPTIVE_PORTAL_PORT:-80}"
 HOTSPOT_INTERFACE="${HOTSPOT_INTERFACE:-wlan0}"
 TTYD_VERSION="${TTYD_VERSION:-1.7.7}"
 
 TTYD_INSTALL_PATH="/usr/local/bin/ttyd"
 TTYD_SERVICE_FILE="/etc/systemd/system/ttyd.service"
+
+CAPTIVE_RESPONDER="/usr/local/sbin/initbox-captive-responder.sh"
+CAPTIVE_SOCKET_FILE="/etc/systemd/system/initbox-captive-http.socket"
+CAPTIVE_SERVICE_FILE="/etc/systemd/system/initbox-captive-http@.service"
 
 OLD_PORTAL_SCRIPT="/usr/local/bin/initbox-ttyd-portal.sh"
 OLD_PORTAL_SERVICE_FILE="/etc/systemd/system/initbox-ttyd-portal.service"
@@ -227,6 +241,10 @@ remove_old_portal_services() {
 remove_old_portal_redirect_rule() {
   log "removing old wlan0 port 80 to 7681 redirect rule if present"
 
+  if ! command_exists iptables; then
+    return 0
+  fi
+
   while iptables -t nat -C PREROUTING -i "$HOTSPOT_INTERFACE" -p tcp --dport 80 \
     -j REDIRECT --to-ports 7681 2>/dev/null; do
     iptables -t nat -D PREROUTING -i "$HOTSPOT_INTERFACE" -p tcp --dport 80 \
@@ -252,15 +270,73 @@ Group=$OWNER
 WorkingDirectory=/home/$OWNER
 Environment=HOME=/home/$OWNER
 Environment=USER=$OWNER
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-NoNewPrivileges=false
 ExecStart=$ttyd_bin -W --interface 0.0.0.0 --port $TERMINAL_PORT /bin/bash -l
 Restart=always
 RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
+EOF
+}
+
+write_captive_responder_script() {
+  log "writing socket-activated captive HTTP responder"
+
+  cat >"$CAPTIVE_RESPONDER" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+PORTAL_URL="${INITBOX_TERMINAL_URL:-http://initbox.wlan:7681/}"
+BODY="InitBox captive portal redirect"
+
+printf 'HTTP/1.1 302 Found\r\n'
+printf 'Location: %s\r\n' "$PORTAL_URL"
+printf 'Content-Type: text/plain; charset=utf-8\r\n'
+printf 'Content-Length: %s\r\n' "${#BODY}"
+printf 'Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n'
+printf 'Pragma: no-cache\r\n'
+printf 'Connection: close\r\n'
+printf '\r\n'
+printf '%s\n' "$BODY"
+EOF
+
+  chmod 755 "$CAPTIVE_RESPONDER"
+  chown root:root "$CAPTIVE_RESPONDER" 2>/dev/null || true
+}
+
+write_captive_socket_units() {
+  local terminal_url=""
+
+  terminal_url="http://${PORTAL_HOSTNAME}:${TERMINAL_PORT}/"
+
+  log "writing captive portal socket unit on port $CAPTIVE_PORTAL_PORT"
+  cat >"$CAPTIVE_SOCKET_FILE" <<EOF
+[Unit]
+Description=InitBox captive portal HTTP socket
+
+[Socket]
+ListenStream=0.0.0.0:$CAPTIVE_PORTAL_PORT
+Accept=yes
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target
+EOF
+
+  log "writing captive portal per-connection service"
+  cat >"$CAPTIVE_SERVICE_FILE" <<EOF
+[Unit]
+Description=InitBox captive portal HTTP responder
+
+[Service]
+Type=simple
+User=$OWNER
+Group=$OWNER
+Environment=INITBOX_TERMINAL_URL=$terminal_url
+ExecStart=$CAPTIVE_RESPONDER
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
 EOF
 }
 
@@ -281,22 +357,30 @@ restart_services() {
   log "enabling ttyd"
   systemctl enable --now ttyd.service
   systemctl restart ttyd.service
+
+  log "enabling captive HTTP socket"
+  systemctl enable --now initbox-captive-http.socket
+  systemctl restart initbox-captive-http.socket
 }
 
 print_summary() {
   local hotspot_ip="$1"
 
   echo
-  echo "Web Terminal installed"
-  echo "----------------------"
-  echo "Web Terminal URL: http://$PORTAL_HOSTNAME/"
-  echo "Hotspot IP:       $hotspot_ip"
+  echo "Web Terminal and captive portal installed"
+  echo "----------------------------------------"
+  echo "Captive portal URL: http://$PORTAL_HOSTNAME/"
+  echo "Web Terminal URL:   http://$PORTAL_HOSTNAME:$TERMINAL_PORT/"
+  echo "Hotspot IP:         $hotspot_ip"
   echo
   echo "Expected behavior:"
-  echo "  - http://$PORTAL_HOSTNAME/ opens ttyd directly on port $TERMINAL_PORT"
+  echo "  - port 80 is handled by systemd socket activation"
+  echo "  - port 80 replies with HTTP 302 to $PORTAL_HOSTNAME:$TERMINAL_PORT"
+  echo "  - ttyd runs on port $TERMINAL_PORT"
   echo "  - ttyd login user: $OWNER"
   echo "  - ttyd keyboard input: enabled by -W"
   echo "  - no Python captive portal"
+  echo "  - no extra web server package"
   echo "  - no iptables redirect service"
   echo
   echo "DNS ownership:"
@@ -304,13 +388,14 @@ print_summary() {
   echo "  - Expected wildcard rule: address=/#/$hotspot_ip"
   echo
   echo "Check services:"
-  echo "  sudo systemctl status hostapd dnsmasq ttyd --no-pager"
+  echo "  sudo systemctl status hostapd dnsmasq ttyd initbox-captive-http.socket --no-pager"
   echo
-  echo "Check port:"
-  echo "  sudo ss -tulpn | grep ':80'"
+  echo "Check ports:"
+  echo "  sudo ss -tulpn | grep -E ':80|:$TERMINAL_PORT'"
   echo
   echo "Manual tests:"
   echo "  curl -I http://127.0.0.1/"
+  echo "  curl -I http://127.0.0.1:$TERMINAL_PORT/"
   echo "  From a Wi-Fi client: open http://$PORTAL_HOSTNAME/"
 }
 
@@ -330,6 +415,8 @@ main() {
   remove_old_portal_services
   remove_old_portal_redirect_rule
   write_ttyd_service "$ttyd_bin"
+  write_captive_responder_script
+  write_captive_socket_units
   restart_services
   print_summary "$hotspot_ip"
 }
