@@ -76,6 +76,23 @@ install_packages() {
   apt-get install -y "${packages[@]}"
 }
 
+get_required_command_path() {
+  local command_name="$1"
+  local command_path
+
+  command_path="$(command -v "$command_name" || true)"
+
+  if [ -z "$command_path" ]; then
+    fail "$command_name is not installed or not in PATH"
+  fi
+
+  if [ ! -x "$command_path" ]; then
+    fail "$command_path exists but is not executable"
+  fi
+
+  printf '%s\n' "$command_path"
+}
+
 get_hotspot_ip() {
   local hotspot_ip
 
@@ -94,16 +111,19 @@ get_hotspot_ip() {
 }
 
 write_ttyd_service() {
-  log "writing ttyd systemd service"
+  local ttyd_bin="$1"
+
+  log "writing ttyd systemd service using $ttyd_bin"
 
   cat >"$TTYD_SERVICE_FILE" <<EOF
 [Unit]
 Description=InitBox Web Terminal
 After=network.target
+Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/ttyd --interface 0.0.0.0 --port $TERMINAL_PORT /bin/bash
+ExecStart=$ttyd_bin --interface 0.0.0.0 --port $TERMINAL_PORT /bin/bash
 Restart=always
 RestartSec=2
 
@@ -265,6 +285,7 @@ PYEOF
 }
 
 write_captive_portal_service() {
+  local python_bin="$1"
   local terminal_url
 
   terminal_url="http://$PORTAL_HOSTNAME:$TERMINAL_PORT/"
@@ -283,7 +304,7 @@ Environment=INITBOX_PORTAL_HOSTNAME=$PORTAL_HOSTNAME
 Environment=INITBOX_TERMINAL_PORT=$TERMINAL_PORT
 Environment=INITBOX_CAPTIVE_PORT=$CAPTIVE_PORTAL_PORT
 Environment=INITBOX_TERMINAL_URL=$terminal_url
-ExecStart=/usr/bin/python3 $CAPTIVE_SCRIPT
+ExecStart=$python_bin $CAPTIVE_SCRIPT
 Restart=always
 RestartSec=2
 
@@ -296,10 +317,6 @@ restart_services() {
   log "reloading systemd"
   systemctl daemon-reload
 
-  log "enabling ttyd"
-  systemctl enable --now ttyd.service
-  systemctl restart ttyd.service
-
   if systemctl list-unit-files dnsmasq.service >/dev/null 2>&1; then
     log "testing dnsmasq configuration"
     dnsmasq --test
@@ -309,6 +326,10 @@ restart_services() {
   else
     log "dnsmasq service not found; hotspot module may not be installed yet"
   fi
+
+  log "enabling ttyd"
+  systemctl enable --now ttyd.service
+  systemctl restart ttyd.service
 
   log "enabling captive portal"
   systemctl enable --now initbox-captive-portal.service
@@ -352,16 +373,20 @@ print_summary() {
 
 main() {
   local hotspot_ip
+  local python_bin
+  local ttyd_bin
 
   require_root
   install_packages
 
+  python_bin="$(get_required_command_path python3)"
+  ttyd_bin="$(get_required_command_path ttyd)"
   hotspot_ip="$(get_hotspot_ip)"
 
-  write_ttyd_service
+  write_ttyd_service "$ttyd_bin"
   write_dnsmasq_hostname_config "$hotspot_ip"
   write_captive_portal_script
-  write_captive_portal_service
+  write_captive_portal_service "$python_bin"
   restart_services
   print_summary
 }
