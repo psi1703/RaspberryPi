@@ -73,10 +73,9 @@ write_isi_runner() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Config ----------
 BRIDGE="${BRIDGE:-br0}"
+DHCP_RUNTIME_DIR="${DHCP_RUNTIME_DIR:-/run/initbox-isi}"
 
-# DRACHE, NIX, ZEITNEHMER
 ISI_FILES=(
   "/usr/local/bin/isi1.txt"
   "/usr/local/bin/isi2.txt"
@@ -85,13 +84,12 @@ ISI_FILES=(
 NAMES=(DRACHE NIX ZEITNEHMER)
 NS=(ns1 ns2 ns3)
 
-# Time sync behaviour
-DRIFT_THRESHOLD="${DRIFT_THRESHOLD:-2}"         # seconds
-TIME_SYNC_INTERVAL="${TIME_SYNC_INTERVAL:-60}" # seconds between time syncs
+DRIFT_THRESHOLD="${DRIFT_THRESHOLD:-2}"
+TIME_SYNC_INTERVAL="${TIME_SYNC_INTERVAL:-60}"
 
-DEST_IP=""                    # COPILOT IP discovered dynamically from DHCP/gateway
-NS_IPS=()                     # Collected namespace IPs
-UPLINK_IF="${UPLINK_IF:-}"    # Optional manual wired interface override
+DEST_IP=""
+NS_IPS=()
+UPLINK_IF="${UPLINK_IF:-}"
 BRIDGE_CREATED_BY_ISI=0
 BRIDGE_PORTS_ADDED_BY_ISI=()
 
@@ -137,19 +135,13 @@ is_wired_ethernet_candidate() {
 
   dev_type="$(cat "/sys/class/net/${iface}/type" 2>/dev/null || echo '')"
 
-  # ARPHRD_ETHER == 1.
-  # This keeps normal Ethernet interfaces and excludes loopback/non-Ethernet links.
   if [ "$dev_type" != "1" ]; then
     return 1
   fi
 
   case "$iface" in
-    eth*|en*|usb*)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
+    eth*|en*|usb*) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
@@ -167,7 +159,6 @@ detect_wired_ethernet_ports() {
   done
 
   if [ "${#detected[@]}" -gt 0 ]; then
-    printf '%s\n' "${deted_unused[@]:-}" >/dev/null 2>&1 || true
     printf '%s\n' "${detected[@]}" | sort -V
   fi
 }
@@ -201,6 +192,13 @@ detect_bridge_ports() {
   printf '%s\n' "${wired_ifs[@]}"
 }
 
+cleanup_dhcp_runtime() {
+  mkdir -p "$DHCP_RUNTIME_DIR"
+  rm -f "${DHCP_RUNTIME_DIR}"/dhclient-ns*.leases
+  rm -f "${DHCP_RUNTIME_DIR}"/dhclient-ns*.pid
+  rm -f "${DHCP_RUNTIME_DIR}"/dhclient-ns*.conf
+}
+
 cleanup_ns() {
   local ns
   local pid
@@ -230,12 +228,20 @@ cleanup_ns() {
   )
 }
 
-uniq_mac() {
-  local seed="$1"
-  local hash=""
+random_mac() {
+  local b2
+  local b3
+  local b4
+  local b5
+  local b6
 
-  hash="$(printf "%s" "$seed" | sha1sum | awk '{print $1}')"
-  printf "02:%s:%s:%s:%s:%s\n" "${hash:0:2}" "${hash:2:2}" "${hash:4:2}" "${hash:6:2}" "${hash:8:2}"
+  b2="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
+  b3="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
+  b4="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
+  b5="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
+  b6="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
+
+  printf '02:%s:%s:%s:%s:%s\n' "$b2" "$b3" "$b4" "$b5" "$b6"
 }
 
 add_veth_to_br() {
@@ -248,7 +254,7 @@ add_veth_to_br() {
   ip link del "$ifn" 2>/dev/null || true
 
   ip link add "$ifh" type veth peer name "$ifn"
-  ip link set "$ifh" address "$(uniq_mac "$ifh")"
+  ip link set "$ifh" address "$(random_mac)"
   ip addr flush dev "$ifh" || true
   ip link set "$ifh" master "$BRIDGE"
   ip link set "$ifh" up
@@ -256,7 +262,7 @@ add_veth_to_br() {
   ip netns add "$ns"
   ip link set "$ifn" netns "$ns"
   ip netns exec "$ns" ip link set lo up
-  ip netns exec "$ns" ip link set "$ifn" address "$(uniq_mac "$ifn")"
+  ip netns exec "$ns" ip link set "$ifn" address "$(random_mac)"
   ip netns exec "$ns" ip addr flush dev "$ifn" || true
   ip netns exec "$ns" ip link set "$ifn" up
 }
@@ -338,14 +344,57 @@ teardown_bridge_for_isi() {
   fi
 }
 
+request_fresh_dhcp() {
+  local ns="$1"
+  local iface="$2"
+  local lease_file="${DHCP_RUNTIME_DIR}/dhclient-${ns}.leases"
+  local pid_file="${DHCP_RUNTIME_DIR}/dhclient-${ns}.pid"
+  local conf_file="${DHCP_RUNTIME_DIR}/dhclient-${ns}.conf"
+  local dhcp_out=""
+
+  mkdir -p "$DHCP_RUNTIME_DIR"
+
+  rm -f "$lease_file" "$pid_file" "$conf_file"
+
+  : >"$lease_file"
+  : >"$conf_file"
+
+  ip netns exec "$ns" ip addr flush dev "$iface" || true
+
+  log "Requesting fresh DHCP address for ${ns} on ${iface}. Fresh MAC, empty lease file, no cached lease, no static COPILOT IP."
+
+  dhcp_out="$(
+    ip netns exec "$ns" dhclient \
+      -4 \
+      -1 \
+      -v \
+      -d \
+      -cf "$conf_file" \
+      -lf "$lease_file" \
+      -pf "$pid_file" \
+      "$iface" 2>&1 || true
+  )"
+
+  if [ -f "$pid_file" ]; then
+    kill -TERM "$(cat "$pid_file")" 2>/dev/null || true
+    rm -f "$pid_file"
+  fi
+
+  rm -f "$lease_file" "$conf_file"
+
+  printf '%s\n' "$dhcp_out"
+}
+
 full_cleanup() {
   cleanup_ns
+  cleanup_dhcp_runtime
   teardown_bridge_for_isi
 }
 
 trap full_cleanup EXIT
 
 setup_bridge_for_isi
+cleanup_dhcp_runtime
 
 for _ in {1..20}; do
   if ip -br link show "$BRIDGE" | grep -q '\<UP\>'; then
@@ -372,6 +421,7 @@ if ! command -v nc >/dev/null 2>&1 && ! command -v netcat >/dev/null 2>&1; then
 fi
 
 cleanup_ns
+cleanup_dhcp_runtime
 
 discover_copilot_from_dhcp() {
   local dhcp_out="$1"
@@ -405,8 +455,7 @@ for i in "${!NS[@]}"; do
 
   add_veth_to_br "$idx" "$ns"
 
-  log "Requesting DHCP address for ${ns} on veth${idx}_ns. No static COPILOT IP is used."
-  DHCP_OUT="$(ip netns exec "$ns" dhclient -4 -1 -v "veth${idx}_ns" 2>&1 || true)"
+  DHCP_OUT="$(request_fresh_dhcp "$ns" "veth${idx}_ns")"
 
   if ! printf '%s' "$DHCP_OUT" | grep -q 'DHCPACK'; then
     log "ERROR: DHCP failed in ${ns}"
@@ -415,15 +464,9 @@ for i in "${!NS[@]}"; do
     exit 1
   fi
 
-  while read -r pid; do
-    if [ -n "$pid" ] && ps -p "$pid" -o comm= 2>/dev/null | grep -qx 'dhclient'; then
-      kill -TERM "$pid" 2>/dev/null || true
-    fi
-  done < <(ip netns pids "$ns" 2>/dev/null || true)
-
   ns_ip="$(ip netns exec "$ns" ip -o -4 addr show "veth${idx}_ns" | awk '{print $4}' | cut -d/ -f1 || true)"
   NS_IPS+=("${ns_ip:-}")
-  log "${ns} got IP ${ns_ip:-unknown} via DHCP"
+  log "${ns} got IP ${ns_ip:-unknown} via fresh DHCP"
 
   discover_copilot_from_dhcp "$DHCP_OUT"
 
@@ -479,11 +522,6 @@ while true; do
     TIME_RESPONSE="$(ip netns exec "$zeit_ns" nc "$DEST_IP" 51001 -w 5 < "$zeit_file" || true)"
     log "ZEITNEHMER: raw response snippet: $(echo "$TIME_RESPONSE" | tr '\n' ' ' | head -c 400)"
 
-    # Prefer COPILOT Time_ISO8601 when available, then fall back to legacy DateTime.
-    # Accepted ISO examples:
-    #   2026-06-11T14:30:00Z
-    #   2026-06-11T14:30:00+04:00
-    #   2026-06-11T14:30:00
     ISO_DT="$(
       echo "$TIME_RESPONSE" |
         grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.,][0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})?' |
@@ -604,7 +642,7 @@ stop_and_disable_unit() {
 cleanup_runtime_network_state() {
   local link_name
 
-  log "cleaning ISI runtime namespaces and veth links"
+  log "cleaning ISI runtime namespaces, veth links, and DHCP runtime state"
 
   ip netns del ns1 2>/dev/null || true
   ip netns del ns2 2>/dev/null || true
@@ -620,6 +658,8 @@ cleanup_runtime_network_state() {
       cut -d'@' -f1 |
       grep -E '^veth[0-9]+_(host|ns)$' 2>/dev/null || true
   )
+
+  rm -rf /run/initbox-isi 2>/dev/null || true
 }
 
 remove_isi_files() {
@@ -649,7 +689,10 @@ print_install_summary() {
   echo "Bridge behavior:"
   echo "  - Detects all wired Ethernet ports dynamically"
   echo "  - Adds detected wired ports plus ISI veth ports to br0"
-  echo "  - Uses DHCP inside namespaces"
+  echo "  - Uses fresh DHCP inside namespaces"
+  echo "  - Uses random veth MACs on each service start"
+  echo "  - Deletes DHCP lease/config/pid files before each namespace DHCP request"
+  echo "  - Does not read global dhclient lease memory"
   echo "  - Does not use a hardcoded COPILOT IP"
   echo
   echo "Check:"
@@ -672,6 +715,7 @@ print_uninstall_summary() {
   echo "  - ${ISI_PAYLOAD_3}"
   echo "  - runtime namespaces ns1/ns2/ns3 if present"
   echo "  - runtime veth links if present"
+  echo "  - /run/initbox-isi DHCP runtime state if present"
   echo
   echo "Not removed:"
   echo "  - installed dependency packages"
