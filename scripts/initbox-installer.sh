@@ -11,6 +11,7 @@
 #   ./scripts/initbox-installer.sh pi-3-4-5
 #   ./scripts/initbox-installer.sh pi-zero2w c
 #   ./scripts/initbox-installer.sh pi-3-4-5 c
+#   ./scripts/initbox-installer.sh pi-zero2w uninstall
 
 set -euo pipefail
 
@@ -25,6 +26,7 @@ if [ -z "$REQUESTED_PROFILE_ID" ]; then
   echo "  ./scripts/initbox-installer.sh pi-3-4-5"
   echo "  ./scripts/initbox-installer.sh pi-zero2w c"
   echo "  ./scripts/initbox-installer.sh pi-3-4-5 c"
+  echo "  ./scripts/initbox-installer.sh pi-zero2w uninstall"
   exit 1
 fi
 
@@ -181,6 +183,21 @@ record_module_failure_state() {
   fi
 }
 
+record_module_uninstalled_state() {
+  local module_id="$1"
+  local module_name="$2"
+
+  if [ "$(id -u)" -eq 0 ]; then
+    if declare -F initbox_state_record_module_uninstalled >/dev/null 2>&1; then
+      initbox_state_record_module_uninstalled "$module_id" "$module_name" || true
+    else
+      log_line "STATE_SKIPPED missing_uninstalled_helper module_id=$module_id"
+    fi
+  else
+    log_line "STATE_SKIPPED not_root module_id=$module_id status=uninstalled"
+  fi
+}
+
 pause() {
   echo
   echo "Press Enter to continue."
@@ -205,6 +222,19 @@ build_supported_module_list() {
   add_supported_module "dashboard"
   add_supported_module "rtc"
   add_supported_module "sniffer-bridge"
+}
+
+initbox_module_supports_uninstall() {
+  local module_id="$1"
+
+  case "$PROFILE_ID:$module_id" in
+    pi-zero2w:web-terminal)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 print_header() {
@@ -241,9 +271,14 @@ print_menu() {
   local module_id
   local module_name
   local module_script
+  local uninstall_available
 
-  echo "Available modules"
-  echo "-----------------"
+  uninstall_available="no"
+
+  echo "Available install modules"
+  echo "-------------------------"
+  echo "Select a number to install or re-run that module."
+  echo
 
   index=1
   for module_id in "${SUPPORTED_MODULES[@]}"; do
@@ -251,16 +286,28 @@ print_menu() {
 
     if module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
       if [ -f "$module_script" ]; then
-        printf '  %d) %-16s %s\n' "$index" "$module_name" "[script found]"
+        printf '  %d) Install %-16s %s\n' "$index" "$module_name" "[script found]"
       else
-        printf '  %d) %-16s %s\n' "$index" "$module_name" "[script missing]"
+        printf '  %d) Install %-16s %s\n' "$index" "$module_name" "[script missing]"
       fi
     else
-      printf '  %d) %-16s %s\n' "$index" "$module_name" "[not mapped]"
+      printf '  %d) Install %-16s %s\n' "$index" "$module_name" "[not mapped]"
+    fi
+
+    if initbox_module_supports_uninstall "$module_id"; then
+      uninstall_available="yes"
     fi
 
     index=$((index + 1))
   done
+
+  echo
+  echo "Available actions"
+  echo "-----------------"
+
+  if [ "$uninstall_available" = "yes" ]; then
+    echo "  u) Uninstall/remove module"
+  fi
 
   echo "  c) Run sanity checks"
   echo "  l) Show install log path"
@@ -331,7 +378,7 @@ sanity_check_no_markdown_fences() {
   markdown_fence="${backtick}${backtick}${backtick}"
 
   if grep -qF "$markdown_fence" "$file_path"; then
-    sanity_fail "file contains Markdown fence contamination: $path"
+    sanity_fail "file contains Markdown fence error: $path"
     return 1
   fi
 
@@ -538,11 +585,11 @@ confirm_module_action() {
       ;;
     uninstall)
       echo "This will remove services and files created by this module."
-      echo "It will not remove shared packages unless the module uninstall action explicitly supports that."
+      echo "It will not remove shared packages."
       ;;
     purge)
       echo "This will remove services and files created by this module."
-      echo "It may also remove module-owned binaries or package-level artifacts."
+      echo "It may also remove module-owned binaries or files."
       ;;
     *)
       echo "This will run module action: $action"
@@ -570,6 +617,28 @@ confirm_run() {
   confirm_module_action "install" "$module_name" "$module_script" "RUN"
 }
 
+run_module_install() {
+  local module_script="$1"
+
+  bash "$module_script"
+}
+
+run_module_action() {
+  local module_script="$1"
+  local module_action="$2"
+
+  case "$module_action" in
+    install)
+      run_module_install "$module_script"
+      ;;
+    uninstall|remove|purge)
+      bash "$module_script" "$module_action"
+      ;;
+    *)
+      bash "$module_script" "$module_action"
+      ;;
+  esac
+}
 
 run_module_script() {
   local module_id="$1"
@@ -587,7 +656,7 @@ run_module_script() {
   log_line "START action=$module_action profile=$PROFILE_ID module_id=$module_id module_name=$module_name script=$module_script"
 
   if [ -w "$LOG_FILE" ]; then
-    if bash "$module_script" "$module_action" 2>&1 | tee -a "$LOG_FILE"; then
+    if run_module_action "$module_script" "$module_action" 2>&1 | tee -a "$LOG_FILE"; then
       log_line "SUCCESS action=$module_action profile=$PROFILE_ID module_id=$module_id module_name=$module_name"
 
       case "$module_action" in
@@ -611,7 +680,7 @@ run_module_script() {
   else
     echo "WARNING: log file is not writable. Running without log capture."
 
-    if bash "$module_script" "$module_action"; then
+    if run_module_action "$module_script" "$module_action"; then
       case "$module_action" in
         install)
           record_module_success_state "$module_id" "$module_name"
@@ -632,7 +701,6 @@ run_module_script() {
   fi
 }
 
-
 handle_selection() {
   local selected_index="$1"
   local module_id
@@ -643,8 +711,8 @@ handle_selection() {
   module_name="$(initbox_module_display_name "$module_id")"
 
   echo
-  echo "Selected module"
-  echo "---------------"
+  echo "Selected install module"
+  echo "-----------------------"
   echo "Module ID:   $module_id"
   echo "Module name: $module_name"
 
@@ -667,7 +735,7 @@ handle_selection() {
   fi
 
   if confirm_run "$module_name" "$module_script"; then
-    run_module_script "$module_id" "$module_name" "$module_script"
+    run_module_script "$module_id" "$module_name" "$module_script" "install"
   fi
 }
 
@@ -863,7 +931,6 @@ handle_uninstall_menu() {
   esac
 }
 
-
 interactive_menu() {
   local choice
   local max_choice
@@ -957,6 +1024,7 @@ main() {
       echo "  ./scripts/initbox-installer.sh pi-3-4-5"
       echo "  ./scripts/initbox-installer.sh pi-zero2w c"
       echo "  ./scripts/initbox-installer.sh pi-3-4-5 c"
+      echo "  ./scripts/initbox-installer.sh pi-zero2w uninstall"
       exit 1
       ;;
   esac
