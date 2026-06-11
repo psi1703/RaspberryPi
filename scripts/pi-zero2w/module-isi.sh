@@ -22,9 +22,6 @@ ISI_SERVICE_FILE="/etc/systemd/system/isirunall.service"
 ISI_PAYLOAD_1="/usr/local/bin/isi1.txt"
 ISI_PAYLOAD_2="/usr/local/bin/isi2.txt"
 ISI_PAYLOAD_3="/usr/local/bin/isi3.txt"
-
-# Runtime/state paths used by the installer wrapper.
-# Keep these defined before any function that is called under set -u.
 ISI_DHCP_RUNTIME_DIR="/run/initbox-isi"
 NM_ISI_CONF="/etc/NetworkManager/conf.d/99-initbox-isi-unmanaged.conf"
 DHCPCD_CONF="/etc/dhcpcd.conf"
@@ -72,6 +69,80 @@ install_dependencies() {
   log "Installing ISI simulator dependencies"
   apt_safe update
   apt_safe install -y isc-dhcp-client netcat-openbsd
+}
+
+remove_dhcpcd_isi_block() {
+  local tmp_file=""
+
+  if [ ! -f "$DHCPCD_CONF" ]; then
+    return 0
+  fi
+
+  tmp_file="$(mktemp)"
+  awk -v start="$DHCPCD_BLOCK_START" -v end="$DHCPCD_BLOCK_END" '
+    $0 == start {skip=1; next}
+    $0 == end {skip=0; next}
+    skip != 1 {print}
+  ' "$DHCPCD_CONF" >"$tmp_file"
+
+  cat "$tmp_file" >"$DHCPCD_CONF"
+  rm -f "$tmp_file"
+}
+
+configure_isi_network_managers() {
+  log "Configuring host network managers to leave ISI bridge ports unmanaged"
+
+  if systemctl list-unit-files NetworkManager.service >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$NM_ISI_CONF")"
+
+    cat >"$NM_ISI_CONF" <<'NM_EOF'
+[keyfile]
+unmanaged-devices=interface-name:eth0;interface-name:eth1;interface-name:br0;interface-name:veth*
+NM_EOF
+
+    systemctl restart NetworkManager 2>/dev/null || true
+  fi
+
+  if systemctl list-unit-files dhcpcd.service >/dev/null 2>&1; then
+    touch "$DHCPCD_CONF"
+    remove_dhcpcd_isi_block
+
+    cat >>"$DHCPCD_CONF" <<EOF
+
+$DHCPCD_BLOCK_START
+# InitBox ISI bridge members are L2-only.
+# DHCP must run only inside ISI namespaces, not on host bridge ports.
+denyinterfaces eth0 eth1 br0 veth*
+$DHCPCD_BLOCK_END
+EOF
+
+    systemctl restart dhcpcd 2>/dev/null || true
+  fi
+
+  ip addr flush dev eth0 2>/dev/null || true
+  ip addr flush dev eth1 2>/dev/null || true
+  ip addr flush dev br0 2>/dev/null || true
+
+  while read -r link_name; do
+    if [ -n "$link_name" ]; then
+      ip addr flush dev "$link_name" 2>/dev/null || true
+    fi
+  done < <(
+    ip -o link show |
+      awk -F': ' '{print $2}' |
+      cut -d'@' -f1 |
+      grep -E '^veth[0-9]+_host$' 2>/dev/null || true
+  )
+}
+
+remove_isi_network_manager_overrides() {
+  log "removing ISI network-manager overrides"
+
+  rm -f "$NM_ISI_CONF" 2>/dev/null || true
+  remove_dhcpcd_isi_block
+
+  systemctl restart NetworkManager 2>/dev/null || true
+  systemctl restart dhcpcd 2>/dev/null || true
 }
 
 write_isi_runner() {
@@ -236,20 +307,12 @@ cleanup_ns() {
   )
 }
 
-random_mac() {
-  local b2
-  local b3
-  local b4
-  local b5
-  local b6
+uniq_mac() {
+  local seed="$1"
+  local hash=""
 
-  b2="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
-  b3="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
-  b4="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
-  b5="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
-  b6="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
-
-  printf '02:%s:%s:%s:%s:%s\n' "$b2" "$b3" "$b4" "$b5" "$b6"
+  hash="$(printf "%s" "$seed" | sha1sum | awk '{print $1}')"
+  printf "02:%s:%s:%s:%s:%s\n" "${hash:0:2}" "${hash:2:2}" "${hash:4:2}" "${hash:6:2}" "${hash:8:2}"
 }
 
 add_veth_to_br() {
@@ -262,7 +325,7 @@ add_veth_to_br() {
   ip link del "$ifn" 2>/dev/null || true
 
   ip link add "$ifh" type veth peer name "$ifn"
-  ip link set "$ifh" address "$(random_mac)"
+  ip link set "$ifh" address "$(uniq_mac "$ifh")"
   ip addr flush dev "$ifh" || true
   ip link set "$ifh" master "$BRIDGE"
   ip link set "$ifh" up
@@ -270,7 +333,7 @@ add_veth_to_br() {
   ip netns add "$ns"
   ip link set "$ifn" netns "$ns"
   ip netns exec "$ns" ip link set lo up
-  ip netns exec "$ns" ip link set "$ifn" address "$(random_mac)"
+  ip netns exec "$ns" ip link set "$ifn" address "$(uniq_mac "$ifn")"
   ip netns exec "$ns" ip addr flush dev "$ifn" || true
   ip netns exec "$ns" ip link set "$ifn" up
 }
@@ -369,7 +432,7 @@ request_fresh_dhcp() {
 
   ip netns exec "$ns" ip addr flush dev "$iface" || true
 
-  log "Requesting fresh DHCP address for ${ns} on ${iface}. Fresh MAC, empty lease file, no cached lease, no static COPILOT IP."
+  log "Requesting fresh DHCP address for ${ns} on ${iface}. Stable simulator MAC, empty lease file, no cached lease, no static COPILOT IP."
 
   dhcp_out="$(
     ip netns exec "$ns" dhclient \
@@ -650,7 +713,7 @@ stop_and_disable_unit() {
 cleanup_runtime_network_state() {
   local link_name
 
-  log "cleaning ISI runtime namespaces, veth links, and DHCP runtime state"
+  log "cleaning ISI runtime namespaces, veth links, DHCP runtime state, and host bridge IP state"
 
   ip netns del ns1 2>/dev/null || true
   ip netns del ns2 2>/dev/null || true
@@ -667,7 +730,7 @@ cleanup_runtime_network_state() {
       grep -E '^veth[0-9]+_(host|ns)$' 2>/dev/null || true
   )
 
-  rm -rf /run/initbox-isi 2>/dev/null || true
+  rm -rf "$ISI_DHCP_RUNTIME_DIR" 2>/dev/null || true
 }
 
 remove_isi_files() {
@@ -698,7 +761,7 @@ print_install_summary() {
   echo "  - Detects all wired Ethernet ports dynamically"
   echo "  - Adds detected wired ports plus ISI veth ports to br0"
   echo "  - Uses fresh DHCP inside namespaces"
-  echo "  - Uses random veth MACs on each service start"
+  echo "  - Uses stable deterministic veth MACs, matching the Pi 3/4/5 ISI model"
   echo "  - Deletes DHCP lease/config/pid files before each namespace DHCP request"
   echo "  - Does not read global dhclient lease memory"
   echo "  - Does not use a hardcoded COPILOT IP"
@@ -743,6 +806,7 @@ install_main() {
   require_root
   ensure_log_dir
   install_dependencies
+  configure_isi_network_managers
   write_isi_runner
   write_isi_payloads
   write_isi_service
@@ -757,6 +821,7 @@ uninstall_main() {
 
   stop_and_disable_unit "isirunall.service"
   cleanup_runtime_network_state
+  remove_isi_network_manager_overrides
   remove_isi_files
 
   systemctl daemon-reload
@@ -772,6 +837,7 @@ purge_main() {
 
   stop_and_disable_unit "isirunall.service"
   cleanup_runtime_network_state
+  remove_isi_network_manager_overrides
   remove_isi_files
   purge_isi_packages
 
