@@ -22,6 +22,7 @@ ISI_SERVICE_FILE="/etc/systemd/system/isirunall.service"
 ISI_PAYLOAD_1="/usr/local/bin/isi1.txt"
 ISI_PAYLOAD_2="/usr/local/bin/isi2.txt"
 ISI_PAYLOAD_3="/usr/local/bin/isi3.txt"
+ISI_DHCP_RUNTIME_DIR="/run/initbox-isi"
 
 ts() {
   date +"%Y-%m-%d %H:%M:%S"
@@ -69,13 +70,15 @@ install_dependencies() {
 write_isi_runner() {
   log "Writing ${ISI_RUNNER}"
 
-  cat >"$ISI_RUNNER" <<'EOF'
+  cat >"$ISI_RUNNER" <<'RUNNER_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Config ----------
 BRIDGE="${BRIDGE:-br0}"
 DHCP_RUNTIME_DIR="${DHCP_RUNTIME_DIR:-/run/initbox-isi}"
 
+# DRACHE, NIX, ZEITNEHMER
 ISI_FILES=(
   "/usr/local/bin/isi1.txt"
   "/usr/local/bin/isi2.txt"
@@ -84,12 +87,13 @@ ISI_FILES=(
 NAMES=(DRACHE NIX ZEITNEHMER)
 NS=(ns1 ns2 ns3)
 
-DRIFT_THRESHOLD="${DRIFT_THRESHOLD:-2}"
-TIME_SYNC_INTERVAL="${TIME_SYNC_INTERVAL:-60}"
+# Time sync behaviour
+DRIFT_THRESHOLD="${DRIFT_THRESHOLD:-2}"         # seconds
+TIME_SYNC_INTERVAL="${TIME_SYNC_INTERVAL:-60}" # seconds between time syncs
 
-DEST_IP=""
-NS_IPS=()
-UPLINK_IF="${UPLINK_IF:-}"
+DEST_IP=""                    # COPILOT IP discovered dynamically from DHCP/gateway
+NS_IPS=()                     # Collected namespace IPs
+UPLINK_IF="${UPLINK_IF:-}"    # Optional manual wired interface override
 BRIDGE_CREATED_BY_ISI=0
 BRIDGE_PORTS_ADDED_BY_ISI=()
 
@@ -135,13 +139,19 @@ is_wired_ethernet_candidate() {
 
   dev_type="$(cat "/sys/class/net/${iface}/type" 2>/dev/null || echo '')"
 
+  # ARPHRD_ETHER == 1.
+  # This keeps normal Ethernet interfaces and excludes loopback/non-Ethernet links.
   if [ "$dev_type" != "1" ]; then
     return 1
   fi
 
   case "$iface" in
-    eth*|en*|usb*) return 0 ;;
-    *) return 1 ;;
+    eth*|en*|usb*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
   esac
 }
 
@@ -228,20 +238,12 @@ cleanup_ns() {
   )
 }
 
-random_mac() {
-  local b2
-  local b3
-  local b4
-  local b5
-  local b6
+uniq_mac() {
+  local seed="$1"
+  local hash=""
 
-  b2="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
-  b3="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
-  b4="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
-  b5="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
-  b6="$(od -An -N1 -tx1 /dev/urandom | tr -d ' ')"
-
-  printf '02:%s:%s:%s:%s:%s\n' "$b2" "$b3" "$b4" "$b5" "$b6"
+  hash="$(printf "%s" "$seed" | sha1sum | awk '{print $1}')"
+  printf "02:%s:%s:%s:%s:%s\n" "${hash:0:2}" "${hash:2:2}" "${hash:4:2}" "${hash:6:2}" "${hash:8:2}"
 }
 
 add_veth_to_br() {
@@ -254,15 +256,17 @@ add_veth_to_br() {
   ip link del "$ifn" 2>/dev/null || true
 
   ip link add "$ifh" type veth peer name "$ifn"
-  ip link set "$ifh" address "$(random_mac)"
+  ip link set "$ifh" address "$(uniq_mac "$ifh")"
   ip addr flush dev "$ifh" || true
+  ip link set "$ifh" promisc on || true
   ip link set "$ifh" master "$BRIDGE"
   ip link set "$ifh" up
+  ip addr flush dev "$ifh" || true
 
   ip netns add "$ns"
   ip link set "$ifn" netns "$ns"
   ip netns exec "$ns" ip link set lo up
-  ip netns exec "$ns" ip link set "$ifn" address "$(random_mac)"
+  ip netns exec "$ns" ip link set "$ifn" address "$(uniq_mac "$ifn")"
   ip netns exec "$ns" ip addr flush dev "$ifn" || true
   ip netns exec "$ns" ip link set "$ifn" up
 }
@@ -287,7 +291,9 @@ attach_port_to_bridge() {
 
   ip link set "$iface" up || true
   ip addr flush dev "$iface" || true
+  ip link set "$iface" promisc on || true
   ip link set "$iface" master "$BRIDGE"
+  ip addr flush dev "$iface" || true
 
   BRIDGE_PORTS_ADDED_BY_ISI+=("$iface")
 }
@@ -313,6 +319,7 @@ setup_bridge_for_isi() {
     BRIDGE_CREATED_BY_ISI=1
   fi
 
+  ip link set "$BRIDGE" type bridge stp_state 0 forward_delay 0 2>/dev/null || true
   ip addr flush dev "$BRIDGE" || true
   ip link set "$BRIDGE" up
 
@@ -333,6 +340,7 @@ teardown_bridge_for_isi() {
   if [ "${#BRIDGE_PORTS_ADDED_BY_ISI[@]}" -gt 0 ]; then
     for iface in "${BRIDGE_PORTS_ADDED_BY_ISI[@]}"; do
       ip link set "$iface" nomaster 2>/dev/null || true
+      ip link set "$iface" promisc off 2>/dev/null || true
       ip link set "$iface" up 2>/dev/null || true
     done
   fi
@@ -355,13 +363,12 @@ request_fresh_dhcp() {
   mkdir -p "$DHCP_RUNTIME_DIR"
 
   rm -f "$lease_file" "$pid_file" "$conf_file"
-
   : >"$lease_file"
   : >"$conf_file"
 
   ip netns exec "$ns" ip addr flush dev "$iface" || true
 
-  log "Requesting fresh DHCP address for ${ns} on ${iface}. Fresh MAC, empty lease file, no cached lease, no static COPILOT IP."
+  log "Requesting fresh DHCP address for ${ns} on ${iface}. Stable simulator MAC, empty lease file, no cached lease, no static COPILOT IP."
 
   dhcp_out="$(
     ip netns exec "$ns" dhclient \
@@ -522,6 +529,11 @@ while true; do
     TIME_RESPONSE="$(ip netns exec "$zeit_ns" nc "$DEST_IP" 51001 -w 5 < "$zeit_file" || true)"
     log "ZEITNEHMER: raw response snippet: $(echo "$TIME_RESPONSE" | tr '\n' ' ' | head -c 400)"
 
+    # Prefer COPILOT Time_ISO8601 when available, then fall back to legacy DateTime.
+    # Accepted ISO examples:
+    #   2026-06-11T14:30:00Z
+    #   2026-06-11T14:30:00+04:00
+    #   2026-06-11T14:30:00
     ISO_DT="$(
       echo "$TIME_RESPONSE" |
         grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.,][0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})?' |
@@ -574,7 +586,7 @@ while true; do
 
   sleep 1
 done
-EOF
+RUNNER_EOF
 
   chmod 755 "$ISI_RUNNER"
   chown root:root "$ISI_RUNNER" || true
@@ -582,22 +594,22 @@ EOF
 
 write_isi_payloads() {
   log "Writing ${ISI_PAYLOAD_1}"
-  cat >"$ISI_PAYLOAD_1" <<'EOF'
+  cat >"$ISI_PAYLOAD_1" <<'PAYLOAD1_EOF'
 <IsiPut><AppName>DRACHE</AppName></IsiPut>
 <IsiGet><Items>CurrentSoftwareVersion</Items><Cyclic>1</Cyclic></IsiGet>
-EOF
+PAYLOAD1_EOF
 
   log "Writing ${ISI_PAYLOAD_2}"
-  cat >"$ISI_PAYLOAD_2" <<'EOF'
+  cat >"$ISI_PAYLOAD_2" <<'PAYLOAD2_EOF'
 <IsiPut><AppName>NIX</AppName></IsiPut>
 <IsiGet><Items>DeviceState</Items><Cyclic>1</Cyclic></IsiGet>
-EOF
+PAYLOAD2_EOF
 
   log "Writing ${ISI_PAYLOAD_3}"
-  cat >"$ISI_PAYLOAD_3" <<'EOF'
+  cat >"$ISI_PAYLOAD_3" <<'PAYLOAD3_EOF'
 <IsiPut><AppName>ZEITNEHMER</AppName></IsiPut>
 <IsiGet><Items>DateTime,Time_ISO8601</Items><Cyclic>5</Cyclic></IsiGet>
-EOF
+PAYLOAD3_EOF
 
   chown root:root "$ISI_PAYLOAD_1" "$ISI_PAYLOAD_2" "$ISI_PAYLOAD_3" 2>/dev/null || true
   chmod 644 "$ISI_PAYLOAD_1" "$ISI_PAYLOAD_2" "$ISI_PAYLOAD_3"
@@ -606,7 +618,7 @@ EOF
 write_isi_service() {
   log "Installing isirunall.service"
 
-  cat >"$ISI_SERVICE_FILE" <<EOF
+  cat >"$ISI_SERVICE_FILE" <<SERVICE_EOF
 [Unit]
 Description=ISI simulator (3ns + ISI clients over adaptive br0)
 After=network-online.target
@@ -622,7 +634,7 @@ StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SERVICE_EOF
 }
 
 restart_isi_service() {
@@ -659,7 +671,7 @@ cleanup_runtime_network_state() {
       grep -E '^veth[0-9]+_(host|ns)$' 2>/dev/null || true
   )
 
-  rm -rf /run/initbox-isi 2>/dev/null || true
+  rm -rf "$ISI_DHCP_RUNTIME_DIR" 2>/dev/null || true
 }
 
 remove_isi_files() {
@@ -689,9 +701,8 @@ print_install_summary() {
   echo "Bridge behavior:"
   echo "  - Detects all wired Ethernet ports dynamically"
   echo "  - Adds detected wired ports plus ISI veth ports to br0"
-  echo "  - Uses fresh DHCP inside namespaces"
-  echo "  - Uses random veth MACs on each service start"
-  echo "  - Deletes DHCP lease/config/pid files before each namespace DHCP request"
+  echo "  - Uses stable deterministic veth MACs, matching the Pi 3/4/5 ISI model"
+  echo "  - Uses fresh DHCP lease/config/pid files inside /run/initbox-isi"
   echo "  - Does not read global dhclient lease memory"
   echo "  - Does not use a hardcoded COPILOT IP"
   echo
