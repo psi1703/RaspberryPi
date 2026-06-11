@@ -105,6 +105,10 @@ configure_isi_network_managers() {
 unmanaged-devices=interface-name:eth0;interface-name:eth1;interface-name:br0;interface-name:veth*
 NM_EOF
     systemctl restart NetworkManager 2>/dev/null || true
+    # keyfile unmanaged is ignored when a saved connection profile exists;
+    # nmcli device set is the only reliable way to release an already-managed interface.
+    nmcli device set eth0 managed no 2>/dev/null || true
+    nmcli device set eth1 managed no 2>/dev/null || true
   fi
 
   # dhcpcd
@@ -414,14 +418,15 @@ add_veth_to_br() {
 # ---------------------------------------------------------------------------
 # DHCP inside namespace
 #
-# Two key flags on dhclient:
-#   -B  Sets the broadcast bit in DHCPDISCOVER/DHCPREQUEST.
-#       RFC 2131-compliant servers (including ISC dhcpd) must then send
-#       DHCPOFFER/DHCPACK to 255.255.255.255 instead of unicasting to the
-#       client MAC.  This eliminates the FDB learning race where a unicast
-#       OFFER arrives before the bridge has learned the veth MAC, causing
-#       the frame to be dropped rather than forwarded into the namespace.
-#   -1  Exit after one attempt rather than looping forever.
+# Broadcast flag via conf file:
+#   "send flags 0x8000" sets the broadcast bit (bit 15) in the BOOTP flags
+#   field of DHCPDISCOVER/DHCPREQUEST.  RFC 2131-compliant servers must then
+#   send DHCPOFFER/DHCPACK to 255.255.255.255 instead of unicasting to the
+#   client MAC.  This eliminates the FDB learning race where a unicast OFFER
+#   arrives before the bridge has learned the veth MAC and gets dropped.
+#
+#   Note: dhclient 4.4.3-P1 on Debian Bookworm does not have the -B CLI flag
+#   (stripped from the package); the conf file directive is used instead.
 # ---------------------------------------------------------------------------
 
 request_fresh_dhcp() {
@@ -436,10 +441,13 @@ request_fresh_dhcp() {
   rm -f "$lease_file" "$pid_file" "$conf_file"
   : >"$lease_file"
 
-  # Minimal conf — just declare the options we actually want.
+  # iface is expanded here intentionally — must NOT be a quoted heredoc.
   # No send host-name so the namespace stays anonymous on the COPILOT LAN.
-  cat >"$conf_file" <<'DHCPCF'
+  cat >"$conf_file" <<DHCPCF
 request subnet-mask, routers, domain-name-servers, broadcast-address;
+interface "${iface}" {
+  send flags 0x8000;
+}
 DHCPCF
 
   ip netns exec "$ns" ip addr flush dev "$iface" 2>/dev/null || true
@@ -452,7 +460,6 @@ DHCPCF
       -1 \
       -v \
       -d \
-      -B \
       -cf "$conf_file" \
       -lf "$lease_file" \
       -pf "$pid_file" \
@@ -726,6 +733,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
+ExecStartPre=/usr/bin/nmcli device set eth0 managed no
+ExecStartPre=/usr/bin/nmcli device set eth1 managed no
+ExecStartPre=/sbin/ip addr flush dev eth0
+ExecStartPre=/sbin/ip addr flush dev eth1
 ExecStart=${ISI_RUNNER}
 Restart=on-failure
 StandardOutput=journal
@@ -792,8 +803,9 @@ Service : isirunall.service
 Runner  : ${ISI_RUNNER}
 
 Key behaviours:
-  - STP disabled, forward_delay 0  → bridge ports enter forwarding immediately
-  - dhclient -B (broadcast flag)   → OFFER delivered as broadcast, no FDB race
+  - STP disabled, forward_delay 0        → bridge ports enter forwarding immediately
+  - send flags 0x8000 in dhclient conf   → OFFER delivered as broadcast, no FDB race
+  - ExecStartPre releases NM eth0/eth1   → NM can't race to re-grab interfaces
   - Deterministic veth MACs        → stable across restarts
   - Fresh DHCP per namespace       → no stale lease interference
   - COPILOT IP discovered from DHCP server / routers option / default gateway
