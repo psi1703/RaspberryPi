@@ -514,57 +514,95 @@ run_sanity_checks() {
   return 1
 }
 
-confirm_run() {
-  local module_name="$1"
-  local module_script="$2"
+confirm_module_action() {
+  local action="$1"
+  local module_name="$2"
+  local module_script="$3"
+  local confirmation_word="$4"
   local confirmation
 
   echo
-  echo "Ready to run module"
-  echo "-------------------"
+  echo "Ready to ${action} module"
+  echo "-------------------------"
   echo "Profile: $PROFILE_ID"
   echo "Module:  $module_name"
   echo "Script:  $module_script"
   echo "Log:     $LOG_FILE"
   echo "State:   ${INITBOX_STATE_FILE:-/etc/initbox/install-state.env}"
   echo
-  echo "This may install packages, modify system configuration, enable services, or require reboot."
-  echo "Only continue if this Pi is in the lab with Internet access."
+
+  case "$action" in
+    install)
+      echo "This may install packages, modify system configuration, enable services, or require reboot."
+      echo "Only continue if this Pi is in the lab with Internet access."
+      ;;
+    uninstall)
+      echo "This will remove services and files created by this module."
+      echo "It will not remove shared packages unless the module uninstall action explicitly supports that."
+      ;;
+    purge)
+      echo "This will remove services and files created by this module."
+      echo "It may also remove module-owned binaries or package-level artifacts."
+      ;;
+    *)
+      echo "This will run module action: $action"
+      ;;
+  esac
+
   echo
-  printf 'Type RUN to continue, or anything else to cancel: '
+  printf 'Type %s to continue, or anything else to cancel: ' "$confirmation_word"
   read -r confirmation
 
-  if [ "$confirmation" != "RUN" ]; then
+  if [ "$confirmation" != "$confirmation_word" ]; then
     echo
-    echo "Cancelled. No installation has been performed."
-    log_line "CANCELLED profile=$PROFILE_ID module=$module_name script=$module_script"
+    echo "Cancelled. No action has been performed."
+    log_line "CANCELLED action=$action profile=$PROFILE_ID module=$module_name script=$module_script"
     return 1
   fi
 
   return 0
 }
 
+confirm_run() {
+  local module_name="$1"
+  local module_script="$2"
+
+  confirm_module_action "install" "$module_name" "$module_script" "RUN"
+}
+
+
 run_module_script() {
   local module_id="$1"
   local module_name="$2"
   local module_script="$3"
+  local module_action="${4:-install}"
 
   echo
   echo "Running module script..."
   echo "------------------------"
-  echo "$module_script"
+  echo "Action: $module_action"
+  echo "Script: $module_script"
   echo
 
-  log_line "START profile=$PROFILE_ID module_id=$module_id module_name=$module_name script=$module_script"
+  log_line "START action=$module_action profile=$PROFILE_ID module_id=$module_id module_name=$module_name script=$module_script"
 
   if [ -w "$LOG_FILE" ]; then
-    if bash "$module_script" 2>&1 | tee -a "$LOG_FILE"; then
-      log_line "SUCCESS profile=$PROFILE_ID module_id=$module_id module_name=$module_name"
-      record_module_success_state "$module_id" "$module_name"
+    if bash "$module_script" "$module_action" 2>&1 | tee -a "$LOG_FILE"; then
+      log_line "SUCCESS action=$module_action profile=$PROFILE_ID module_id=$module_id module_name=$module_name"
+
+      case "$module_action" in
+        install)
+          record_module_success_state "$module_id" "$module_name"
+          ;;
+        uninstall|remove|purge)
+          record_module_uninstalled_state "$module_id" "$module_name"
+          ;;
+      esac
+
       echo
       echo "Module script completed successfully."
     else
-      log_line "FAILED profile=$PROFILE_ID module_id=$module_id module_name=$module_name"
+      log_line "FAILED action=$module_action profile=$PROFILE_ID module_id=$module_id module_name=$module_name"
       record_module_failure_state "$module_id" "$module_name"
       echo
       echo "ERROR: module script failed. Check log: $LOG_FILE"
@@ -573,8 +611,16 @@ run_module_script() {
   else
     echo "WARNING: log file is not writable. Running without log capture."
 
-    if bash "$module_script"; then
-      record_module_success_state "$module_id" "$module_name"
+    if bash "$module_script" "$module_action"; then
+      case "$module_action" in
+        install)
+          record_module_success_state "$module_id" "$module_name"
+          ;;
+        uninstall|remove|purge)
+          record_module_uninstalled_state "$module_id" "$module_name"
+          ;;
+      esac
+
       echo
       echo "Module script completed successfully."
     else
@@ -585,6 +631,7 @@ run_module_script() {
     fi
   fi
 }
+
 
 handle_selection() {
   local selected_index="$1"
@@ -624,6 +671,199 @@ handle_selection() {
   fi
 }
 
+print_uninstall_menu() {
+  local index
+  local module_id
+  local module_name
+  local module_script
+
+  echo
+  echo "Available uninstall modules"
+  echo "---------------------------"
+
+  index=1
+  for module_id in "${SUPPORTED_MODULES[@]}"; do
+    if ! initbox_module_supports_uninstall "$module_id"; then
+      continue
+    fi
+
+    module_name="$(initbox_module_display_name "$module_id")"
+
+    if module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
+      if [ -f "$module_script" ]; then
+        printf '  %d) Remove %-16s %s\n' "$index" "$module_name" "[script found]"
+      else
+        printf '  %d) Remove %-16s %s\n' "$index" "$module_name" "[script missing]"
+      fi
+    else
+      printf '  %d) Remove %-16s %s\n' "$index" "$module_name" "[not mapped]"
+    fi
+
+    index=$((index + 1))
+  done
+
+  echo "  b) Back"
+  echo
+}
+
+get_uninstall_module_by_index() {
+  local requested_index="$1"
+  local index
+  local module_id
+
+  index=1
+
+  for module_id in "${SUPPORTED_MODULES[@]}"; do
+    if ! initbox_module_supports_uninstall "$module_id"; then
+      continue
+    fi
+
+    if [ "$index" -eq "$requested_index" ]; then
+      printf '%s\n' "$module_id"
+      return 0
+    fi
+
+    index=$((index + 1))
+  done
+
+  return 1
+}
+
+count_uninstall_modules() {
+  local count
+  local module_id
+
+  count=0
+
+  for module_id in "${SUPPORTED_MODULES[@]}"; do
+    if initbox_module_supports_uninstall "$module_id"; then
+      count=$((count + 1))
+    fi
+  done
+
+  printf '%s\n' "$count"
+}
+
+handle_uninstall_selection() {
+  local selected_index="$1"
+  local module_id
+  local module_name
+  local module_script
+  local uninstall_action
+
+  if ! module_id="$(get_uninstall_module_by_index "$selected_index")"; then
+    echo
+    echo "Invalid uninstall choice: $selected_index"
+    return 1
+  fi
+
+  module_name="$(initbox_module_display_name "$module_id")"
+
+  echo
+  echo "Selected uninstall module"
+  echo "-------------------------"
+  echo "Module ID:   $module_id"
+  echo "Module name: $module_name"
+
+  initbox_require_supported_module "$module_id"
+
+  if ! initbox_module_supports_uninstall "$module_id"; then
+    echo "ERROR: module '$module_id' does not support uninstall yet."
+    log_line "ERROR uninstall_not_supported profile=$PROFILE_ID module_id=$module_id"
+    return 1
+  fi
+
+  if ! module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
+    echo "ERROR: no script mapping exists for module '$module_id' on profile '$PROFILE_ID'."
+    log_line "ERROR no_mapping profile=$PROFILE_ID module_id=$module_id"
+    return 1
+  fi
+
+  echo "Script:      $module_script"
+
+  if [ ! -f "$module_script" ]; then
+    echo
+    echo "ERROR: module script is missing."
+    echo "No uninstall has been performed."
+    log_line "ERROR missing_script profile=$PROFILE_ID module_id=$module_id script=$module_script"
+    return 1
+  fi
+
+  echo
+  echo "Uninstall mode"
+  echo "--------------"
+  echo "  1) Uninstall services/config created by this module"
+  echo "  2) Purge module-owned binary/files too"
+  echo "  b) Back"
+  echo
+  printf 'Select uninstall mode [1-2] or b: '
+  read -r uninstall_action
+
+  uninstall_action="${uninstall_action//$'\r'/}"
+
+  case "$uninstall_action" in
+    1)
+      if confirm_module_action "uninstall" "$module_name" "$module_script" "REMOVE"; then
+        run_module_script "$module_id" "$module_name" "$module_script" "uninstall"
+      fi
+      ;;
+    2)
+      if confirm_module_action "purge" "$module_name" "$module_script" "PURGE"; then
+        run_module_script "$module_id" "$module_name" "$module_script" "purge"
+      fi
+      ;;
+    b|B)
+      return 0
+      ;;
+    *)
+      echo
+      echo "Invalid uninstall mode: $uninstall_action"
+      return 1
+      ;;
+  esac
+}
+
+handle_uninstall_menu() {
+  local choice
+  local max_choice
+
+  max_choice="$(count_uninstall_modules)"
+
+  if [ "$max_choice" -eq 0 ]; then
+    echo
+    echo "No modules currently support uninstall for this profile."
+    return 0
+  fi
+
+  print_uninstall_menu
+
+  printf 'Select uninstall module [1-%s] or b: ' "$max_choice"
+  read -r choice
+
+  choice="${choice//$'\r'/}"
+
+  case "$choice" in
+    b|B)
+      return 0
+      ;;
+    ''|*[!0-9]*)
+      echo
+      echo "Invalid choice: $choice"
+      return 1
+      ;;
+    *)
+      if [ "$choice" -ge 1 ] && [ "$choice" -le "$max_choice" ]; then
+        handle_uninstall_selection "$choice"
+      else
+        echo
+        echo "Invalid choice: $choice"
+        return 1
+      fi
+      ;;
+  esac
+}
+
+
 interactive_menu() {
   local choice
   local max_choice
@@ -634,7 +874,7 @@ interactive_menu() {
 
     max_choice="${#SUPPORTED_MODULES[@]}"
 
-    printf 'Select a module [1-%s], c for checks, l for log, s for state, or q: ' "$max_choice"
+    printf 'Select install module [1-%s], u to uninstall, c for checks, l for log, s for state, or q: ' "$max_choice"
     read -r choice
 
     choice="${choice//$'\r'/}"
@@ -644,6 +884,10 @@ interactive_menu() {
         echo "Quit."
         log_line "INSTALLER_CLOSED profile=$PROFILE_ID"
         exit 0
+        ;;
+      u|U)
+        handle_uninstall_menu || true
+        pause
         ;;
       c|C)
         run_sanity_checks || true
@@ -692,6 +936,9 @@ main() {
   case "$ACTION" in
     menu|"")
       interactive_menu
+      ;;
+    u|U|uninstall|remove)
+      handle_uninstall_menu
       ;;
     c|C|check|checks|sanity)
       run_sanity_checks
