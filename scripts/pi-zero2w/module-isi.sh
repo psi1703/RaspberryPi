@@ -331,40 +331,55 @@ while true; do
     TIME_RESPONSE="$(ip netns exec "$zeit_ns" nc "$DEST_IP" 51001 -w 5 < "$zeit_file" || true)"
     log "ZEITNEHMER: raw response snippet: $(echo "$TIME_RESPONSE" | tr '\n' ' ' | head -c 400)"
 
+    # Prefer COPILOT Time_ISO8601 when available, then fall back to legacy DateTime.
+    # Accepted ISO examples:
+    #   2026-06-11T14:30:00Z
+    #   2026-06-11T14:30:00+04:00
+    #   2026-06-11T14:30:00
+    ISO_DT="$(
+      echo "$TIME_RESPONSE" |
+        grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.,][0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})?' |
+        head -n1 || true
+    )"
+
     DT="$(
       echo "$TIME_RESPONSE" |
         grep -oE '[0-9]{2}\.[0-9]{2}\.[0-9]{4}-[0-9]{2}:[0-9]{2}:[0-9]{2}' |
         head -n1 || true
     )"
 
-    if [ -n "$DT" ]; then
+    MASTER_EPOCH=0
+
+    if [ -n "$ISO_DT" ]; then
+      log "ZEITNEHMER: COPILOT Time_ISO8601=$ISO_DT"
+      MASTER_EPOCH="$(date -d "$ISO_DT" +%s 2>/dev/null || echo 0)"
+    elif [ -n "$DT" ]; then
       log "ZEITNEHMER: COPILOT DateTime=$DT"
       dpart="${DT%%-*}"
       tpart="${DT#*-}"
       IFS='.' read -r DD MM YYYY <<< "$dpart"
-
       MASTER_EPOCH="$(date -d "${YYYY}-${MM}-${DD} ${tpart}" +%s 2>/dev/null || echo 0)"
+    else
+      log "ZEITNEHMER: no Time_ISO8601 or DateTime pattern in response"
+    fi
 
-      if [ "$MASTER_EPOCH" -gt 0 ]; then
-        NOW_EPOCH="$(date +%s)"
-        DIFF=$((MASTER_EPOCH - NOW_EPOCH))
-        ADIFF="${DIFF#-}"
+    if [ "$MASTER_EPOCH" -gt 0 ]; then
+      NOW_EPOCH="$(date +%s)"
+      DIFF=$((MASTER_EPOCH - NOW_EPOCH))
+      ADIFF="${DIFF#-}"
 
-        log "ZEITNEHMER: drift=${DIFF}s"
+      log "ZEITNEHMER: current Pi epoch=${NOW_EPOCH}, COPILOT epoch=${MASTER_EPOCH}, drift=${DIFF}s"
 
-        if [ "$ADIFF" -gt "$DRIFT_THRESHOLD" ]; then
-          log "ZEITNEHMER: updating system clock"
-          if ! date -s "@${MASTER_EPOCH}" >/dev/null 2>&1; then
-            log "ZEITNEHMER: failed to set system time"
-          fi
-        else
-          log "ZEITNEHMER: drift within threshold"
+      if [ "$ADIFF" -gt "$DRIFT_THRESHOLD" ]; then
+        log "ZEITNEHMER: drift ${ADIFF}s > ${DRIFT_THRESHOLD}s; updating system clock"
+        if ! date -s "@${MASTER_EPOCH}" >/dev/null 2>&1; then
+          log "ZEITNEHMER: failed to set system time"
         fi
       else
-        log "ZEITNEHMER: cannot parse DateTime '$DT'"
+        log "ZEITNEHMER: drift ${ADIFF}s <= ${DRIFT_THRESHOLD}s; no adjust"
       fi
-    else
-      log "ZEITNEHMER: no DateTime pattern in response"
+    elif [ -n "$ISO_DT" ] || [ -n "$DT" ]; then
+      log "ZEITNEHMER: could not parse COPILOT time value"
     fi
   else
     ip netns exec "$zeit_ns" nc "$DEST_IP" 51001 < "$zeit_file" >/dev/null 2>&1 ||
@@ -395,7 +410,7 @@ EOF
   log "Writing ${ISI_PAYLOAD_3}"
   cat >"$ISI_PAYLOAD_3" <<'EOF'
 <IsiPut><AppName>ZEITNEHMER</AppName></IsiPut>
-<IsiGet><Items>DateTime</Items><Cyclic>5</Cyclic></IsiGet>
+<IsiGet><Items>DateTime,Time_ISO8601</Items><Cyclic>5</Cyclic></IsiGet>
 EOF
 
   chown root:root "$ISI_PAYLOAD_1" "$ISI_PAYLOAD_2" "$ISI_PAYLOAD_3" 2>/dev/null || true
@@ -479,6 +494,7 @@ print_install_summary() {
   echo "Check:"
   echo "  sudo systemctl status isirunall.service --no-pager"
   echo "  sudo journalctl -u isirunall.service -n 100 --no-pager"
+  echo "  grep -n 'Time_ISO8601' ${ISI_PAYLOAD_3}"
 }
 
 print_uninstall_summary() {
