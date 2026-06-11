@@ -2,6 +2,14 @@
 
 # InitBox Pi Zero 2W Web Terminal and captive portal module
 #
+# Actions:
+#   install   Install and enable ttyd plus captive portal socket responder.
+#   uninstall Remove services and files created by this module.
+#   purge     Uninstall and also remove /usr/local/bin/ttyd.
+#
+# Default action:
+#   install
+#
 # Installs and enables:
 #   - ttyd Web Terminal on port 7681
 #   - systemd socket-activated captive HTTP responder on port 80
@@ -34,6 +42,8 @@
 set -euo pipefail
 
 MODULE_NAME="Web Terminal and Captive Portal"
+
+ACTION="${1:-install}"
 
 OWNER="${OWNER:-initbox}"
 PORTAL_HOSTNAME="${PORTAL_HOSTNAME:-initbox.wlan}"
@@ -310,6 +320,7 @@ write_captive_socket_units() {
   terminal_url="http://${PORTAL_HOSTNAME}:${TERMINAL_PORT}/"
 
   log "writing captive portal socket unit on port $CAPTIVE_PORTAL_PORT"
+
   cat >"$CAPTIVE_SOCKET_FILE" <<EOF
 [Unit]
 Description=InitBox captive portal HTTP socket
@@ -324,6 +335,7 @@ WantedBy=sockets.target
 EOF
 
   log "writing captive portal per-connection service"
+
   cat >"$CAPTIVE_SERVICE_FILE" <<EOF
 [Unit]
 Description=InitBox captive portal HTTP responder
@@ -363,7 +375,53 @@ restart_services() {
   systemctl restart initbox-captive-http.socket
 }
 
-print_summary() {
+stop_and_disable_unit() {
+  local unit_name="$1"
+
+  log "stopping and disabling $unit_name if present"
+  systemctl disable --now "$unit_name" 2>/dev/null || true
+  systemctl reset-failed "$unit_name" 2>/dev/null || true
+}
+
+remove_module_services() {
+  log "removing Web Terminal and captive portal services"
+
+  stop_and_disable_unit "initbox-captive-http.socket"
+  stop_and_disable_unit "ttyd.service"
+  stop_and_disable_unit "initbox-captive-portal.service"
+  stop_and_disable_unit "initbox-ttyd-portal.service"
+
+  systemctl stop 'initbox-captive-http@*.service' 2>/dev/null || true
+  systemctl reset-failed 'initbox-captive-http@*.service' 2>/dev/null || true
+
+  rm -f "$CAPTIVE_SOCKET_FILE"
+  rm -f "$CAPTIVE_SERVICE_FILE"
+  rm -f "$CAPTIVE_RESPONDER"
+
+  rm -f "$TTYD_SERVICE_FILE"
+
+  rm -f "$OLD_CAPTIVE_SERVICE_FILE"
+  rm -f "$OLD_CAPTIVE_SCRIPT"
+  rm -f "$OLD_PORTAL_SERVICE_FILE"
+  rm -f "$OLD_PORTAL_SCRIPT"
+
+  remove_old_web_terminal_dns_fragments
+  remove_old_portal_redirect_rule
+
+  systemctl daemon-reload
+  systemctl reset-failed 2>/dev/null || true
+}
+
+purge_ttyd_binary() {
+  if [ -f "$TTYD_INSTALL_PATH" ]; then
+    log "removing ttyd binary: $TTYD_INSTALL_PATH"
+    rm -f "$TTYD_INSTALL_PATH"
+  else
+    log "ttyd binary not found at $TTYD_INSTALL_PATH"
+  fi
+}
+
+print_install_summary() {
   local hotspot_ip="$1"
 
   echo
@@ -399,7 +457,42 @@ print_summary() {
   echo "  From a Wi-Fi client: open http://$PORTAL_HOSTNAME/"
 }
 
-main() {
+print_uninstall_summary() {
+  echo
+  echo "Web Terminal and captive portal uninstalled"
+  echo "------------------------------------------"
+  echo "Removed:"
+  echo "  - ttyd.service"
+  echo "  - initbox-captive-http.socket"
+  echo "  - initbox-captive-http@.service"
+  echo "  - $CAPTIVE_RESPONDER"
+  echo
+  echo "Not removed:"
+  echo "  - hotspot service"
+  echo "  - dnsmasq hotspot configuration"
+  echo "  - hostapd hotspot configuration"
+  echo "  - ttyd binary at $TTYD_INSTALL_PATH"
+  echo
+  echo "Check:"
+  echo "  sudo systemctl status ttyd initbox-captive-http.socket --no-pager"
+  echo "  sudo ss -tulpn | grep -E ':80|:$TERMINAL_PORT'"
+}
+
+print_purge_summary() {
+  echo
+  echo "Web Terminal and captive portal purged"
+  echo "-------------------------------------"
+  echo "Removed services and files created by this module."
+  echo "Also removed:"
+  echo "  - $TTYD_INSTALL_PATH"
+  echo
+  echo "Not removed:"
+  echo "  - hotspot service"
+  echo "  - dnsmasq hotspot configuration"
+  echo "  - hostapd hotspot configuration"
+}
+
+install_main() {
   local hotspot_ip=""
   local ttyd_bin=""
 
@@ -418,7 +511,39 @@ main() {
   write_captive_responder_script
   write_captive_socket_units
   restart_services
-  print_summary "$hotspot_ip"
+  print_install_summary "$hotspot_ip"
+}
+
+uninstall_main() {
+  require_root
+
+  remove_module_services
+  print_uninstall_summary
+}
+
+purge_main() {
+  require_root
+
+  remove_module_services
+  purge_ttyd_binary
+  print_purge_summary
+}
+
+main() {
+  case "$ACTION" in
+    install|"")
+      install_main
+      ;;
+    uninstall|remove)
+      uninstall_main
+      ;;
+    purge)
+      purge_main
+      ;;
+    *)
+      fail "unknown action '$ACTION'. Use install, uninstall, or purge."
+      ;;
+  esac
 }
 
 main "$@"
