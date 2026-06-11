@@ -86,47 +86,156 @@ NAMES=(DRACHE NIX ZEITNEHMER)
 NS=(ns1 ns2 ns3)
 
 # Time sync behaviour
-DRIFT_THRESHOLD="${DRIFT_THRESHOLD:-2}"        # seconds
+DRIFT_THRESHOLD="${DRIFT_THRESHOLD:-2}"         # seconds
 TIME_SYNC_INTERVAL="${TIME_SYNC_INTERVAL:-60}" # seconds between time syncs
 
-DEST_IP=""                 # COPILOT IP discovered via DHCP
-NS_IPS=()                  # Collected namespace IPs
-UPLINK_IF="${UPLINK_IF:-}" # wired uplink; auto-detected on Zero/Zero 2W
+DEST_IP=""                    # COPILOT IP discovered dynamically from DHCP/gateway
+NS_IPS=()                     # Collected namespace IPs
+UPLINK_IF="${UPLINK_IF:-}"    # Optional manual wired interface override
 BRIDGE_CREATED_BY_ISI=0
+BRIDGE_PORTS_ADDED_BY_ISI=()
 
 log() {
   echo "[ISI $(date +%F_%T)] $*"
 }
 
 is_pi_zero_like() {
-  local m
-  m="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo '')"
-  case "$m" in
+  local model
+
+  model="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo '')"
+
+  case "$model" in
     *"Zero"*) return 0 ;;
     *) return 1 ;;
   esac
 }
 
+is_excluded_interface() {
+  local iface="$1"
+
+  case "$iface" in
+    lo|wlan*|wifi*|br*|veth*|docker*|virbr*|tap*|tun*|wg*|tailscale*|zt*|dummy*|ifb*|sit*|ip6tnl*|gre*|gretap*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+is_wired_ethernet_candidate() {
+  local iface="$1"
+  local dev_type=""
+
+  if is_excluded_interface "$iface"; then
+    return 1
+  fi
+
+  if [ ! -r "/sys/class/net/${iface}/type" ]; then
+    return 1
+  fi
+
+  dev_type="$(cat "/sys/class/net/${iface}/type" 2>/dev/null || echo '')"
+
+  # ARPHRD_ETHER == 1.
+  # This keeps normal Ethernet interfaces and excludes loopback/non-Ethernet links.
+  if [ "$dev_type" != "1" ]; then
+    return 1
+  fi
+
+  case "$iface" in
+    eth*|en*|usb*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+detect_wired_ethernet_ports() {
+  local iface_path
+  local iface
+  local detected=()
+
+  for iface_path in /sys/class/net/*; do
+    iface="$(basename "$iface_path")"
+
+    if is_wired_ethernet_candidate "$iface"; then
+      detected+=("$iface")
+    fi
+  done
+
+  if [ "${#detected[@]}" -gt 0 ]; then
+    printf '%s\n' "${deted_unused[@]:-}" >/dev/null 2>&1 || true
+    printf '%s\n' "${detected[@]}" | sort -V
+  fi
+}
+
+detect_bridge_ports() {
+  local wired_ifs=()
+
+  if [ -n "$UPLINK_IF" ]; then
+    if ! ip link show "$UPLINK_IF" >/dev/null 2>&1; then
+      log "ERROR: UPLINK_IF=${UPLINK_IF} does not exist."
+      exit 1
+    fi
+
+    if ! is_wired_ethernet_candidate "$UPLINK_IF"; then
+      log "ERROR: UPLINK_IF=${UPLINK_IF} is not a valid wired Ethernet candidate."
+      exit 1
+    fi
+
+    printf '%s\n' "$UPLINK_IF"
+    return 0
+  fi
+
+  mapfile -t wired_ifs < <(detect_wired_ethernet_ports)
+
+  if [ "${#wired_ifs[@]}" -eq 0 ]; then
+    log "ERROR: No wired Ethernet interfaces found for ${BRIDGE}."
+    log "ERROR: Check carrier board, USB Ethernet adapters, cabling, and interface names."
+    exit 1
+  fi
+
+  printf '%s\n' "${wired_ifs[@]}"
+}
+
 cleanup_ns() {
   local ns
+  local pid
+  local link_name
 
   for ns in "${NS[@]}"; do
+    if ip netns pids "$ns" >/dev/null 2>&1; then
+      while read -r pid; do
+        if [ -n "$pid" ]; then
+          kill -TERM "$pid" 2>/dev/null || true
+        fi
+      done < <(ip netns pids "$ns" 2>/dev/null || true)
+    fi
+
     ip netns del "$ns" 2>/dev/null || true
   done
 
-  ip -o link show |
-    awk -F': ' '{print $2}' |
-    cut -d'@' -f1 |
-    grep -E '^veth[0-9]+_(host|ns)$' 2>/dev/null |
-    xargs -r -I{} ip link del "{}" 2>/dev/null || true
+  while read -r link_name; do
+    if [ -n "$link_name" ]; then
+      ip link del "$link_name" 2>/dev/null || true
+    fi
+  done < <(
+    ip -o link show |
+      awk -F': ' '{print $2}' |
+      cut -d'@' -f1 |
+      grep -E '^veth[0-9]+_(host|ns)$' 2>/dev/null || true
+  )
 }
 
 uniq_mac() {
   local seed="$1"
-  local h=""
+  local hash=""
 
-  h="$(printf "%s" "$seed" | sha1sum | awk '{print $1}')"
-  printf "02:%s:%s:%s:%s:%s\n" "${h:0:2}" "${h:2:2}" "${h:4:2}" "${h:6:2}" "${h:8:2}"
+  hash="$(printf "%s" "$seed" | sha1sum | awk '{print $1}')"
+  printf "02:%s:%s:%s:%s:%s\n" "${hash:0:2}" "${hash:2:2}" "${hash:4:2}" "${hash:6:2}" "${hash:8:2}"
 }
 
 add_veth_to_br() {
@@ -140,72 +249,93 @@ add_veth_to_br() {
 
   ip link add "$ifh" type veth peer name "$ifn"
   ip link set "$ifh" address "$(uniq_mac "$ifh")"
-  ip link set "$ifh" master "$BRIDGE" || true
+  ip addr flush dev "$ifh" || true
+  ip link set "$ifh" master "$BRIDGE"
   ip link set "$ifh" up
 
   ip netns add "$ns"
   ip link set "$ifn" netns "$ns"
   ip netns exec "$ns" ip link set lo up
   ip netns exec "$ns" ip link set "$ifn" address "$(uniq_mac "$ifn")"
+  ip netns exec "$ns" ip addr flush dev "$ifn" || true
   ip netns exec "$ns" ip link set "$ifn" up
 }
 
-setup_bridge_for_isi() {
-  local wired_ifs=()
+attach_port_to_bridge() {
+  local iface="$1"
+  local current_master=""
 
-  if ip link show "$BRIDGE" >/dev/null 2>&1; then
-    log "$BRIDGE already exists; using existing L2 bridge."
-    return 0
-  fi
-
-  if ! is_pi_zero_like; then
-    log "ERROR: $BRIDGE not present and auto-create is only supported on Pi Zero/Zero 2W; aborting."
+  if ! ip link show "$iface" >/dev/null 2>&1; then
+    log "ERROR: Interface ${iface} disappeared before bridge attach."
     exit 1
   fi
 
-  if [ -z "$UPLINK_IF" ]; then
-    mapfile -t wired_ifs < <(
-      find /sys/class/net -maxdepth 1 -mindepth 1 -type l -printf '%f\n' |
-        grep -E '^(eth[0-9]+|enx[0-9A-Fa-f]{12})$' |
-        sort || true
-    )
+  current_master="$(basename "$(readlink "/sys/class/net/${iface}/master" 2>/dev/null || echo '')")"
 
-    if [ "${#wired_ifs[@]}" -eq 0 ]; then
-      log "ERROR: No wired uplink interface found for $BRIDGE."
-      exit 1
-    fi
-
-    UPLINK_IF="${wired_ifs[0]}"
+  if [ -n "$current_master" ] && [ "$current_master" != "$BRIDGE" ]; then
+    log "ERROR: ${iface} is already enslaved to ${current_master}, refusing to steal it."
+    exit 1
   fi
 
-  log "Creating $BRIDGE for ISI on Pi Zero, uplink=$UPLINK_IF"
+  log "Adding wired port ${iface} to ${BRIDGE}"
 
-  ip link add name "$BRIDGE" type bridge
-  ip link set "$UPLINK_IF" up || true
-  ip addr flush dev "$UPLINK_IF" || true
+  ip link set "$iface" up || true
+  ip addr flush dev "$iface" || true
+  ip link set "$iface" master "$BRIDGE"
+
+  BRIDGE_PORTS_ADDED_BY_ISI+=("$iface")
+}
+
+setup_bridge_for_isi() {
+  local bridge_ports=()
+  local iface
+
+  if ! is_pi_zero_like; then
+    log "ERROR: ISI auto bridge setup is only supported on Pi Zero/Zero 2W by this module."
+    exit 1
+  fi
+
+  mapfile -t bridge_ports < <(detect_bridge_ports)
+
+  log "Detected wired Ethernet bridge ports: ${bridge_ports[*]}"
+
+  if ip link show "$BRIDGE" >/dev/null 2>&1; then
+    log "${BRIDGE} already exists; reusing it and ensuring all detected wired ports are attached."
+  else
+    log "Creating ${BRIDGE} for ISI."
+    ip link add name "$BRIDGE" type bridge
+    BRIDGE_CREATED_BY_ISI=1
+  fi
+
   ip addr flush dev "$BRIDGE" || true
-  ip link set "$UPLINK_IF" master "$BRIDGE" || true
-  ip link set "$BRIDGE" up || true
+  ip link set "$BRIDGE" up
 
-  BRIDGE_CREATED_BY_ISI=1
-  log "$BRIDGE up with $UPLINK_IF as port."
+  for iface in "${bridge_ports[@]}"; do
+    attach_port_to_bridge "$iface"
+  done
+
+  ip link set "$BRIDGE" up
+
+  log "${BRIDGE} is ready with wired ports: ${bridge_ports[*]}"
+  log "Current bridge membership:"
+  bridge link 2>/dev/null || true
 }
 
 teardown_bridge_for_isi() {
-  if [ "$BRIDGE_CREATED_BY_ISI" -ne 1 ]; then
-    return 0
+  local iface
+
+  if [ "${#BRIDGE_PORTS_ADDED_BY_ISI[@]}" -gt 0 ]; then
+    for iface in "${BRIDGE_PORTS_ADDED_BY_ISI[@]}"; do
+      ip link set "$iface" nomaster 2>/dev/null || true
+      ip link set "$iface" up 2>/dev/null || true
+    done
   fi
 
-  if [ -z "$UPLINK_IF" ]; then
-    return 0
+  if [ "$BRIDGE_CREATED_BY_ISI" -eq 1 ]; then
+    log "Tearing down ${BRIDGE} created by ISI."
+    ip link set "$BRIDGE" down 2>/dev/null || true
+    ip link del "$BRIDGE" type bridge 2>/dev/null || true
   fi
-
-  log "Tearing down $BRIDGE created by ISI and releasing $UPLINK_IF"
-
-  ip link set "$UPLINK_IF" nomaster 2>/dev/null || true
-  ip link set "$BRIDGE" down 2>/dev/null || true
-  ip link del "$BRIDGE" type bridge 2>/dev/null || true
-  ip link set "$UPLINK_IF" up 2>/dev/null || true
 }
 
 full_cleanup() {
@@ -225,11 +355,11 @@ for _ in {1..20}; do
 done
 
 if ! ip -br link show "$BRIDGE" | grep -q '\<UP\>'; then
-  log "ERROR: $BRIDGE not UP"
+  log "ERROR: ${BRIDGE} not UP"
   exit 1
 fi
 
-log "$BRIDGE is UP"
+log "${BRIDGE} is UP"
 
 if ! command -v dhclient >/dev/null 2>&1; then
   log "ERROR: dhclient missing"
@@ -246,13 +376,26 @@ cleanup_ns
 discover_copilot_from_dhcp() {
   local dhcp_out="$1"
   local srv=""
+  local gw=""
 
-  if [ -z "$DEST_IP" ]; then
-    srv="$(printf '%s\n' "$dhcp_out" | sed -nE 's/.*DHCPACK of [^ ]+ from ([0-9.]+).*/\1/p' | tail -1)"
+  if [ -n "$DEST_IP" ]; then
+    return 0
+  fi
 
-    if [[ "$srv" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-      DEST_IP="$srv"
-    fi
+  srv="$(printf '%s\n' "$dhcp_out" | sed -nE 's/.*DHCPACK of [^ ]+ from ([0-9.]+).*/\1/p' | tail -1)"
+
+  if [[ "$srv" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    DEST_IP="$srv"
+    log "COPILOT candidate discovered from DHCPACK server: ${DEST_IP}"
+    return 0
+  fi
+
+  gw="$(printf '%s\n' "$dhcp_out" | sed -nE 's/.*option routers[[:space:]]+([0-9.]+).*/\1/p' | tail -1)"
+
+  if [[ "$gw" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    DEST_IP="$gw"
+    log "COPILOT candidate discovered from DHCP router option: ${DEST_IP}"
+    return 0
   fi
 }
 
@@ -262,22 +405,25 @@ for i in "${!NS[@]}"; do
 
   add_veth_to_br "$idx" "$ns"
 
+  log "Requesting DHCP address for ${ns} on veth${idx}_ns. No static COPILOT IP is used."
   DHCP_OUT="$(ip netns exec "$ns" dhclient -4 -1 -v "veth${idx}_ns" 2>&1 || true)"
 
   if ! printf '%s' "$DHCP_OUT" | grep -q 'DHCPACK'; then
-    log "ERROR: DHCP failed in $ns"
+    log "ERROR: DHCP failed in ${ns}"
+    log "DHCP output follows:"
+    printf '%s\n' "$DHCP_OUT" >&2
     exit 1
   fi
 
-  ip netns pids "$ns" 2>/dev/null | while read -r pid; do
-    if ps -p "$pid" -o comm= 2>/dev/null | grep -qx 'dhclient'; then
+  while read -r pid; do
+    if [ -n "$pid" ] && ps -p "$pid" -o comm= 2>/dev/null | grep -qx 'dhclient'; then
       kill -TERM "$pid" 2>/dev/null || true
     fi
-  done
+  done < <(ip netns pids "$ns" 2>/dev/null || true)
 
   ns_ip="$(ip netns exec "$ns" ip -o -4 addr show "veth${idx}_ns" | awk '{print $4}' | cut -d/ -f1 || true)"
   NS_IPS+=("${ns_ip:-}")
-  log "$ns got IP ${ns_ip:-unknown} via DHCP"
+  log "${ns} got IP ${ns_ip:-unknown} via DHCP"
 
   discover_copilot_from_dhcp "$DHCP_OUT"
 
@@ -285,23 +431,25 @@ for i in "${!NS[@]}"; do
     gw="$(ip netns exec "$ns" ip route show default 2>/dev/null | awk '/^default via /{print $3; exit}')"
     if [[ "$gw" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
       DEST_IP="$gw"
+      log "COPILOT candidate discovered from namespace default gateway: ${DEST_IP}"
     fi
   fi
 done
 
 if [ -z "$DEST_IP" ]; then
-  log "ERROR: Could not determine COPILOT IP from L2 DHCP/gateway"
+  log "ERROR: Could not determine COPILOT IP from DHCP server, DHCP router option, or namespace gateway."
+  log "ERROR: No hardcoded fallback IP is configured by design."
   exit 1
 fi
 
-log "COPILOT discovered at $DEST_IP"
+log "COPILOT target discovered dynamically at ${DEST_IP}"
 
 start_isi_loop() {
   local ns="$1"
   local file="$2"
   local name="$3"
 
-  log "Starting persistent ISI client $name in $ns"
+  log "Starting persistent ISI client ${name} in ${ns}"
 
   ip netns exec "$ns" bash -lc '
     while true; do
@@ -351,13 +499,13 @@ while true; do
     MASTER_EPOCH=0
 
     if [ -n "$ISO_DT" ]; then
-      log "ZEITNEHMER: COPILOT Time_ISO8601=$ISO_DT"
+      log "ZEITNEHMER: COPILOT Time_ISO8601=${ISO_DT}"
       MASTER_EPOCH="$(date -d "$ISO_DT" +%s 2>/dev/null || echo 0)"
     elif [ -n "$DT" ]; then
-      log "ZEITNEHMER: COPILOT DateTime=$DT"
+      log "ZEITNEHMER: COPILOT DateTime=${DT}"
       dpart="${DT%%-*}"
       tpart="${DT#*-}"
-      IFS='.' read -r DD MM YYYY <<< "$dpart"
+      IFS='.' read -r DD MM YYYY <<<"$dpart"
       MASTER_EPOCH="$(date -d "${YYYY}-${MM}-${DD} ${tpart}" +%s 2>/dev/null || echo 0)"
     else
       log "ZEITNEHMER: no Time_ISO8601 or DateTime pattern in response"
@@ -422,7 +570,7 @@ write_isi_service() {
 
   cat >"$ISI_SERVICE_FILE" <<EOF
 [Unit]
-Description=ISI simulator (3ns + ISI clients over br0)
+Description=ISI simulator (3ns + ISI clients over adaptive br0)
 After=network-online.target
 Wants=network-online.target
 
@@ -454,17 +602,24 @@ stop_and_disable_unit() {
 }
 
 cleanup_runtime_network_state() {
+  local link_name
+
   log "cleaning ISI runtime namespaces and veth links"
 
   ip netns del ns1 2>/dev/null || true
   ip netns del ns2 2>/dev/null || true
   ip netns del ns3 2>/dev/null || true
 
-  ip -o link show |
-    awk -F': ' '{print $2}' |
-    cut -d'@' -f1 |
-    grep -E '^veth[0-9]+_(host|ns)$' 2>/dev/null |
-    xargs -r -I{} ip link del "{}" 2>/dev/null || true
+  while read -r link_name; do
+    if [ -n "$link_name" ]; then
+      ip link del "$link_name" 2>/dev/null || true
+    fi
+  done < <(
+    ip -o link show |
+      awk -F': ' '{print $2}' |
+      cut -d'@' -f1 |
+      grep -E '^veth[0-9]+_(host|ns)$' 2>/dev/null || true
+  )
 }
 
 remove_isi_files() {
@@ -491,9 +646,17 @@ print_install_summary() {
   echo "Service: isirunall.service"
   echo "Runner:  ${ISI_RUNNER}"
   echo
+  echo "Bridge behavior:"
+  echo "  - Detects all wired Ethernet ports dynamically"
+  echo "  - Adds detected wired ports plus ISI veth ports to br0"
+  echo "  - Uses DHCP inside namespaces"
+  echo "  - Does not use a hardcoded COPILOT IP"
+  echo
   echo "Check:"
   echo "  sudo systemctl status isirunall.service --no-pager"
   echo "  sudo journalctl -u isirunall.service -n 100 --no-pager"
+  echo "  bridge link"
+  echo "  sudo ip netns exec ns1 ip -br addr"
   echo "  grep -n 'Time_ISO8601' ${ISI_PAYLOAD_3}"
 }
 
@@ -512,6 +675,7 @@ print_uninstall_summary() {
   echo
   echo "Not removed:"
   echo "  - installed dependency packages"
+  echo "  - existing bridge br0 if it was not deleted by the running service"
 }
 
 print_purge_summary() {
