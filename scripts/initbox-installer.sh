@@ -228,7 +228,7 @@ initbox_module_supports_uninstall() {
   local module_id="$1"
 
   case "$PROFILE_ID:$module_id" in
-    pi-zero2w:isi|pi-zero2w:hotspot|pi-zero2w:web-terminal)
+    pi-zero2w:isi|pi-zero2w:fms|pi-zero2w:hotspot|pi-zero2w:web-terminal)
       return 0
       ;;
     *)
