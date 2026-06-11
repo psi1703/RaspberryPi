@@ -91,6 +91,20 @@ initbox_state_record_module_failure() {
   initbox_state_set_value "MODULE_${key_prefix}_FAILED_AT" "$timestamp"
 }
 
+initbox_state_record_module_uninstalled() {
+  local module_id="$1"
+  local module_name="$2"
+  local timestamp
+  local key_prefix
+
+  timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  key_prefix="$(printf '%s' "$module_id" | tr '[:lower:]-' '[:upper:]_')"
+
+  initbox_state_set_value "MODULE_${key_prefix}_STATUS" "uninstalled"
+  initbox_state_set_value "MODULE_${key_prefix}_NAME" "$module_name"
+  initbox_state_set_value "MODULE_${key_prefix}_UNINSTALLED_AT" "$timestamp"
+}
+
 initbox_state_print() {
   if [ ! -f "$INITBOX_STATE_FILE" ]; then
     echo "No InitBox install state found."
