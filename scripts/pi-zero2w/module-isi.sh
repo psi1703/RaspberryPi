@@ -441,14 +441,12 @@ request_fresh_dhcp() {
   rm -f "$lease_file" "$pid_file" "$conf_file"
   : >"$lease_file"
 
-  # iface is expanded here intentionally — must NOT be a quoted heredoc.
+  # send flags 0x8000 sets the broadcast bit in BOOTP flags — COPILOT must
+  # respond with a broadcast OFFER, avoiding the bridge FDB learning race.
+  # Top-level directive (no interface block) avoids a dhclient parse warning.
   # No send host-name so the namespace stays anonymous on the COPILOT LAN.
-  cat >"$conf_file" <<DHCPCF
-request subnet-mask, routers, domain-name-servers, broadcast-address;
-interface "${iface}" {
-  send flags 0x8000;
-}
-DHCPCF
+  printf 'request subnet-mask, routers, domain-name-servers, broadcast-address;\nsend flags 0x8000;\n' \
+    >"$conf_file"
 
   ip netns exec "$ns" ip addr flush dev "$iface" 2>/dev/null || true
 
