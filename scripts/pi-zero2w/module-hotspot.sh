@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# InitBox Pi Zero 2W Hotspot module
+#
+# Actions:
+#   install   Install and enable InitBox hotspot.
+#   uninstall Remove services/config created by this module, but keep packages.
+#   purge     Uninstall and also purge hotspot packages.
+#
+# Default action:
+#   install
+
+ACTION="${1:-install}"
+
 : "${OWNER:=initbox}"
 : "${HOTSPOT_PASS:=TomatoH34d}"
 : "${HOTSPOT_INTERFACE:=wlan0}"
@@ -12,11 +24,13 @@ HOSTAPD_OVERRIDE_DIR="/etc/systemd/system/hostapd.service.d"
 HOSTAPD_OVERRIDE_FILE="${HOSTAPD_OVERRIDE_DIR}/initbox-hotspot.conf"
 
 DNSMASQ_CONF="/etc/dnsmasq.conf"
+DNSMASQ_BACKUP="${DNSMASQ_CONF}.initbox.bak"
 DNSMASQ_DIR="/etc/dnsmasq.d"
 DNSMASQ_OVERRIDE_DIR="/etc/systemd/system/dnsmasq.service.d"
 DNSMASQ_OVERRIDE_FILE="${DNSMASQ_OVERRIDE_DIR}/initbox-hotspot.conf"
 
 DHCPCD_CONF="/etc/dhcpcd.conf"
+NETWORKMANAGER_UNMANAGED_FILE="/etc/NetworkManager/conf.d/initbox-unmanaged-wlan0.conf"
 BOXNO_FILE="/etc/pi-boxno"
 
 ts() {
@@ -67,6 +81,10 @@ ensure_log_dir() {
   mkdir -p "$(dirname "$LOGFILE")"
   touch "$LOGFILE"
   chown "$OWNER:$OWNER" "$LOGFILE" 2>/dev/null || true
+}
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
 }
 
 calc_hotspot_subnet() {
@@ -124,7 +142,7 @@ stop_conflicting_wifi_clients() {
     warn "NetworkManager exists; marking ${HOTSPOT_INTERFACE} unmanaged"
     mkdir -p /etc/NetworkManager/conf.d
 
-    cat >/etc/NetworkManager/conf.d/initbox-unmanaged-wlan0.conf <<EOF
+    cat >"$NETWORKMANAGER_UNMANAGED_FILE" <<EOF
 [keyfile]
 unmanaged-devices=interface-name:${HOTSPOT_INTERFACE}
 EOF
@@ -185,7 +203,7 @@ write_dnsmasq_conf() {
   mkdir -p "$DNSMASQ_DIR"
 
   if [ -f "$DNSMASQ_CONF" ] && ! grep -q '^# initbox-hotspot' "$DNSMASQ_CONF"; then
-    cp "$DNSMASQ_CONF" "${DNSMASQ_CONF}.initbox.bak" 2>/dev/null || true
+    cp "$DNSMASQ_CONF" "$DNSMASQ_BACKUP" 2>/dev/null || true
   fi
 
   cat >"$DNSMASQ_CONF" <<EOF
@@ -345,6 +363,100 @@ restart_hotspot_stack() {
   ok "Hotspot stack restarted"
 }
 
+stop_and_disable_unit() {
+  local unit_name="$1"
+
+  log "stopping and disabling $unit_name if present"
+  systemctl disable --now "$unit_name" 2>/dev/null || true
+  systemctl reset-failed "$unit_name" 2>/dev/null || true
+}
+
+restore_dnsmasq_conf_if_possible() {
+  if [ -f "$DNSMASQ_CONF" ] && grep -q '^# initbox-hotspot' "$DNSMASQ_CONF"; then
+    if [ -f "$DNSMASQ_BACKUP" ]; then
+      log "restoring previous dnsmasq config from $DNSMASQ_BACKUP"
+      cp "$DNSMASQ_BACKUP" "$DNSMASQ_CONF"
+      rm -f "$DNSMASQ_BACKUP"
+    else
+      log "removing InitBox-owned dnsmasq config"
+      rm -f "$DNSMASQ_CONF"
+    fi
+  else
+    log "dnsmasq config is not InitBox-owned; leaving unchanged"
+  fi
+}
+
+remove_dhcpcd_hotspot_block() {
+  if [ -f "$DHCPCD_CONF" ] && grep -q '^# initbox-hotspot$' "$DHCPCD_CONF"; then
+    log "removing InitBox dhcpcd hotspot block"
+    sed -i '/^# initbox-hotspot$/,/^$/d' "$DHCPCD_CONF"
+  fi
+}
+
+remove_hostapd_config_if_owned() {
+  if [ -f "$HOSTAPD_CONF" ] && grep -q '^# initbox-hotspot' "$HOSTAPD_CONF"; then
+    log "removing InitBox-owned hostapd config"
+    rm -f "$HOSTAPD_CONF"
+  else
+    log "hostapd config is not InitBox-owned; leaving unchanged"
+  fi
+
+  if [ -f "$HOSTAPD_DEFAULT" ] && grep -q "$HOSTAPD_CONF" "$HOSTAPD_DEFAULT"; then
+    log "removing hostapd default config pointer"
+    rm -f "$HOSTAPD_DEFAULT"
+  fi
+}
+
+remove_networkmanager_unmanaged_config() {
+  if [ -f "$NETWORKMANAGER_UNMANAGED_FILE" ]; then
+    log "removing NetworkManager unmanaged config for ${HOTSPOT_INTERFACE}"
+    rm -f "$NETWORKMANAGER_UNMANAGED_FILE"
+
+    if systemctl list-unit-files NetworkManager.service >/dev/null 2>&1; then
+      systemctl reload NetworkManager.service 2>/dev/null || systemctl restart NetworkManager.service 2>/dev/null || true
+    fi
+  fi
+}
+
+release_hotspot_interface() {
+  log "removing InitBox hotspot IP from ${HOTSPOT_INTERFACE} if present"
+
+  if command_exists ip; then
+    ip -4 addr flush dev "$HOTSPOT_INTERFACE" 2>/dev/null || true
+    ip link set "$HOTSPOT_INTERFACE" down 2>/dev/null || true
+  fi
+}
+
+remove_hotspot_services_and_config() {
+  log "removing InitBox hotspot services and configuration"
+
+  stop_and_disable_unit "dnsmasq.service"
+  stop_and_disable_unit "hostapd.service"
+
+  rm -f "$HOSTAPD_OVERRIDE_FILE"
+  rmdir "$HOSTAPD_OVERRIDE_DIR" 2>/dev/null || true
+
+  rm -f "$DNSMASQ_OVERRIDE_FILE"
+  rmdir "$DNSMASQ_OVERRIDE_DIR" 2>/dev/null || true
+
+  remove_legacy_dnsmasq_fragments
+  restore_dnsmasq_conf_if_possible
+  remove_dhcpcd_hotspot_block
+  remove_hostapd_config_if_owned
+  remove_networkmanager_unmanaged_config
+  release_hotspot_interface
+
+  systemctl daemon-reload
+  systemctl reset-failed 2>/dev/null || true
+}
+
+purge_hotspot_packages() {
+  log "purging hotspot packages"
+
+  apt_safe purge -y dnsmasq hostapd dhcpcd5
+  apt_safe autoremove -y
+}
+
 print_summary() {
   local ssid="$1"
   local hip="$2"
@@ -376,7 +488,42 @@ print_summary() {
   echo "  sudo journalctl -u hostapd -u dnsmasq -u dhcpcd -b --no-pager -n 120"
 }
 
-main() {
+print_uninstall_summary() {
+  echo
+  echo "InitBox hotspot uninstalled"
+  echo "---------------------------"
+  echo "Removed:"
+  echo "  - hostapd InitBox config if owned by InitBox"
+  echo "  - dnsmasq InitBox config if owned by InitBox"
+  echo "  - dhcpcd InitBox hotspot block"
+  echo "  - hostapd and dnsmasq InitBox systemd overrides"
+  echo "  - legacy InitBox dnsmasq fragments"
+  echo "  - NetworkManager unmanaged config written by this module"
+  echo "  - hotspot IP from ${HOTSPOT_INTERFACE}"
+  echo
+  echo "Not removed:"
+  echo "  - installed packages"
+  echo "  - ${BOXNO_FILE}"
+  echo
+  echo "Check:"
+  echo "  sudo systemctl status hostapd dnsmasq dhcpcd --no-pager"
+  echo "  ip -4 addr show ${HOTSPOT_INTERFACE}"
+}
+
+print_purge_summary() {
+  echo
+  echo "InitBox hotspot purged"
+  echo "----------------------"
+  echo "Removed InitBox hotspot services/configuration and purged:"
+  echo "  - dnsmasq"
+  echo "  - hostapd"
+  echo "  - dhcpcd5"
+  echo
+  echo "Not removed:"
+  echo "  - ${BOXNO_FILE}"
+}
+
+install_main() {
   local boxno=""
   local ssid=""
   local baseip=""
@@ -408,6 +555,43 @@ main() {
   print_summary "$ssid" "$hip" "$range"
 
   ok "Hotspot module installed. Connect to SSID '${ssid}'."
+}
+
+uninstall_main() {
+  require_root
+  ensure_log_dir
+
+  remove_hotspot_services_and_config
+  print_uninstall_summary
+  ok "Hotspot module uninstalled."
+}
+
+purge_main() {
+  require_root
+  ensure_log_dir
+
+  remove_hotspot_services_and_config
+  purge_hotspot_packages
+  print_purge_summary
+  ok "Hotspot module purged."
+}
+
+main() {
+  case "$ACTION" in
+    install|"")
+      install_main
+      ;;
+    uninstall|remove)
+      uninstall_main
+      ;;
+    purge)
+      purge_main
+      ;;
+    *)
+      err "unknown action '$ACTION'. Use install, uninstall, or purge."
+      exit 1
+      ;;
+  esac
 }
 
 main "$@"
