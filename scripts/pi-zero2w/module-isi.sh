@@ -1,21 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# InitBox Pi Zero 2W ISI module
-#
+# InitBox Pi Zero W / Zero 2W ISI module
 # Actions:
 #   install   Install and enable ISI simulator.
 #   uninstall Remove ISI service and files created by this module.
-#   purge     Uninstall and also purge ISI dependency packages.
-#
+#   remove    Alias for uninstall.
+#   purge     Compatibility alias for uninstall. It does not purge packages.
 # Default action:
 #   install
+# Offline field-mode policy:
+#   - Debian packages are installed from the InitBox local package cache.
+#   - Uninstall removes services/config/runtime files only.
+#   - Purge is disabled and behaves like uninstall.
+#   - Installed packages and cached .deb files are kept.
 
 ACTION="${1:-install}"
 
 : "${OWNER:=initbox}"
-: "${SCRIPT_DIR:=$(cd "$(dirname "$0")" && pwd)}"
 : "${LOGFILE:=/home/${OWNER}/pi_logs/initbox-install.log}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${INITBOX_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
+INITBOX_PACKAGES_FILE="${INITBOX_PACKAGES_FILE:-$REPO_ROOT/scripts/packages.txt}"
+INITBOX_PACKAGE_CACHE_DIR="${INITBOX_PACKAGE_CACHE_DIR:-/opt/initbox/packages}"
+PACKAGES_LIB_FILE="$REPO_ROOT/scripts/lib/packages.sh"
 
 ISI_RUNNER="/usr/local/bin/isirunall.sh"
 ISI_SERVICE_FILE="/etc/systemd/system/isirunall.service"
@@ -32,14 +42,24 @@ DHCPCD_BLOCK_END="# END InitBox ISI bridge unmanaged"
 # Logging
 # ----------------------------------------------------------------------------
 
-ts() { date +"%Y-%m-%d %H:%M:%S"; }
-log()  { echo "[ISI $(ts)] $*"        | tee -a "$LOGFILE"; }
-ok()   { echo "[ISI $(ts)] [OK] $*"   | tee -a "$LOGFILE"; }
-warn() { echo "[ISI $(ts)] [WARN] $*" | tee -a "$LOGFILE" >&2; }
-err()  { echo "[ISI $(ts)] [ERR] $*"  | tee -a "$LOGFILE" >&2; }
+ts() {
+  date +"%Y-%m-%d %H:%M:%S"
+}
 
-apt_safe() {
-  apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"
+log() {
+  echo "[ISI $(ts)] $*" | tee -a "$LOGFILE"
+}
+
+ok() {
+  echo "[ISI $(ts)] [OK] $*" | tee -a "$LOGFILE"
+}
+
+warn() {
+  echo "[ISI $(ts)] [WARN] $*" | tee -a "$LOGFILE" >&2
+}
+
+err() {
+  echo "[ISI $(ts)] [ERR] $*" | tee -a "$LOGFILE" >&2
 }
 
 # ----------------------------------------------------------------------------
@@ -59,20 +79,39 @@ ensure_log_dir() {
   chown "$OWNER:$OWNER" "$LOGFILE" 2>/dev/null || true
 }
 
+load_package_helper() {
+  if [ ! -f "$PACKAGES_LIB_FILE" ]; then
+    err "package helper missing: $PACKAGES_LIB_FILE"
+    exit 1
+  fi
+
+  # shellcheck disable=SC1090
+  . "$PACKAGES_LIB_FILE"
+
+  if ! declare -F initbox_packages_install >/dev/null 2>&1; then
+    err "package helper does not define initbox_packages_install"
+    exit 1
+  fi
+}
+
 # ----------------------------------------------------------------------------
 # Dependency management
 # ----------------------------------------------------------------------------
 
 install_dependencies() {
-  log "Installing ISI simulator dependencies"
-  apt_safe update
-  apt_safe install -y isc-dhcp-client netcat-openbsd
-}
+  log "Installing ISI simulator dependencies from InitBox package cache"
+  log "packages file: $INITBOX_PACKAGES_FILE"
+  log "cache dir:     $INITBOX_PACKAGE_CACHE_DIR"
 
-purge_isi_packages() {
-  log "Purging ISI dependency packages"
-  apt_safe purge -y isc-dhcp-client netcat-openbsd
-  apt_safe autoremove -y
+  load_package_helper
+
+  initbox_packages_install \
+    "$INITBOX_PACKAGES_FILE" \
+    "$INITBOX_PACKAGE_CACHE_DIR" \
+    isc-dhcp-client \
+    netcat-openbsd \
+    iproute2 \
+    bridge-utils
 }
 
 # ----------------------------------------------------------------------------
@@ -95,26 +134,29 @@ remove_dhcpcd_isi_block() {
 }
 
 configure_isi_network_managers() {
+  local iface=""
+
   log "Configuring host network managers to leave ISI bridge ports unmanaged"
 
-  # NetworkManager
   if systemctl list-unit-files NetworkManager.service >/dev/null 2>&1; then
     mkdir -p "$(dirname "$NM_ISI_CONF")"
+
     cat >"$NM_ISI_CONF" <<'NM_EOF'
 [keyfile]
 unmanaged-devices=interface-name:eth0;interface-name:eth1;interface-name:br0;interface-name:veth*
 NM_EOF
+
     systemctl restart NetworkManager 2>/dev/null || true
-    # keyfile unmanaged is ignored when a saved connection profile exists;
-    # nmcli device set is the only reliable way to release an already-managed interface.
-    nmcli device set eth0 managed no 2>/dev/null || true
-    nmcli device set eth1 managed no 2>/dev/null || true
+
+    for iface in eth0 eth1; do
+      nmcli device set "$iface" managed no 2>/dev/null || true
+    done
   fi
 
-  # dhcpcd
   if systemctl list-unit-files dhcpcd.service >/dev/null 2>&1; then
     touch "$DHCPCD_CONF"
     remove_dhcpcd_isi_block
+
     cat >>"$DHCPCD_CONF" <<EOF
 
 $DHCPCD_BLOCK_START
@@ -123,16 +165,16 @@ $DHCPCD_BLOCK_START
 denyinterfaces eth0 eth1 br0 veth*
 $DHCPCD_BLOCK_END
 EOF
+
     systemctl restart dhcpcd 2>/dev/null || true
   fi
 
-  # Flush any IPs the host may have grabbed on bridge-related interfaces
-  for _iface in eth0 eth1 br0; do
-    ip addr flush dev "$_iface" 2>/dev/null || true
+  for iface in eth0 eth1 br0; do
+    ip addr flush dev "$iface" 2>/dev/null || true
   done
 
-  while read -r _link; do
-    [ -n "$_link" ] && ip addr flush dev "$_link" 2>/dev/null || true
+  while read -r iface; do
+    [ -n "$iface" ] && ip addr flush dev "$iface" 2>/dev/null || true
   done < <(
     ip -o link show \
       | awk -F': ' '{print $2}' \
@@ -143,10 +185,11 @@ EOF
 
 remove_isi_network_manager_overrides() {
   log "Removing ISI network-manager overrides"
+
   rm -f "$NM_ISI_CONF" 2>/dev/null || true
   remove_dhcpcd_isi_block
   systemctl restart NetworkManager 2>/dev/null || true
-  systemctl restart dhcpcd       2>/dev/null || true
+  systemctl restart dhcpcd 2>/dev/null || true
 }
 
 # ----------------------------------------------------------------------------
@@ -161,7 +204,7 @@ write_isi_runner() {
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Runtime configuration (all overridable via environment)
+# Runtime configuration
 # ---------------------------------------------------------------------------
 BRIDGE="${BRIDGE:-br0}"
 DHCP_RUNTIME_DIR="${DHCP_RUNTIME_DIR:-/run/initbox-isi}"
@@ -188,7 +231,9 @@ BRIDGE_PORTS_ADDED_BY_ISI=()
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-log() { echo "[ISI $(date +%F_%T)] $*"; }
+log() {
+  echo "[ISI $(date +%F_%T)] $*"
+}
 
 # ---------------------------------------------------------------------------
 # Interface helpers
@@ -196,11 +241,14 @@ log() { echo "[ISI $(date +%F_%T)] $*"; }
 
 is_excluded_interface() {
   local iface="$1"
+
   case "$iface" in
-    lo|wlan*|wifi*|br*|veth*|docker*|virbr*|tap*|tun*|wg*|tailscale*|zt* \
-    |dummy*|ifb*|sit*|ip6tnl*|gre*|gretap*)
-      return 0 ;;
-    *) return 1 ;;
+    lo|wlan*|wifi*|br*|veth*|docker*|virbr*|tap*|tun*|wg*|tailscale*|zt*|dummy*|ifb*|sit*|ip6tnl*|gre*|gretap*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
   esac
 }
 
@@ -211,17 +259,22 @@ is_wired_ethernet_candidate() {
   is_excluded_interface "$iface" && return 1
   [ -r "/sys/class/net/${iface}/type" ] || return 1
 
-  dev_type="$(cat "/sys/class/net/${iface}/type" 2>/dev/null || echo '')"
+  dev_type="$(cat "/sys/class/net/${iface}/type" 2>/dev/null || echo "")"
   [ "$dev_type" = "1" ] || return 1
 
   case "$iface" in
-    eth*|en*|usb*) return 0 ;;
-    *) return 1 ;;
+    eth*|en*|usb*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
   esac
 }
 
 detect_wired_ethernet_ports() {
-  local iface_path iface
+  local iface_path=""
+  local iface=""
   local detected=()
 
   for iface_path in /sys/class/net/*; do
@@ -229,21 +282,25 @@ detect_wired_ethernet_ports() {
     is_wired_ethernet_candidate "$iface" && detected+=("$iface")
   done
 
-  [ "${#detected[@]}" -gt 0 ] && printf '%s\n' "${detected[@]}" | sort -V
+  if [ "${#detected[@]}" -gt 0 ]; then
+    printf '%s\n' "${detected[@]}" | sort -V
+  fi
 }
 
 detect_bridge_ports() {
   local wired_ifs=()
 
   if [ -n "$UPLINK_IF" ]; then
-    ip link show "$UPLINK_IF" >/dev/null 2>&1 || {
+    if ! ip link show "$UPLINK_IF" >/dev/null 2>&1; then
       log "ERROR: UPLINK_IF=${UPLINK_IF} does not exist."
       exit 1
-    }
-    is_wired_ethernet_candidate "$UPLINK_IF" || {
+    fi
+
+    if ! is_wired_ethernet_candidate "$UPLINK_IF"; then
       log "ERROR: UPLINK_IF=${UPLINK_IF} is not a valid wired Ethernet candidate."
       exit 1
-    }
+    fi
+
     printf '%s\n' "$UPLINK_IF"
     return 0
   fi
@@ -264,9 +321,18 @@ detect_bridge_ports() {
 # ---------------------------------------------------------------------------
 
 is_pi_zero_like() {
-  local model
-  model="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo '')"
-  case "$model" in *"Zero"*) return 0 ;; *) return 1 ;; esac
+  local model=""
+
+  model="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo "")"
+
+  case "$model" in
+    *"Zero"*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 attach_port_to_bridge() {
@@ -278,15 +344,16 @@ attach_port_to_bridge() {
     return 0
   fi
 
-  current_master="$(basename "$(readlink "/sys/class/net/${iface}/master" 2>/dev/null || echo '')")"
+  current_master="$(basename "$(readlink "/sys/class/net/${iface}/master" 2>/dev/null || echo "")")"
 
   if [ -n "$current_master" ] && [ "$current_master" != "$BRIDGE" ]; then
     log "ERROR: ${iface} is already enslaved to ${current_master}, refusing to steal it."
     exit 1
   fi
 
-  # Already attached to the right bridge - skip
-  [ "$current_master" = "$BRIDGE" ] && return 0
+  if [ "$current_master" = "$BRIDGE" ]; then
+    return 0
+  fi
 
   log "Adding wired port ${iface} to ${BRIDGE}"
   ip addr flush dev "$iface" 2>/dev/null || true
@@ -298,12 +365,12 @@ attach_port_to_bridge() {
 
 setup_bridge_for_isi() {
   local bridge_ports=()
-  local iface
+  local iface=""
 
-  is_pi_zero_like || {
-    log "ERROR: ISI auto bridge setup is only supported on Pi Zero/Zero 2W by this module."
+  if ! is_pi_zero_like; then
+    log "ERROR: ISI auto bridge setup is only supported on Pi Zero W / Zero 2W by this module."
     exit 1
-  }
+  fi
 
   mapfile -t bridge_ports < <(detect_bridge_ports)
   log "Detected wired Ethernet bridge ports: ${bridge_ports[*]}"
@@ -316,9 +383,6 @@ setup_bridge_for_isi() {
     BRIDGE_CREATED_BY_ISI=1
   fi
 
-  # KEY FIX: disable STP and set forward_delay 0 so bridge ports
-  # enter forwarding state immediately - without this, the STP
-  # learning phase (15-30s) causes DHCP DISCOVERs to time out.
   ip link set "$BRIDGE" type bridge stp_state 0 forward_delay 0 2>/dev/null || true
 
   ip addr flush dev "$BRIDGE" 2>/dev/null || true
@@ -336,11 +400,11 @@ setup_bridge_for_isi() {
 }
 
 teardown_bridge_for_isi() {
-  local iface
+  local iface=""
 
   for iface in "${BRIDGE_PORTS_ADDED_BY_ISI[@]+"${BRIDGE_PORTS_ADDED_BY_ISI[@]}"}"; do
     ip link set "$iface" nomaster 2>/dev/null || true
-    ip link set "$iface" up      2>/dev/null || true
+    ip link set "$iface" up 2>/dev/null || true
   done
 
   if [ "$BRIDGE_CREATED_BY_ISI" -eq 1 ]; then
@@ -355,7 +419,9 @@ teardown_bridge_for_isi() {
 # ---------------------------------------------------------------------------
 
 cleanup_ns() {
-  local ns pid link_name
+  local ns=""
+  local pid=""
+  local link_name=""
 
   for ns in "${NS[@]}"; do
     if ip netns pids "$ns" >/dev/null 2>&1; then
@@ -363,6 +429,7 @@ cleanup_ns() {
         [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || true
       done < <(ip netns pids "$ns" 2>/dev/null || true)
     fi
+
     ip netns del "$ns" 2>/dev/null || true
   done
 
@@ -379,17 +446,22 @@ cleanup_ns() {
 cleanup_dhcp_runtime() {
   mkdir -p "$DHCP_RUNTIME_DIR"
   rm -f "${DHCP_RUNTIME_DIR}"/dhclient-ns*.leases \
-        "${DHCP_RUNTIME_DIR}"/dhclient-ns*.pid    \
-        "${DHCP_RUNTIME_DIR}"/dhclient-ns*.conf
+    "${DHCP_RUNTIME_DIR}"/dhclient-ns*.pid \
+    "${DHCP_RUNTIME_DIR}"/dhclient-ns*.conf
 }
 
-# Deterministic locally-administered MAC derived from interface name
 uniq_mac() {
   local seed="$1"
-  local hash
+  local hash=""
+
   hash="$(printf "%s" "$seed" | sha1sum | awk '{print $1}')"
+
   printf "02:%s:%s:%s:%s:%s\n" \
-    "${hash:0:2}" "${hash:2:2}" "${hash:4:2}" "${hash:6:2}" "${hash:8:2}"
+    "${hash:0:2}" \
+    "${hash:2:2}" \
+    "${hash:4:2}" \
+    "${hash:6:2}" \
+    "${hash:8:2}"
 }
 
 add_veth_to_br() {
@@ -409,7 +481,7 @@ add_veth_to_br() {
 
   ip netns add "$ns"
   ip link set "$ifn" netns "$ns"
-  ip netns exec "$ns" ip link set lo   up
+  ip netns exec "$ns" ip link set lo up
   ip netns exec "$ns" ip link set "$ifn" address "$(uniq_mac "$ifn")"
   ip netns exec "$ns" ip addr flush dev "$ifn" 2>/dev/null || true
   ip netns exec "$ns" ip link set "$ifn" up
@@ -417,11 +489,6 @@ add_veth_to_br() {
 
 # ---------------------------------------------------------------------------
 # DHCP inside namespace
-#
-# Broadcast DHCP via dhclient config:
-#   bootp-broadcast-always asks dhclient to set the BOOTP broadcast flag.
-#   This avoids a bridge/FDB learning race where an early unicast OFFER can be
-#   missed before the bridge has learned the namespace veth MAC.
 # ---------------------------------------------------------------------------
 
 request_fresh_dhcp() {
@@ -436,10 +503,7 @@ request_fresh_dhcp() {
   rm -f "$lease_file" "$pid_file" "$conf_file"
   : >"$lease_file"
 
-  # Ask for broadcast replies without using invalid "send flags" syntax.
-  # No send host-name so the namespace stays anonymous on the COPILOT LAN.
-  printf 'bootp-broadcast-always;\nrequest subnet-mask, routers, domain-name-servers, broadcast-address;\n' \
-    >"$conf_file"
+  printf 'bootp-broadcast-always;\nrequest subnet-mask, routers, domain-name-servers, broadcast-address;\n' >"$conf_file"
 
   ip netns exec "$ns" ip addr flush dev "$iface" 2>/dev/null || true
 
@@ -456,7 +520,6 @@ request_fresh_dhcp() {
       "$iface" 2>&1 || true
   )"
 
-  # Clean up dhclient daemon if it somehow stayed alive
   if [ -f "$pid_file" ]; then
     kill -TERM "$(cat "$pid_file")" 2>/dev/null || true
     rm -f "$pid_file"
@@ -473,14 +536,16 @@ request_fresh_dhcp() {
 
 discover_copilot_from_dhcp() {
   local dhcp_out="$1"
-  local srv="" gw=""
+  local srv=""
+  local gw=""
 
   [ -n "$DEST_IP" ] && return 0
 
-  # Prefer the DHCPACK server address - that IS COPILOT
-  srv="$(printf '%s\n' "$dhcp_out" \
-    | sed -nE 's/.*DHCPACK of [^ ]+ from ([0-9.]+).*/\1/p' \
-    | tail -1)"
+  srv="$(
+    printf '%s\n' "$dhcp_out" \
+      | sed -nE 's/.*DHCPACK of [^ ]+ from ([0-9.]+).*/\1/p' \
+      | tail -1
+  )"
 
   if [[ "$srv" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
     DEST_IP="$srv"
@@ -488,10 +553,11 @@ discover_copilot_from_dhcp() {
     return 0
   fi
 
-  # Fall back to routers option
-  gw="$(printf '%s\n' "$dhcp_out" \
-    | sed -nE 's/.*option routers[[:space:]]+([0-9.]+).*/\1/p' \
-    | tail -1)"
+  gw="$(
+    printf '%s\n' "$dhcp_out" \
+      | sed -nE 's/.*option routers[[:space:]]+([0-9.]+).*/\1/p' \
+      | tail -1
+  )"
 
   if [[ "$gw" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
     DEST_IP="$gw"
@@ -538,24 +604,28 @@ setup_bridge_for_isi
 cleanup_dhcp_runtime
 cleanup_ns
 
-# Wait for bridge to come UP (it should be immediate with STP disabled)
 for _ in {1..10}; do
   ip -br link show "$BRIDGE" | grep -q '\<UP\>' && break
   sleep 1
 done
 
-ip -br link show "$BRIDGE" | grep -q '\<UP\>' || {
+if ! ip -br link show "$BRIDGE" | grep -q '\<UP\>'; then
   log "ERROR: ${BRIDGE} did not come UP"
   exit 1
-}
+fi
 
 log "${BRIDGE} is UP"
 
-command -v dhclient >/dev/null 2>&1 || { log "ERROR: dhclient missing"; exit 1; }
-{ command -v nc >/dev/null 2>&1 || command -v netcat >/dev/null 2>&1; } \
-  || { log "ERROR: nc/netcat missing"; exit 1; }
+if ! command -v dhclient >/dev/null 2>&1; then
+  log "ERROR: dhclient missing"
+  exit 1
+fi
 
-# Add a veth pair + namespace for each ISI client, then get a DHCP lease
+if ! command -v nc >/dev/null 2>&1 && ! command -v netcat >/dev/null 2>&1; then
+  log "ERROR: nc/netcat missing"
+  exit 1
+fi
+
 for i in "${!NS[@]}"; do
   ns="${NS[$i]}"
   idx=$((i + 1))
@@ -572,17 +642,23 @@ for i in "${!NS[@]}"; do
     exit 1
   fi
 
-  ns_ip="$(ip netns exec "$ns" ip -o -4 addr show "veth${idx}_ns" \
-    | awk '{print $4}' | cut -d/ -f1 || true)"
+  ns_ip="$(
+    ip netns exec "$ns" ip -o -4 addr show "veth${idx}_ns" \
+      | awk '{print $4}' \
+      | cut -d/ -f1 || true
+  )"
+
   NS_IPS+=("${ns_ip:-}")
   log "${ns} assigned IP ${ns_ip:-unknown}"
 
   discover_copilot_from_dhcp "$DHCP_OUT"
 
-  # Last-resort: check the default gateway inside the namespace
   if [ -z "$DEST_IP" ]; then
-    gw="$(ip netns exec "$ns" ip route show default 2>/dev/null \
-      | awk '/^default via /{print $3; exit}')"
+    gw="$(
+      ip netns exec "$ns" ip route show default 2>/dev/null \
+        | awk '/^default via /{print $3; exit}'
+    )"
+
     if [[ "$gw" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
       DEST_IP="$gw"
       log "COPILOT discovered from namespace default gateway: ${DEST_IP}"
@@ -590,20 +666,20 @@ for i in "${!NS[@]}"; do
   fi
 done
 
-[ -n "$DEST_IP" ] || {
+if [ -z "$DEST_IP" ]; then
   log "ERROR: Could not determine COPILOT IP from DHCP server, routers option, or default gateway."
   exit 1
-}
+fi
 
 log "COPILOT target: ${DEST_IP}"
 
-# Start DRACHE and NIX as fire-and-forget loops
 start_isi_loop "${NS[0]}" "${ISI_FILES[0]}" "${NAMES[0]}"
 start_isi_loop "${NS[1]}" "${ISI_FILES[1]}" "${NAMES[1]}"
 
 # ---------------------------------------------------------------------------
 # ZEITNEHMER loop - also does clock sync
 # ---------------------------------------------------------------------------
+
 zeit_ns="${NS[2]}"
 zeit_file="${ISI_FILES[2]}"
 
@@ -619,26 +695,26 @@ while true; do
 
     log "ZEITNEHMER: polling COPILOT at ${DEST_IP}:51001"
 
-    TIME_RESPONSE="$(ip netns exec "$zeit_ns" nc "$DEST_IP" 51001 -w 5 \
-      < "$zeit_file" || true)"
+    TIME_RESPONSE="$(
+      ip netns exec "$zeit_ns" nc "$DEST_IP" 51001 -w 5 \
+        <"$zeit_file" || true
+    )"
 
-    log "ZEITNEHMER: response snippet: $(printf '%s' "$TIME_RESPONSE" \
-      | tr '\n' ' ' | head -c 400)"
+    log "ZEITNEHMER: response snippet: $(printf '%s' "$TIME_RESPONSE" | tr '\n' ' ' | head -c 400)"
 
-    # Try Time_ISO8601 first, then legacy DateTime.
-    # Both fields are optional: different COPILOT versions expose different names.
-    # Missing or malformed time data must never stop the ZEITNEHMER loop.
-    ISO_DT="$(printf '%s
-' "$TIME_RESPONSE" \
-      | grep -oE '<Time_ISO8601>[^<]+</Time_ISO8601>|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.,][0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})?' \
-      | sed -E 's#</?Time_ISO8601>##g' \
-      | head -n1 || true)"
+    ISO_DT="$(
+      printf '%s\n' "$TIME_RESPONSE" \
+        | grep -oE '<Time_ISO8601>[^<]+</Time_ISO8601>|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.,][0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})?' \
+        | sed -E 's#</?Time_ISO8601>##g' \
+        | head -n1 || true
+    )"
 
-    DT="$(printf '%s
-' "$TIME_RESPONSE" \
-      | grep -oE '<DateTime>[^<]+</DateTime>|[0-9]{2}\.[0-9]{2}\.[0-9]{4}-[0-9]{2}:[0-9]{2}:[0-9]{2}' \
-      | sed -E 's#</?DateTime>##g' \
-      | head -n1 || true)"
+    DT="$(
+      printf '%s\n' "$TIME_RESPONSE" \
+        | grep -oE '<DateTime>[^<]+</DateTime>|[0-9]{2}\.[0-9]{2}\.[0-9]{4}-[0-9]{2}:[0-9]{2}:[0-9]{2}' \
+        | sed -E 's#</?DateTime>##g' \
+        | head -n1 || true
+    )"
 
     MASTER_EPOCH=0
 
@@ -677,11 +753,9 @@ while true; do
         log "ZEITNEHMER: drift ${ADIFF}s within threshold - no adjust"
       fi
     fi
-
   else
-    # Off-cycle: just send the payload, discard response
     ip netns exec "$zeit_ns" nc "$DEST_IP" 51001 \
-      < "$zeit_file" >/dev/null 2>&1 \
+      <"$zeit_file" >/dev/null 2>&1 \
       || log "ZEITNEHMER: nc send failed"
   fi
 
@@ -716,7 +790,7 @@ EOF
 EOF
 
   chown root:root "$ISI_PAYLOAD_1" "$ISI_PAYLOAD_2" "$ISI_PAYLOAD_3" 2>/dev/null || true
-  chmod 644       "$ISI_PAYLOAD_1" "$ISI_PAYLOAD_2" "$ISI_PAYLOAD_3"
+  chmod 644 "$ISI_PAYLOAD_1" "$ISI_PAYLOAD_2" "$ISI_PAYLOAD_3"
 }
 
 # ----------------------------------------------------------------------------
@@ -748,23 +822,24 @@ EOF
 
 restart_isi_service() {
   systemctl daemon-reload
-  systemctl enable  isirunall.service
+  systemctl enable isirunall.service
   systemctl restart isirunall.service
 }
 
 # ----------------------------------------------------------------------------
-# Install / uninstall / purge helpers
+# Install / uninstall helpers
 # ----------------------------------------------------------------------------
 
 stop_and_disable_unit() {
   local unit_name="$1"
+
   log "Stopping and disabling ${unit_name}"
   systemctl disable --now "$unit_name" 2>/dev/null || true
-  systemctl reset-failed  "$unit_name" 2>/dev/null || true
+  systemctl reset-failed "$unit_name" 2>/dev/null || true
 }
 
 cleanup_runtime_network_state() {
-  local link_name
+  local link_name=""
 
   log "Cleaning runtime namespaces, veth links, and DHCP state"
 
@@ -802,14 +877,18 @@ Service : isirunall.service
 Runner  : ${ISI_RUNNER}
 
 Key behaviours:
-  - STP disabled, forward_delay 0        -> bridge ports enter forwarding immediately
-  - bootp-broadcast-always in dhclient conf -> OFFER delivered as broadcast, no FDB race
-  - clean systemd unit with no ExecStartPre nmcli/ip commands
-  - Deterministic veth MACs        -> stable across restarts
-  - Fresh DHCP per namespace       -> no stale lease interference
+  - STP disabled, forward_delay 0
+  - bootp-broadcast-always in dhclient config
+  - deterministic veth MACs
+  - fresh DHCP per namespace
   - COPILOT IP discovered from DHCP server / routers option / default gateway
-  - No hardcoded COPILOT IP
+  - no hardcoded COPILOT IP
   - ZEITNEHMER requests DateTime and Time_ISO8601, uses whichever COPILOT returns
+
+Offline field-mode behaviour:
+  - Debian packages are installed from ${INITBOX_PACKAGE_CACHE_DIR}
+  - uninstall does not remove packages or cached .deb files
+  - purge is disabled and behaves like uninstall
 
 Check status:
   sudo systemctl status isirunall.service --no-pager
@@ -831,20 +910,11 @@ Removed:
   - runtime namespaces ns1/ns2/ns3
   - runtime veth links
   - ${ISI_DHCP_RUNTIME_DIR}
+  - ISI NetworkManager/dhcpcd unmanaged overrides
 
 Not removed:
-  - dependency packages (use 'purge' to remove those too)
-SUMMARY
-}
-
-print_purge_summary() {
-  cat <<SUMMARY
-
-ISI simulator purged
---------------------
-Removed service, files, and packages:
-  - isc-dhcp-client
-  - netcat-openbsd
+  - dependency packages
+  - cached .deb files under ${INITBOX_PACKAGE_CACHE_DIR}
 SUMMARY
 }
 
@@ -878,27 +948,20 @@ uninstall_main() {
   ok "ISI simulator module uninstalled."
 }
 
-purge_main() {
-  require_root
-  ensure_log_dir
-  stop_and_disable_unit "isirunall.service"
-  cleanup_runtime_network_state
-  remove_isi_network_manager_overrides
-  remove_isi_files
-  purge_isi_packages
-  systemctl daemon-reload
-  systemctl reset-failed 2>/dev/null || true
-  print_purge_summary
-  ok "ISI simulator module purged."
-}
-
 main() {
   case "$ACTION" in
-    install|"")  install_main   ;;
-    uninstall|remove) uninstall_main ;;
-    purge)       purge_main     ;;
+    install|"")
+      install_main
+      ;;
+    uninstall|remove)
+      uninstall_main
+      ;;
+    purge)
+      warn "purge is disabled by offline field-mode policy; running uninstall only"
+      uninstall_main
+      ;;
     *)
-      err "Unknown action '${ACTION}'. Use: install, uninstall, purge."
+      err "Unknown action '${ACTION}'. Use: install or uninstall."
       exit 1
       ;;
   esac
