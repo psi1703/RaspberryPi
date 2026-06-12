@@ -2,18 +2,18 @@
 
 # InitBox repository update script
 #
-# Safely hard-syncs the local Raspberry Pi repository to origin/main.
+# Safely hard-syncs the local Raspberry Pi repository to origin/pi-3-4-5.
 # Intended to be run manually on the Pi after changes are committed on GitHub.
 #
 # Usage:
 #   ./scripts/update-repo.sh
 #   ./scripts/update-repo.sh --dry-run
-#   ./scripts/update-repo.sh --branch main
+#   ./scripts/update-repo.sh --branch pi-3-4-5
 
 set -euo pipefail
 
 REPO_DIR="/home/initbox/RaspberryPi"
-BRANCH="main"
+BRANCH="pi-3-4-5"
 REMOTE="origin"
 DRY_RUN="no"
 LOG_DIR="/var/log/initbox"
@@ -26,7 +26,7 @@ Usage:
   ./scripts/update-repo.sh [options]
 
 Options:
-  --branch BRANCH   Git branch to sync from. Default: main
+  --branch BRANCH   Git branch to sync from. Default: pi-3-4-5
   --dry-run         Show what would be updated without changing files
   -h, --help        Show this help
 
@@ -34,6 +34,11 @@ This script performs a safer hard sync:
   git fetch origin <branch>
   git reset --hard origin/<branch>
   git clean -fd
+
+It also repairs local script permissions after sync and sets:
+  git config core.fileMode false
+
+This avoids chmod-only file mode changes appearing as modified files.
 
 It refuses to continue if the repository path is invalid.
 EOF
@@ -128,17 +133,25 @@ validate_repo() {
   fi
 }
 
+configure_git_filemode() {
+  log_line "setting git core.fileMode=false"
+  git config core.fileMode false
+}
+
 print_repo_state() {
   local current_head
   local remote_head
+  local filemode
 
   current_head="$(git rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
   remote_head="$(git rev-parse --short "$REMOTE/$BRANCH" 2>/dev/null || printf 'unknown')"
+  filemode="$(git config --get core.fileMode 2>/dev/null || printf 'unset')"
 
   log_line "repo: $REPO_DIR"
   log_line "branch: $BRANCH"
   log_line "current HEAD: $current_head"
   log_line "remote HEAD: $remote_head"
+  log_line "core.fileMode: $filemode"
 }
 
 show_local_changes() {
@@ -161,6 +174,7 @@ fetch_remote() {
 
 dry_run_update() {
   log_line "dry run enabled; no files will be changed"
+  configure_git_filemode
   print_repo_state
   show_local_changes
 
@@ -168,6 +182,8 @@ dry_run_update() {
   echo "Commands that would run:"
   echo "  git reset --hard $REMOTE/$BRANCH"
   echo "  git clean -fd"
+  echo "  repair local script permissions"
+  echo "  run bash syntax validation"
 }
 
 hard_sync_repo() {
@@ -192,12 +208,12 @@ repair_permissions() {
     chmod 755 scripts/initbox-status.sh
   fi
 
-  if [ -d scripts/lib ]; then
-    find scripts/lib -type f -name "*.sh" -exec chmod 644 {} \;
+  if [ -f scripts/update-repo.sh ]; then
+    chmod 755 scripts/update-repo.sh
   fi
 
-  if [ -d scripts/pi-zero2w ]; then
-    find scripts/pi-zero2w -type f -name "*.sh" -exec chmod 755 {} \;
+  if [ -d scripts/lib ]; then
+    find scripts/lib -type f -name "*.sh" -exec chmod 644 {} \;
   fi
 
   if [ -d scripts/pi-3-4-5 ]; then
@@ -209,34 +225,67 @@ repair_permissions() {
   fi
 }
 
-run_basic_validation() {
-  log_line "running basic validation"
+run_bash_syntax_validation() {
+  local script_file
+  local validation_files=()
 
-  if [ -f scripts/initbox-installer.sh ]; then
-    bash -n scripts/initbox-installer.sh
+  log_line "running bash syntax validation"
+
+  validation_files+=("scripts/initbox-installer.sh")
+  validation_files+=("scripts/initbox-status.sh")
+  validation_files+=("scripts/update-repo.sh")
+  validation_files+=("scripts/lib/profile.sh")
+  validation_files+=("scripts/lib/modules.sh")
+  validation_files+=("scripts/lib/state.sh")
+
+  for script_file in "${validation_files[@]}"; do
+    if [ -f "$script_file" ]; then
+      bash -n "$script_file"
+      log_line "bash -n passed: $script_file"
+    fi
+  done
+
+  if [ -d scripts/pi-3-4-5 ]; then
+    while IFS= read -r script_file; do
+      bash -n "$script_file"
+      log_line "bash -n passed: $script_file"
+    done < <(find scripts/pi-3-4-5 -type f -name "*.sh" | sort)
   fi
+}
 
-  if [ -f scripts/initbox-status.sh ]; then
-    bash -n scripts/initbox-status.sh
-  fi
+run_shellcheck_if_available() {
+  local shellcheck_files=()
 
-  if [ -f scripts/lib/profile.sh ]; then
-    bash -n scripts/lib/profile.sh
-  fi
-
-  if [ -f scripts/lib/modules.sh ]; then
-    bash -n scripts/lib/modules.sh
-  fi
-
-  if [ -f scripts/lib/state.sh ]; then
-    bash -n scripts/lib/state.sh
-  fi
-
-  if command -v shellcheck >/dev/null 2>&1; then
-    shellcheck scripts/initbox-installer.sh scripts/initbox-status.sh scripts/lib/*.sh
-  else
+  if ! command -v shellcheck >/dev/null 2>&1; then
     log_line "ShellCheck not installed locally; skipping ShellCheck validation"
+    return 0
   fi
+
+  shellcheck_files+=("scripts/initbox-installer.sh")
+  shellcheck_files+=("scripts/initbox-status.sh")
+  shellcheck_files+=("scripts/update-repo.sh")
+
+  if [ -d scripts/lib ]; then
+    while IFS= read -r script_file; do
+      shellcheck_files+=("$script_file")
+    done < <(find scripts/lib -type f -name "*.sh" | sort)
+  fi
+
+  if [ -d scripts/pi-3-4-5 ]; then
+    while IFS= read -r script_file; do
+      shellcheck_files+=("$script_file")
+    done < <(find scripts/pi-3-4-5 -type f -name "*.sh" | sort)
+  fi
+
+  if [ "${#shellcheck_files[@]}" -gt 0 ]; then
+    shellcheck "${shellcheck_files[@]}"
+    log_line "ShellCheck validation passed"
+  fi
+}
+
+run_basic_validation() {
+  run_bash_syntax_validation
+  run_shellcheck_if_available
 }
 
 main() {
@@ -248,8 +297,10 @@ main() {
   require_command bash
   require_command find
   require_command chmod
+  require_command sort
 
   validate_repo
+  configure_git_filemode
   fetch_remote
 
   if [ "$DRY_RUN" = "yes" ]; then
@@ -259,6 +310,7 @@ main() {
 
   print_repo_state
   hard_sync_repo
+  configure_git_filemode
   repair_permissions
   run_basic_validation
   print_repo_state
