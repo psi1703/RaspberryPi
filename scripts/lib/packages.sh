@@ -256,6 +256,8 @@ initbox_packages_install_from_cache() {
 initbox_packages_install() {
   local packages_file="$1"
   local cache_dir="$2"
+  local apt_args=()
+
   shift 2
 
   initbox_packages_require_root
@@ -263,12 +265,27 @@ initbox_packages_install() {
   initbox_packages_require_cache_dir "$cache_dir"
   initbox_packages_validate_names "$packages_file"
 
-  if [ "$#" -gt 0 ]; then
-    initbox_packages_log "Requested module packages:"
-    printf '  %s\n' "$@"
-    initbox_packages_log ""
+  if [ "$#" -eq 0 ]; then
+    initbox_packages_log "ERROR: no package names were requested for install."
+    return 1
   fi
 
+  initbox_packages_log "Requested module packages:"
+  printf '  %s\n' "$@"
+  initbox_packages_log ""
+
   initbox_packages_verify "$packages_file" "$cache_dir"
-  initbox_packages_install_from_cache "$cache_dir"
+
+  initbox_packages_log ""
+  initbox_packages_log "Installing requested packages from local cache only:"
+  printf '  %s\n' "$@"
+  initbox_packages_log ""
+
+  apt_args+=("-o" "Dpkg::Use-Pty=0")
+  apt_args+=("-o" "Dir::Cache::Archives=$cache_dir")
+  apt_args+=("--no-download")
+  apt_args+=("install")
+  apt_args+=("-y")
+
+  apt-get "${apt_args[@]}" "$@"
 }
