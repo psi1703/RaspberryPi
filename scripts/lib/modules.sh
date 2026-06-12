@@ -3,6 +3,10 @@
 #
 # This file maps logical module IDs to the existing module scripts.
 # It does not install packages or modify the system.
+#
+# Branch/profile scope:
+#   - This version is for the pi-3-4-5 branch.
+#   - Pi Zero W / Zero 2W modules belong in the pi-zero-W-2W branch.
 
 set -euo pipefail
 
@@ -12,19 +16,6 @@ initbox_module_script_path() {
   local repo_root="$3"
 
   case "$profile_id:$module_id" in
-    pi-zero2w:isi)
-      printf '%s/scripts/pi-zero2w/module-isi.sh\n' "$repo_root"
-      ;;
-    pi-zero2w:fms)
-      printf '%s/scripts/pi-zero2w/module-fms.sh\n' "$repo_root"
-      ;;
-    pi-zero2w:hotspot)
-      printf '%s/scripts/pi-zero2w/module-hotspot.sh\n' "$repo_root"
-      ;;
-    pi-zero2w:web-terminal)
-      printf '%s/scripts/pi-zero2w/module-ttyd-portal.sh\n' "$repo_root"
-      ;;
-
     pi-3-4-5:isi)
       printf '%s/scripts/pi-3-4-5/module-isi.sh\n' "$repo_root"
       ;;
@@ -46,7 +37,6 @@ initbox_module_script_path() {
     pi-3-4-5:sniffer-bridge)
       printf '%s/scripts/pi-3-4-5/module-ws-br0.sh\n' "$repo_root"
       ;;
-
     *)
       return 1
       ;;
