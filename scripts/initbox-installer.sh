@@ -83,6 +83,12 @@ die() {
   exit 1
 }
 
+repo_relpath() {
+  local path="$1"
+
+  printf '%s\n' "${path#"${REPO_ROOT}/"}"
+}
+
 require_root() {
   if [ "$(id -u)" -ne 0 ]; then
     die "Run this installer with sudo."
@@ -172,10 +178,9 @@ source_helpers() {
     . "$STATE_HELPER"
   fi
 
-  if [ -f "$PACKAGES_HELPER" ]; then
-    # shellcheck disable=SC1090
-    . "$PACKAGES_HELPER"
-  fi
+  # Do not source scripts/lib/packages.sh here.
+  # It also supports direct CLI execution and may inspect "$1".
+  # The installer calls it as a command instead.
 }
 
 load_profile() {
@@ -424,12 +429,12 @@ show_package_cache_status() {
   echo "Package cache status"
   echo "----------------------------------------"
 
-  if ! declare -F initbox_packages_status >/dev/null 2>&1; then
-    echo "Package helper not loaded: $PACKAGES_HELPER"
+  if [ ! -f "$PACKAGES_HELPER" ]; then
+    echo "Package helper missing: $PACKAGES_HELPER"
     return 1
   fi
 
-  initbox_packages_status
+  bash "$PACKAGES_HELPER" status
 }
 
 prepare_package_cache() {
@@ -448,17 +453,13 @@ prepare_package_cache() {
     die "Package list missing: $PACKAGES_FILE"
   fi
 
-  if ! declare -F initbox_packages_download_apt >/dev/null 2>&1; then
-    die "Package helper function not available: initbox_packages_download_apt"
-  fi
-
   if ! have_internet; then
     die "Internet is required to prepare the package cache."
   fi
 
   log "Preparing package cache from ${PACKAGES_FILE}."
 
-  initbox_packages_download_apt "$PACKAGES_FILE"
+  bash "$PACKAGES_HELPER" download "$PACKAGES_FILE"
 
   ok "Package cache prepared."
   show_package_cache_status
@@ -494,9 +495,9 @@ run_sanity_checks() {
     "$REPO_ROOT/scripts/lib/state.sh" \
     "$REPO_ROOT/scripts/lib/packages.sh"; do
     if [ -f "$file" ]; then
-      echo "[PASS] file exists: ${file#$REPO_ROOT/}"
+      echo "[PASS] file exists: $(repo_relpath "$file")"
     else
-      echo "[FAIL] missing file: ${file#$REPO_ROOT/}"
+      echo "[FAIL] missing file: $(repo_relpath "$file")"
       failed=1
     fi
   done
@@ -566,10 +567,10 @@ run_sanity_checks() {
     failed=1
   fi
 
-  if declare -F initbox_packages_status >/dev/null 2>&1; then
-    echo "[PASS] package helper functions loaded"
+  if [ -f "$PACKAGES_HELPER" ]; then
+    echo "[PASS] package helper exists"
   else
-    echo "[FAIL] package helper functions not loaded"
+    echo "[FAIL] package helper does not exist"
     failed=1
   fi
 
@@ -601,9 +602,9 @@ run_sanity_checks() {
     [ -z "$file" ] && continue
 
     if bash -n "$file"; then
-      echo "[PASS] bash -n: ${file#$REPO_ROOT/}"
+      echo "[PASS] bash -n: $(repo_relpath "$file")"
     else
-      echo "[FAIL] bash -n: ${file#$REPO_ROOT/}"
+      echo "[FAIL] bash -n: $(repo_relpath "$file")"
       failed=1
     fi
   done < <(
