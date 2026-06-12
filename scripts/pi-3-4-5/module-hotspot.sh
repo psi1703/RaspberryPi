@@ -8,6 +8,11 @@
 #   - dhcpcd static wlan0 address
 #   - captive-portal-friendly DNS responses
 #
+# Package model:
+#   - Uses scripts/lib/packages.sh
+#   - With Internet: installs through apt-get and keeps packages cached
+#   - Without Internet: installs from local package cache only
+#
 # Actions:
 #   install    Install/update hotspot configuration
 #   uninstall  Disable/remove hotspot configuration created by this module
@@ -19,6 +24,11 @@ ACTION="${1:-install}"
 
 : "${OWNER:=initbox}"
 : "${HOTSPOT_PASS:=TomatoH34d}"
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PACKAGES_HELPER="$REPO_ROOT/scripts/lib/packages.sh"
 
 LOG_DIR="/home/${OWNER}/pi_logs"
 LOGFILE="${LOGFILE:-${LOG_DIR}/initbox-install.log}"
@@ -70,8 +80,33 @@ prepare_log() {
   fi
 }
 
-apt_safe() {
-  DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"
+require_package_helper() {
+  if [ ! -f "$PACKAGES_HELPER" ]; then
+    err "Package helper not found: $PACKAGES_HELPER"
+    err "Expected file: scripts/lib/packages.sh"
+    exit 1
+  fi
+
+  chmod 755 "$PACKAGES_HELPER" 2>/dev/null || true
+}
+
+install_packages() {
+  log "Installing hotspot dependencies through InitBox package cache helper."
+
+  require_package_helper
+
+  if ! bash "$PACKAGES_HELPER" install \
+    dnsmasq \
+    hostapd \
+    dhcpcd5 \
+    iproute2 \
+    iptables \
+    rfkill 2>&1 | tee -a "$LOGFILE"; then
+    err "Hotspot dependency installation failed."
+    err "If this Pi is offline, prepare the package cache first with:"
+    err "  sudo ./scripts/initbox-installer.sh pi-3-4-5 p"
+    exit 1
+  fi
 }
 
 ask() {
@@ -109,20 +144,6 @@ calc_hotspot_subnet() {
       echo "192.168.30"
       ;;
   esac
-}
-
-install_packages() {
-  log "Installing hotspot dependencies."
-
-  if ! apt_safe update; then
-    err "apt-get update failed."
-    exit 1
-  fi
-
-  if ! apt_safe install -y dnsmasq hostapd dhcpcd5 iproute2 iptables rfkill; then
-    err "hotspot dependency installation failed."
-    exit 1
-  fi
 }
 
 read_default_boxno() {
@@ -362,6 +383,13 @@ Actions:
   install    Install/update hotspot configuration
   uninstall  Disable/remove hotspot configuration created by this module
   purge      Compatibility alias for uninstall; packages are not purged
+
+Package cache:
+  This module uses:
+    scripts/lib/packages.sh
+
+  To prepare package cache in the lab:
+    sudo ./scripts/initbox-installer.sh pi-3-4-5 p
 
 Environment:
   HOTSPOT_PASS   WPA2 password. Default is set by this script.
