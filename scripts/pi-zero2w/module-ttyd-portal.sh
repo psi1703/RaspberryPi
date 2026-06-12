@@ -1,41 +1,36 @@
 #!/usr/bin/env bash
 
-# InitBox Pi Zero 2W Web Terminal and captive portal module
+# InitBox Pi Zero W / Zero 2W Web Terminal and captive portal module
 #
 # Actions:
 #   install   Install and enable ttyd plus captive portal socket responder.
 #   uninstall Remove services and files created by this module.
-#   purge     Uninstall and also remove /usr/local/bin/ttyd.
-#
+#   remove    Alias for uninstall.
+#   purge     Compatibility alias for uninstall. It does not remove packages,
+#             cached .deb files, or the cached ttyd binary.
 # Default action:
 #   install
-#
 # Installs and enables:
 #   - ttyd Web Terminal on port 7681
 #   - systemd socket-activated captive HTTP responder on port 80
-#
 # User-facing URLs:
 #   http://initbox.wlan/
 #   http://initbox.wlan:7681/
-#
-# Captive portal behavior:
-#   - dnsmasq wildcard DNS from the hotspot module sends captive-check
-#     domains to the Pi hotspot IP.
-#   - systemd listens on port 80.
-#   - each HTTP request receives a lightweight 302 redirect to ttyd.
-#
+# Offline field-mode policy:
+#   - Debian packages are installed from the InitBox local package cache.
+#   - The ttyd upstream binary is downloaded once and kept in the InitBox cache.
+#   - Uninstall removes module services/config only.
+#   - Uninstall/purge do not remove shared packages or cached files.
 # This module assumes the hotspot module provides:
 #   - hostapd access point
 #   - wlan0 static hotspot IP
 #   - DHCP service through dnsmasq
 #   - wildcard captive DNS:
 #       address=/#/<hotspot-ip>
-#
 # This module owns only:
-#   - ttyd binary installation if missing
 #   - ttyd.service on port 7681
 #   - socket-activated port-80 captive responder
-#
+#   - /usr/local/bin/ttyd if installed from the cached InitBox ttyd binary
 # It must not replace or duplicate the hotspot module's DHCP, DNS,
 # wlan0 IP, dnsmasq.conf, hostapd ownership, or captive DNS.
 
@@ -52,7 +47,15 @@ CAPTIVE_PORTAL_PORT="${CAPTIVE_PORTAL_PORT:-80}"
 HOTSPOT_INTERFACE="${HOTSPOT_INTERFACE:-wlan0}"
 TTYD_VERSION="${TTYD_VERSION:-1.7.7}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${INITBOX_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
+INITBOX_PACKAGES_FILE="${INITBOX_PACKAGES_FILE:-$REPO_ROOT/scripts/packages.txt}"
+INITBOX_PACKAGE_CACHE_DIR="${INITBOX_PACKAGE_CACHE_DIR:-/opt/initbox/packages}"
+PACKAGES_LIB_FILE="$REPO_ROOT/scripts/lib/packages.sh"
+
 TTYD_INSTALL_PATH="/usr/local/bin/ttyd"
+TTYD_CACHE_DIR="$INITBOX_PACKAGE_CACHE_DIR/ttyd"
 TTYD_SERVICE_FILE="/etc/systemd/system/ttyd.service"
 
 CAPTIVE_RESPONDER="/usr/local/sbin/initbox-captive-responder.sh"
@@ -93,25 +96,26 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
-install_base_packages() {
-  local packages=()
-
-  if ! command_exists curl; then
-    packages+=("curl")
+load_package_helper() {
+  if [ ! -f "$PACKAGES_LIB_FILE" ]; then
+    fail "package helper missing: $PACKAGES_LIB_FILE"
   fi
 
-  if ! command_exists update-ca-certificates; then
-    packages+=("ca-certificates")
-  fi
+  # shellcheck disable=SC1090
+  . "$PACKAGES_LIB_FILE"
 
-  if [ "${#packages[@]}" -eq 0 ]; then
-    log "base packages already installed"
-    return 0
+  if ! declare -F initbox_packages_install >/dev/null 2>&1; then
+    fail "package helper does not define initbox_packages_install"
   fi
+}
 
-  log "installing base packages: ${packages[*]}"
-  apt-get update
-  apt-get install -y "${packages[@]}"
+install_base_packages_from_cache() {
+  log "installing required Debian packages from InitBox package cache"
+  log "packages file: $INITBOX_PACKAGES_FILE"
+  log "cache dir:     $INITBOX_PACKAGE_CACHE_DIR"
+
+  load_package_helper
+  initbox_packages_install "$INITBOX_PACKAGES_FILE" "$INITBOX_PACKAGE_CACHE_DIR" curl ca-certificates
 }
 
 detect_ttyd_asset() {
@@ -141,22 +145,55 @@ detect_ttyd_asset() {
   esac
 }
 
-install_ttyd_binary() {
-  local ttyd_asset=""
+get_cached_ttyd_path() {
+  local ttyd_asset="$1"
+
+  printf '%s\n' "$TTYD_CACHE_DIR/${TTYD_VERSION}-${ttyd_asset}"
+}
+
+download_ttyd_to_cache() {
+  local ttyd_asset="$1"
+  local cached_ttyd="$2"
   local ttyd_url=""
   local tmp_file=""
 
-  ttyd_asset="$(detect_ttyd_asset)"
-  ttyd_url="https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/${ttyd_asset}"
-  tmp_file="/tmp/${ttyd_asset}"
+  if ! command_exists curl; then
+    fail "curl is not installed. Run package preseed first, then rerun this module."
+  fi
 
-  log "ttyd not available locally; installing upstream binary"
+  ttyd_url="https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/${ttyd_asset}"
+  tmp_file="${cached_ttyd}.tmp"
+
+  install -d -m 0755 "$TTYD_CACHE_DIR"
+
+  log "cached ttyd binary not found; downloading once and keeping it"
   log "ttyd version: ${TTYD_VERSION}"
-  log "ttyd asset: ${ttyd_asset}"
+  log "ttyd asset:   ${ttyd_asset}"
+  log "cache path:   ${cached_ttyd}"
 
   curl -fL --retry 5 --retry-delay 3 "$ttyd_url" -o "$tmp_file"
-  install -m 0755 "$tmp_file" "$TTYD_INSTALL_PATH"
-  rm -f "$tmp_file"
+  chmod 0755 "$tmp_file"
+  mv -f "$tmp_file" "$cached_ttyd"
+}
+
+install_ttyd_from_cache() {
+  local ttyd_asset=""
+  local cached_ttyd=""
+
+  ttyd_asset="$(detect_ttyd_asset)"
+  cached_ttyd="$(get_cached_ttyd_path "$ttyd_asset")"
+
+  if [ ! -f "$cached_ttyd" ]; then
+    download_ttyd_to_cache "$ttyd_asset" "$cached_ttyd"
+  else
+    log "using cached ttyd binary: $cached_ttyd"
+  fi
+
+  if [ ! -x "$cached_ttyd" ]; then
+    chmod 0755 "$cached_ttyd"
+  fi
+
+  install -m 0755 "$cached_ttyd" "$TTYD_INSTALL_PATH"
 
   if ! "$TTYD_INSTALL_PATH" --version >/dev/null 2>&1; then
     fail "installed ttyd binary did not run successfully: $TTYD_INSTALL_PATH"
@@ -166,14 +203,19 @@ install_ttyd_binary() {
 }
 
 install_packages() {
-  install_base_packages
+  install_base_packages_from_cache
 
   if command_exists ttyd; then
     log "ttyd already installed at $(command -v ttyd)"
     return 0
   fi
 
-  install_ttyd_binary
+  if [ -x "$TTYD_INSTALL_PATH" ]; then
+    log "ttyd already installed at $TTYD_INSTALL_PATH"
+    return 0
+  fi
+
+  install_ttyd_from_cache
 }
 
 get_required_command_path() {
@@ -412,17 +454,13 @@ remove_module_services() {
   systemctl reset-failed 2>/dev/null || true
 }
 
-purge_ttyd_binary() {
-  if [ -f "$TTYD_INSTALL_PATH" ]; then
-    log "removing ttyd binary: $TTYD_INSTALL_PATH"
-    rm -f "$TTYD_INSTALL_PATH"
-  else
-    log "ttyd binary not found at $TTYD_INSTALL_PATH"
-  fi
-}
-
 print_install_summary() {
   local hotspot_ip="$1"
+  local ttyd_asset=""
+  local cached_ttyd=""
+
+  ttyd_asset="$(detect_ttyd_asset)"
+  cached_ttyd="$(get_cached_ttyd_path "$ttyd_asset")"
 
   echo
   echo "Web Terminal and captive portal installed"
@@ -430,6 +468,8 @@ print_install_summary() {
   echo "Captive portal URL: http://$PORTAL_HOSTNAME/"
   echo "Web Terminal URL:   http://$PORTAL_HOSTNAME:$TERMINAL_PORT/"
   echo "Hotspot IP:         $hotspot_ip"
+  echo "ttyd binary:        $TTYD_INSTALL_PATH"
+  echo "ttyd cache:         $cached_ttyd"
   echo
   echo "Expected behavior:"
   echo "  - port 80 is handled by systemd socket activation"
@@ -440,6 +480,11 @@ print_install_summary() {
   echo "  - no Python captive portal"
   echo "  - no extra web server package"
   echo "  - no iptables redirect service"
+  echo
+  echo "Offline field-mode behavior:"
+  echo "  - Debian packages are installed from $INITBOX_PACKAGE_CACHE_DIR"
+  echo "  - ttyd is cached and reused from $TTYD_CACHE_DIR"
+  echo "  - uninstall does not remove shared packages or cached files"
   echo
   echo "DNS ownership:"
   echo "  - Hotspot module owns /etc/dnsmasq.conf"
@@ -472,24 +517,12 @@ print_uninstall_summary() {
   echo "  - dnsmasq hotspot configuration"
   echo "  - hostapd hotspot configuration"
   echo "  - ttyd binary at $TTYD_INSTALL_PATH"
+  echo "  - cached ttyd files under $TTYD_CACHE_DIR"
+  echo "  - cached Debian packages under $INITBOX_PACKAGE_CACHE_DIR"
   echo
   echo "Check:"
   echo "  sudo systemctl status ttyd initbox-captive-http.socket --no-pager"
   echo "  sudo ss -tulpn | grep -E ':80|:$TERMINAL_PORT'"
-}
-
-print_purge_summary() {
-  echo
-  echo "Web Terminal and captive portal purged"
-  echo "-------------------------------------"
-  echo "Removed services and files created by this module."
-  echo "Also removed:"
-  echo "  - $TTYD_INSTALL_PATH"
-  echo
-  echo "Not removed:"
-  echo "  - hotspot service"
-  echo "  - dnsmasq hotspot configuration"
-  echo "  - hostapd hotspot configuration"
 }
 
 install_main() {
@@ -521,14 +554,6 @@ uninstall_main() {
   print_uninstall_summary
 }
 
-purge_main() {
-  require_root
-
-  remove_module_services
-  purge_ttyd_binary
-  print_purge_summary
-}
-
 main() {
   case "$ACTION" in
     install|"")
@@ -538,10 +563,11 @@ main() {
       uninstall_main
       ;;
     purge)
-      purge_main
+      warn "purge is disabled by offline field-mode policy; running uninstall only"
+      uninstall_main
       ;;
     *)
-      fail "unknown action '$ACTION'. Use install, uninstall, or purge."
+      fail "unknown action '$ACTION'. Use install or uninstall."
       ;;
   esac
 }
