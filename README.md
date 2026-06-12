@@ -2,7 +2,7 @@
 
 This branch is dedicated to the lightweight InitBox build for Raspberry Pi Zero W and Raspberry Pi Zero 2W class devices.
 
-The goal of this branch is clear separation from the heavier Raspberry Pi 3 / 4 / 5 design. The Zero profile uses Web Terminal, hotspot, ISI, FMS, and optional `br0` packet capture only. It must not install dashboard components.
+The Zero profile uses Web Terminal, hotspot, ISI, FMS, and optional `br0` packet capture only.
 
 Field deployment should not depend on Internet access. All package downloads, baseline operating-system updates, package-cache verification, and module installation should be completed in the lab before the device leaves for the field.
 
