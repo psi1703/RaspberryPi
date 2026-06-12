@@ -1,19 +1,18 @@
-[README.md](https://github.com/user-attachments/files/28867979/README.md)
 # InitBox Raspberry Pi Zero W / Zero 2W Setup
 
 This branch is dedicated to the lightweight InitBox build for Raspberry Pi Zero W and Raspberry Pi Zero 2W class devices.
 
-The goal of this branch is clear separation from the heavier Raspberry Pi 3 / 4 / 5 design. The Zero profile uses Web Terminal, hotspot, ISI, FMS, and optional br0 packet capture only. It must not install dashboard components.
+The goal of this branch is clear separation from the heavier Raspberry Pi 3 / 4 / 5 design. The Zero profile uses Web Terminal, hotspot, ISI, FMS, and optional `br0` packet capture only. It must not install dashboard components.
 
-Field deployment should not depend on Internet access. All package installation and verification must be completed in the lab before the device leaves for the field.
+Field deployment should not depend on Internet access. All package downloads, baseline operating-system updates, package-cache verification, and module installation should be completed in the lab before the device leaves for the field.
 
 ---
 
 ## Supported Hardware
 
-| Profile | Hardware | Dashboard | Management interface |
-| --- | --- | ---: | --- |
-| `pi-zero2w` | Raspberry Pi Zero W / Zero 2W | No | Web Terminal |
+| Profile     | Hardware                      | Dashboard | Management interface |
+| ----------- | ----------------------------- | --------: | -------------------- |
+| `pi-zero2w` | Raspberry Pi Zero W / Zero 2W |        No | Web Terminal         |
 
 The profile file is:
 
@@ -32,14 +31,18 @@ The intended workflow is:
 1. Flash Raspberry Pi OS.
 2. Boot the Pi in the lab with Internet access.
 3. Clone this branch.
-4. Run the installer with the `pi-zero2w` profile.
-5. Run sanity checks.
-6. Install the required modules.
-7. Reboot.
-8. Verify hotspot, Web Terminal, ISI, FMS, and optional packet capture.
-9. Deploy the prepared device in the field.
+4. Run installer sanity checks.
+5. Run the baseline OS update while Internet is available.
+6. Preseed the offline package cache while Internet is available.
+7. Verify the offline package cache.
+8. Install the required modules.
+9. Reboot.
+10. Verify hotspot, Web Terminal, ISI, FMS, and optional packet capture.
+11. Deploy the prepared device in the field.
 
 All package downloads and operating-system updates must happen in the lab.
+
+In the field, module installation should use only the local package cache.
 
 ---
 
@@ -59,14 +62,15 @@ The installer is expected to:
 * repair repository script permissions;
 * create installer logs;
 * grant the operator user passwordless sudo when run as root;
-* run baseline `apt-get update` and `apt-get upgrade -y` for normal menu installs;
 * load the `pi-zero2w` profile;
-* show only supported modules;
+* show only supported Pi Zero W / Zero 2W modules;
 * run sanity checks;
+* provide an explicit baseline update action;
+* provide explicit package preseed and package verify actions;
 * require explicit `RUN` confirmation before installing a module;
 * record install state in `/etc/initbox/install-state.env`.
 
-Passwordless sudo is installed before the baseline package update so later module scripts can run consistently without repeated password prompts.
+Passwordless sudo is installed before package and module operations so later module scripts can run consistently without repeated password prompts.
 
 ---
 
@@ -82,8 +86,10 @@ Required rules:
 * Keep `ttyd` on port `7681`.
 * Keep port `80` owned by the lightweight captive HTTP redirect socket.
 * Let `isirunall.service` own `br0` for ISI.
-* Let the Wireshark module capture `br0`; do not run a competing dynamic bridge manager on Pi Zero.
+* Let the sniffer module capture `br0`; do not run a competing dynamic bridge manager on Pi Zero.
 * Keep scripts ShellCheck-friendly and repeatable from a clean reflash.
+* Do not purge packages during uninstall.
+* Treat `purge` as a compatibility alias for uninstall.
 
 ---
 
@@ -98,6 +104,7 @@ profiles/
   pi-zero2w.conf
 
 scripts/
+  packages.txt
   initbox-installer.sh
   initbox-status.sh
   update-repo.sh
@@ -105,6 +112,7 @@ scripts/
     profile.sh
     modules.sh
     state.sh
+    packages.sh
   pi-zero2w/
     module-fms.sh
     module-hotspot.sh
@@ -115,13 +123,138 @@ scripts/
 
 Important module ownership:
 
-| Module | Script | Ownership |
-| --- | --- | --- |
-| Hotspot | `scripts/pi-zero2w/module-hotspot.sh` | `hostapd`, `dnsmasq`, wlan0 hotspot IP, DHCP/DNS, wildcard captive DNS |
-| Web Terminal | `scripts/pi-zero2w/module-ttyd-portal.sh` | `ttyd`, port `7681`, port `80` captive redirect socket |
-| ISI | `scripts/pi-zero2w/module-isi.sh` | `br0`, namespaces, veth pairs, DHCP inside namespaces, XML clients |
-| FMS | `scripts/pi-zero2w/module-fms.sh` | FMS/CAN support |
-| Sniffer / br0 capture | `scripts/pi-zero2w/module-ws-br0.sh` | `tshark`, `/usr/tracefiles`, `log-prep.sh`, capture on `br0` |
+| Module           | Script                                    | Ownership                                                              |
+| ---------------- | ----------------------------------------- | ---------------------------------------------------------------------- |
+| Hotspot          | `scripts/pi-zero2w/module-hotspot.sh`     | `hostapd`, `dnsmasq`, wlan0 hotspot IP, DHCP/DNS, wildcard captive DNS |
+| Web Terminal     | `scripts/pi-zero2w/module-ttyd-portal.sh` | `ttyd`, port `7681`, port `80` captive redirect socket                 |
+| ISI              | `scripts/pi-zero2w/module-isi.sh`         | `br0`, namespaces, veth pairs, DHCP inside namespaces, XML clients     |
+| FMS              | `scripts/pi-zero2w/module-fms.sh`         | FMS/CAN support                                                        |
+| Sniffer / Bridge | `scripts/pi-zero2w/module-ws-br0.sh`      | `tshark`, `/usr/tracefiles`, `log-prep.sh`, capture on `br0`           |
+
+---
+
+## Offline Package Cache Model
+
+This branch uses a lab-preseeded local package cache.
+
+Package list:
+
+```text
+scripts/packages.txt
+```
+
+Package helper:
+
+```text
+scripts/lib/packages.sh
+```
+
+Default cache directory:
+
+```text
+/opt/initbox/packages
+```
+
+The cache is prepared in the lab while Internet is available. Field installation should not need Internet.
+
+The package list should contain only packages required for this Pi Zero branch:
+
+```text
+ca-certificates
+curl
+dnsmasq
+hostapd
+dhcpcd5
+iproute2
+iptables
+rfkill
+isc-dhcp-client
+netcat-openbsd
+bridge-utils
+can-utils
+ifupdown
+zip
+libcap2-bin
+tshark
+```
+
+Do not include these in the default Pi Zero field package list:
+
+```text
+wireshark
+wireshark-common
+shellcheck
+tcpdump
+```
+
+Notes:
+
+* `tshark` is included because packet capture is a core requirement.
+* `wireshark` and `wireshark-common` are not listed manually.
+* `tcpdump` is not required when `tshark` is the selected packet-capture tool.
+* `shellcheck` is a development tool, not a field runtime package.
+* Python 3 is expected to already exist on Raspberry Pi OS and is not listed here.
+
+The package helper must install only the package names requested by the module. It must not install every `.deb` file in `/opt/initbox/packages`.
+
+Correct behavior:
+
+```text
+ISI module requests:
+  isc-dhcp-client
+  netcat-openbsd
+  iproute2
+  bridge-utils
+
+Only those requested package names and their required dependencies are installed.
+```
+
+Incorrect behavior:
+
+```text
+apt-get install /opt/initbox/packages/*.deb
+```
+
+That installs the entire cache and must not be used for module installation.
+
+---
+
+## Lab Package Preparation
+
+Run the installer:
+
+```bash
+sudo ./scripts/initbox-installer.sh pi-zero2w
+```
+
+Use the menu actions for:
+
+```text
+c  sanity checks
+b  baseline OS update
+p  preseed offline package cache
+v  verify offline package cache
+```
+
+Recommended lab sequence:
+
+```text
+1. Run sanity checks.
+2. Run baseline OS update.
+3. Preseed the package cache.
+4. Verify the package cache.
+5. Install required modules.
+6. Reboot.
+7. Verify all services.
+```
+
+To rebuild the package cache cleanly:
+
+```bash
+sudo rm -rf /opt/initbox/packages
+sudo ./scripts/initbox-installer.sh pi-zero2w p
+sudo ./scripts/initbox-installer.sh pi-zero2w v
+```
 
 ---
 
@@ -172,15 +305,34 @@ port 7681  ttyd Web Terminal
 
 Do not run `ttyd` directly on port `80`. Windows captive portal detection expects a normal HTTP response on port `80`; the Zero design provides that with a lightweight HTTP 302 responder.
 
+`ttyd` is downloaded once in the lab and kept. It should not be deleted during uninstall.
+
 ---
 
 ## ISI Model on Pi Zero W / Zero 2W
 
-`module-isi.sh` installs `isirunall.service` and writes `/usr/local/bin/isirunall.sh`.
+`module-isi.sh` installs `isirunall.service` and writes:
+
+```text
+/usr/local/bin/isirunall.sh
+```
+
+Safety rules:
+
+* installing ISI does not immediately bridge Ethernet;
+* installing ISI does not flush or enslave Ethernet ports;
+* `isirunall.service` is enabled but stopped after install;
+* runtime refuses to create `br0` unless a wired Ethernet port has carrier and a `10.x.x.x` IPv4 address;
+* if the COPILOT network gate is not passed, Ethernet is left untouched;
+* if `UPLINK_IF` is unset, all detected wired Ethernet ports are bridged after the gate passes;
+* if `UPLINK_IF` is set, only that interface is bridged.
+
+This protects normal lab Internet connectivity. The bridge should be created only when the device is connected to the COPILOT-side network.
 
 The ISI runner:
 
-* creates or reuses `br0`;
+* checks the COPILOT network gate;
+* creates or reuses `br0` only after the gate passes;
 * disables STP and sets `forward_delay 0`;
 * attaches detected wired Ethernet adapters to `br0`;
 * creates three namespaces: `ns1`, `ns2`, and `ns3`;
@@ -193,11 +345,11 @@ The ISI runner:
 
 Expected namespace roles:
 
-| Namespace | App name | Payload file |
-| --- | --- | --- |
-| `ns1` | DRACHE | `/usr/local/bin/isi1.txt` |
-| `ns2` | NIX | `/usr/local/bin/isi2.txt` |
-| `ns3` | ZEITNEHMER | `/usr/local/bin/isi3.txt` |
+| Namespace | App name   | Payload file              |
+| --------- | ---------- | ------------------------- |
+| `ns1`     | DRACHE     | `/usr/local/bin/isi1.txt` |
+| `ns2`     | NIX        | `/usr/local/bin/isi2.txt` |
+| `ns3`     | ZEITNEHMER | `/usr/local/bin/isi3.txt` |
 
 ZEITNEHMER requests both time fields for compatibility:
 
@@ -216,7 +368,7 @@ Bad timestamp        -> log and continue
 Clock set failed     -> log and continue
 ```
 
-DRACHE and NIX responses may be suppressed in the journal to avoid burying ZEITNEHMER logs. Use `tcpdump` when you need to prove XML is flowing.
+DRACHE and NIX responses may be suppressed in the journal to avoid burying ZEITNEHMER logs. Use the sniffer module when you need to prove XML is flowing on `br0`.
 
 ---
 
@@ -230,6 +382,7 @@ On Pi Zero W / Zero 2W:
 * The capture service waits for `br0` to exist.
 * The capture service records traffic from `br0`.
 * No dynamic `bridge-check.service` should manage `br0` on this branch.
+* Packet capture uses `tshark`.
 
 Capture files are stored in:
 
@@ -255,11 +408,24 @@ Run:
 sudo ./scripts/initbox-installer.sh pi-zero2w
 ```
 
+Expected install modules:
+
+```text
+Install ISI
+Install FMS
+Install Hotspot
+Install Web Terminal
+Install Sniffer / Bridge
+```
+
 Common menu actions:
 
 ```text
 1-N) Install/select supported module
 u)   Uninstall/remove supported module, when available
+b)   Run baseline OS update
+p)   Preseed offline package cache
+v)   Verify offline package cache
 c)   Run sanity checks
 l)   Show install log path
 s)   Show install state
@@ -295,12 +461,12 @@ For a full Pi Zero lab setup:
 2. Web Terminal
 3. ISI
 4. FMS, if required by the appliance role
-5. Sniffer / br0 capture, if enabled for this branch/profile
+5. Sniffer / Bridge, if packet capture is required
 ```
 
 The hotspot should be installed before Web Terminal because the captive portal depends on hotspot DNS and DHCP ownership.
 
-ISI should be installed before br0 capture when you want the sniffer to capture ISI bridge traffic immediately, because ISI creates `br0` on Pi Zero.
+ISI should be installed before `br0` capture when you want the sniffer to capture ISI bridge traffic immediately, because ISI creates `br0` on Pi Zero after the COPILOT network gate passes.
 
 ---
 
@@ -332,6 +498,55 @@ sudo ./scripts/initbox-status.sh
 
 ---
 
+## Repository Update Model
+
+This branch uses the GitHub repository as the source of truth.
+
+Update script:
+
+```text
+scripts/update-repo.sh
+```
+
+Run it after changes are committed on GitHub:
+
+```bash
+cd /home/initbox/RaspberryPi
+./scripts/update-repo.sh
+```
+
+The update script performs a deployment hard sync:
+
+```text
+git fetch origin pi-zero-W-2W
+git reset --hard origin/pi-zero-W-2W
+git clean -fd
+```
+
+Local edits on the Pi are intentionally discarded.
+
+The deployment clone should ignore chmod-only Git noise:
+
+```bash
+git config core.fileMode false
+```
+
+The update script repairs local script permissions after sync.
+
+If `git status --short` shows files with `M`, check whether they are only permission changes:
+
+```bash
+git diff --summary
+```
+
+A clean deployment tree should show no output:
+
+```bash
+git status --short
+```
+
+---
+
 ## Verification After Install
 
 Run these checks before field deployment.
@@ -351,6 +566,15 @@ sudo ./scripts/initbox-status.sh
 ```
 
 There should be no failed InitBox services.
+
+### Package cache
+
+```bash
+sudo ./scripts/initbox-installer.sh pi-zero2w v
+find /opt/initbox/packages -maxdepth 1 -type f -name '*.deb' | sort | head
+```
+
+The package cache should exist and verification should pass.
 
 ### Hotspot
 
@@ -401,9 +625,30 @@ Group=initbox
 ExecStart=/usr/local/bin/ttyd -W --interface 0.0.0.0 --port 7681 /bin/bash -l
 ```
 
-### ISI
+### ISI safe gate when not connected to COPILOT
+
+When the Pi is not connected to the COPILOT `10.x.x.x` network, starting ISI should not create `br0`.
 
 ```bash
+sudo systemctl restart isirunall.service
+sudo journalctl -u isirunall.service -n 100 --no-pager
+ip link show br0 2>/dev/null || echo "br0 not present"
+```
+
+Expected safe log:
+
+```text
+COPILOT network gate not passed.
+No wired Ethernet interface has both carrier and a 10.x.x.x IPv4 address.
+Refusing to create br0; leaving Ethernet untouched.
+```
+
+### ISI when connected to COPILOT
+
+When connected to the COPILOT network:
+
+```bash
+sudo systemctl restart isirunall.service
 sudo systemctl status isirunall.service --no-pager
 sudo journalctl -u isirunall.service -n 300 --no-pager
 bridge link
@@ -416,6 +661,8 @@ sudo ip netns exec ns3 ip -br addr
 Expected final ISI state:
 
 ```text
+COPILOT network gate passed
+br0 exists
 ns1 has a COPILOT-side DHCP IP
 ns2 has a COPILOT-side DHCP IP
 ns3 has a COPILOT-side DHCP IP
@@ -440,12 +687,6 @@ ZEITNEHMER: drift ...
 ZEITNEHMER: no Time_ISO8601 or DateTime in COPILOT response; continuing
 ```
 
-To verify XML traffic on the bridge:
-
-```bash
-sudo tcpdump -A -s 0 -i br0 'tcp port 51001'
-```
-
 ### FMS
 
 ```bash
@@ -462,10 +703,10 @@ sudo journalctl -u wireshark-autostart.service -n 100 --no-pager
 ls -lh /usr/tracefiles
 ```
 
-If `br0` does not exist yet, start or repair ISI first:
+If `br0` does not exist yet, connect to the COPILOT network and start ISI first:
 
 ```bash
-sudo systemctl status isirunall.service --no-pager
+sudo systemctl restart isirunall.service
 ip link show br0
 ```
 
@@ -524,9 +765,10 @@ Confirm:
 * required services start automatically;
 * required interfaces return;
 * Web Terminal works;
-* ISI namespaces are recreated;
+* ISI does not create `br0` unless COPILOT gate passes;
+* ISI namespaces are recreated when connected to COPILOT;
 * ZEITNEHMER handles the COPILOT time field available on that device;
-* optional br0 capture starts if installed;
+* optional `br0` capture starts if installed and `br0` exists;
 * logs do not show repeated failures.
 
 ---
@@ -538,8 +780,10 @@ Before the device leaves the lab:
 * [ ] Correct branch was used: `pi-zero-W-2W`.
 * [ ] Correct profile was used: `pi-zero2w`.
 * [ ] Installer sanity checks passed.
-* [ ] Internet was available during setup.
-* [ ] Baseline `apt-get update` and `apt-get upgrade` completed.
+* [ ] Internet was available during lab setup.
+* [ ] Baseline OS update completed.
+* [ ] Offline package cache was preseeded.
+* [ ] Offline package cache verification passed.
 * [ ] Required modules were installed.
 * [ ] Dashboard was not installed.
 * [ ] Device was reboot-tested.
@@ -547,9 +791,11 @@ Before the device leaves the lab:
 * [ ] Required interfaces are present.
 * [ ] Web Terminal is reachable.
 * [ ] Captive portal redirect works.
+* [ ] ISI does not bridge Ethernet on normal lab Internet.
+* [ ] ISI creates `br0` only after COPILOT `10.x.x.x` gate passes.
 * [ ] ISI namespaces get DHCP leases when connected to COPILOT.
 * [ ] ZEITNEHMER works with `Time_ISO8601` or `DateTime`.
-* [ ] Optional br0 capture was verified if installed.
+* [ ] Optional `br0` capture was verified if installed.
 * [ ] Installer log was reviewed.
 * [ ] Install state was reviewed.
 * [ ] Device is physically labelled.
@@ -564,9 +810,11 @@ Run syntax checks before testing on hardware:
 ```bash
 bash -n scripts/initbox-installer.sh
 bash -n scripts/initbox-status.sh
+bash -n scripts/update-repo.sh
 bash -n scripts/lib/profile.sh
 bash -n scripts/lib/modules.sh
 bash -n scripts/lib/state.sh
+bash -n scripts/lib/packages.sh
 bash -n scripts/pi-zero2w/module-fms.sh
 bash -n scripts/pi-zero2w/module-hotspot.sh
 bash -n scripts/pi-zero2w/module-isi.sh
@@ -577,7 +825,7 @@ bash -n scripts/pi-zero2w/module-ws-br0.sh
 If ShellCheck is available:
 
 ```bash
-shellcheck scripts/initbox-installer.sh scripts/initbox-status.sh scripts/lib/*.sh scripts/pi-zero2w/*.sh
+shellcheck scripts/initbox-installer.sh scripts/initbox-status.sh scripts/update-repo.sh scripts/lib/*.sh scripts/pi-zero2w/*.sh
 ```
 
 ---
@@ -600,3 +848,19 @@ sudo ./scripts/initbox-status.sh
 Do not assume Internet access is available in the field.
 
 If a package is missing in the field, the device was not fully prepared in the lab and should be returned to the lab or repaired using a controlled maintenance process.
+
+If Internet disappears after ISI work, check whether `br0` exists when it should not:
+
+```bash
+ip link show br0
+bridge link
+sudo journalctl -u isirunall.service -n 100 --no-pager
+```
+
+Expected behavior on normal lab Internet:
+
+```text
+No COPILOT 10.x.x.x gate
+No br0 creation
+Ethernet left untouched
+```
