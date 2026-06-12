@@ -191,9 +191,11 @@ build_ttyd_from_git() {
 
   if ! (
     cd "$tmp/ttyd/build"
-    cmake .. >>"$LOGFILE" 2>&1
-    make -j"$(nproc)" >>"$LOGFILE" 2>&1
-    make install >>"$LOGFILE" 2>&1
+    {
+      cmake ..
+      make -j"$(nproc)"
+      make install
+    } >>"$LOGFILE" 2>&1
   ); then
     warn "ttyd build/install failed; skipping web terminal."
     rm -rf "$tmp"
@@ -260,7 +262,7 @@ node_red_dashboard_is_installed() {
     return 1
   fi
 
-  su - "$OWNER" -s /bin/bash -c 'cd "$HOME/.node-red" 2>/dev/null && npm list node-red-dashboard --depth=0 >/dev/null 2>&1'
+  su - "$OWNER" -s /bin/bash -c "cd \"\$HOME/.node-red\" 2>/dev/null && npm list node-red-dashboard --depth=0 >/dev/null 2>&1"
 }
 
 download_node_red_installer_once() {
