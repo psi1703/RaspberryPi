@@ -7,6 +7,7 @@ set -euo pipefail
 #   install   Install and enable ISI simulator.
 #   uninstall Remove ISI service and files created by this module.
 #   purge     Uninstall and also purge ISI dependency packages.
+#
 # Default action:
 #   install
 
@@ -27,7 +28,10 @@ DHCPCD_CONF="/etc/dhcpcd.conf"
 DHCPCD_BLOCK_START="# BEGIN InitBox ISI bridge unmanaged"
 DHCPCD_BLOCK_END="# END InitBox ISI bridge unmanaged"
 
+# ----------------------------------------------------------------------------
 # Logging
+# ----------------------------------------------------------------------------
+
 ts() { date +"%Y-%m-%d %H:%M:%S"; }
 log()  { echo "[ISI $(ts)] $*"        | tee -a "$LOGFILE"; }
 ok()   { echo "[ISI $(ts)] [OK] $*"   | tee -a "$LOGFILE"; }
@@ -38,7 +42,10 @@ apt_safe() {
   apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"
 }
 
+# ----------------------------------------------------------------------------
 # Shared helpers
+# ----------------------------------------------------------------------------
+
 require_root() {
   if [ "$(id -u)" -ne 0 ]; then
     err "this module must be run as root"
@@ -52,7 +59,10 @@ ensure_log_dir() {
   chown "$OWNER:$OWNER" "$LOGFILE" 2>/dev/null || true
 }
 
+# ----------------------------------------------------------------------------
 # Dependency management
+# ----------------------------------------------------------------------------
+
 install_dependencies() {
   log "Installing ISI simulator dependencies"
   apt_safe update
@@ -65,7 +75,10 @@ purge_isi_packages() {
   apt_safe autoremove -y
 }
 
+# ----------------------------------------------------------------------------
 # Network manager configuration
+# ----------------------------------------------------------------------------
+
 remove_dhcpcd_isi_block() {
   local tmp_file=""
 
@@ -136,7 +149,10 @@ remove_isi_network_manager_overrides() {
   systemctl restart dhcpcd       2>/dev/null || true
 }
 
-# isirunall.sh — the persistent runner written to disk
+# ----------------------------------------------------------------------------
+# isirunall.sh - the persistent runner written to disk
+# ----------------------------------------------------------------------------
+
 write_isi_runner() {
   log "Writing ${ISI_RUNNER}"
 
@@ -161,16 +177,23 @@ ISI_FILES=(
 NAMES=(DRACHE NIX ZEITNEHMER)
 NS=(ns1 ns2 ns3)
 
+# ---------------------------------------------------------------------------
 # State
+# ---------------------------------------------------------------------------
 DEST_IP=""
 NS_IPS=()
 BRIDGE_CREATED_BY_ISI=0
 BRIDGE_PORTS_ADDED_BY_ISI=()
 
+# ---------------------------------------------------------------------------
 # Logging
+# ---------------------------------------------------------------------------
 log() { echo "[ISI $(date +%F_%T)] $*"; }
 
+# ---------------------------------------------------------------------------
 # Interface helpers
+# ---------------------------------------------------------------------------
+
 is_excluded_interface() {
   local iface="$1"
   case "$iface" in
@@ -236,7 +259,10 @@ detect_bridge_ports() {
   printf '%s\n' "${wired_ifs[@]}"
 }
 
+# ---------------------------------------------------------------------------
 # Bridge setup / teardown
+# ---------------------------------------------------------------------------
+
 is_pi_zero_like() {
   local model
   model="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo '')"
@@ -259,7 +285,7 @@ attach_port_to_bridge() {
     exit 1
   fi
 
-  # Already attached to the right bridge — skip
+  # Already attached to the right bridge - skip
   [ "$current_master" = "$BRIDGE" ] && return 0
 
   log "Adding wired port ${iface} to ${BRIDGE}"
@@ -291,7 +317,7 @@ setup_bridge_for_isi() {
   fi
 
   # KEY FIX: disable STP and set forward_delay 0 so bridge ports
-  # enter forwarding state immediately — without this, the STP
+  # enter forwarding state immediately - without this, the STP
   # learning phase (15-30s) causes DHCP DISCOVERs to time out.
   ip link set "$BRIDGE" type bridge stp_state 0 forward_delay 0 2>/dev/null || true
 
@@ -324,7 +350,10 @@ teardown_bridge_for_isi() {
   fi
 }
 
+# ---------------------------------------------------------------------------
 # Namespace setup / teardown
+# ---------------------------------------------------------------------------
+
 cleanup_ns() {
   local ns pid link_name
 
@@ -386,11 +415,14 @@ add_veth_to_br() {
   ip netns exec "$ns" ip link set "$ifn" up
 }
 
+# ---------------------------------------------------------------------------
 # DHCP inside namespace
+#
 # Broadcast DHCP via dhclient config:
 #   bootp-broadcast-always asks dhclient to set the BOOTP broadcast flag.
 #   This avoids a bridge/FDB learning race where an early unicast OFFER can be
 #   missed before the bridge has learned the namespace veth MAC.
+# ---------------------------------------------------------------------------
 
 request_fresh_dhcp() {
   local ns="$1"
@@ -435,14 +467,17 @@ request_fresh_dhcp() {
   printf '%s\n' "$dhcp_out"
 }
 
+# ---------------------------------------------------------------------------
 # COPILOT IP discovery from DHCP output
+# ---------------------------------------------------------------------------
+
 discover_copilot_from_dhcp() {
   local dhcp_out="$1"
   local srv="" gw=""
 
   [ -n "$DEST_IP" ] && return 0
 
-  # Prefer the DHCPACK server address — that IS COPILOT
+  # Prefer the DHCPACK server address - that IS COPILOT
   srv="$(printf '%s\n' "$dhcp_out" \
     | sed -nE 's/.*DHCPACK of [^ ]+ from ([0-9.]+).*/\1/p' \
     | tail -1)"
@@ -465,22 +500,28 @@ discover_copilot_from_dhcp() {
   fi
 }
 
+# ---------------------------------------------------------------------------
 # ISI client loops
+# ---------------------------------------------------------------------------
+
 start_isi_loop() {
   local ns="$1"
   local file="$2"
   local name="$3"
 
-  log "Starting persistent ISI client ${name} in ${ns} → ${DEST_IP}:51001"
+  log "Starting persistent ISI client ${name} in ${ns} -> ${DEST_IP}:51001"
 
   ip netns exec "$ns" bash -lc "
     while true; do
-      nc '${DEST_IP}' 51001 < '${file}' || sleep 1
+      nc '${DEST_IP}' 51001 < '${file}' >/dev/null 2>&1 || sleep 1
     done
   " &
 }
 
+# ---------------------------------------------------------------------------
 # Cleanup trap
+# ---------------------------------------------------------------------------
+
 full_cleanup() {
   cleanup_ns
   cleanup_dhcp_runtime
@@ -489,7 +530,10 @@ full_cleanup() {
 
 trap full_cleanup EXIT
 
-# Main: bridge → namespaces → DHCP → ISI loops
+# ---------------------------------------------------------------------------
+# Main: bridge -> namespaces -> DHCP -> ISI loops
+# ---------------------------------------------------------------------------
+
 setup_bridge_for_isi
 cleanup_dhcp_runtime
 cleanup_ns
@@ -557,7 +601,9 @@ log "COPILOT target: ${DEST_IP}"
 start_isi_loop "${NS[0]}" "${ISI_FILES[0]}" "${NAMES[0]}"
 start_isi_loop "${NS[1]}" "${ISI_FILES[1]}" "${NAMES[1]}"
 
-# ZEITNEHMER loop — also does clock sync
+# ---------------------------------------------------------------------------
+# ZEITNEHMER loop - also does clock sync
+# ---------------------------------------------------------------------------
 zeit_ns="${NS[2]}"
 zeit_file="${ISI_FILES[2]}"
 
@@ -579,13 +625,19 @@ while true; do
     log "ZEITNEHMER: response snippet: $(printf '%s' "$TIME_RESPONSE" \
       | tr '\n' ' ' | head -c 400)"
 
-    # Try ISO 8601 first, then DD.MM.YYYY-HH:MM:SS
-    ISO_DT="$(printf '%s\n' "$TIME_RESPONSE" \
-      | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.,][0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})?' \
+    # Try Time_ISO8601 first, then legacy DateTime.
+    # Both fields are optional: different COPILOT versions expose different names.
+    # Missing or malformed time data must never stop the ZEITNEHMER loop.
+    ISO_DT="$(printf '%s
+' "$TIME_RESPONSE" \
+      | grep -oE '<Time_ISO8601>[^<]+</Time_ISO8601>|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.,][0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})?' \
+      | sed -E 's#</?Time_ISO8601>##g' \
       | head -n1 || true)"
 
-    DT="$(printf '%s\n' "$TIME_RESPONSE" \
-      | grep -oE '[0-9]{2}\.[0-9]{2}\.[0-9]{4}-[0-9]{2}:[0-9]{2}:[0-9]{2}' \
+    DT="$(printf '%s
+' "$TIME_RESPONSE" \
+      | grep -oE '<DateTime>[^<]+</DateTime>|[0-9]{2}\.[0-9]{2}\.[0-9]{4}-[0-9]{2}:[0-9]{2}:[0-9]{2}' \
+      | sed -E 's#</?DateTime>##g' \
       | head -n1 || true)"
 
     MASTER_EPOCH=0
@@ -593,14 +645,22 @@ while true; do
     if [ -n "$ISO_DT" ]; then
       log "ZEITNEHMER: Time_ISO8601=${ISO_DT}"
       MASTER_EPOCH="$(date -d "$ISO_DT" +%s 2>/dev/null || echo 0)"
+
+      if [ "$MASTER_EPOCH" -le 0 ]; then
+        log "ZEITNEHMER: Time_ISO8601 was present but could not be parsed; continuing without clock adjustment"
+      fi
     elif [ -n "$DT" ]; then
       log "ZEITNEHMER: DateTime=${DT}"
       dpart="${DT%%-*}"
       tpart="${DT#*-}"
       IFS='.' read -r DD MM YYYY <<<"$dpart"
       MASTER_EPOCH="$(date -d "${YYYY}-${MM}-${DD} ${tpart}" +%s 2>/dev/null || echo 0)"
+
+      if [ "$MASTER_EPOCH" -le 0 ]; then
+        log "ZEITNEHMER: DateTime was present but could not be parsed; continuing without clock adjustment"
+      fi
     else
-      log "ZEITNEHMER: no recognisable timestamp in response"
+      log "ZEITNEHMER: no Time_ISO8601 or DateTime in COPILOT response; continuing"
     fi
 
     if [ "$MASTER_EPOCH" -gt 0 ]; then
@@ -610,14 +670,12 @@ while true; do
       log "ZEITNEHMER: Pi=${NOW_EPOCH} COPILOT=${MASTER_EPOCH} drift=${DIFF}s"
 
       if [ "$ADIFF" -gt "$DRIFT_THRESHOLD" ]; then
-        log "ZEITNEHMER: drift ${ADIFF}s > ${DRIFT_THRESHOLD}s — adjusting clock"
+        log "ZEITNEHMER: drift ${ADIFF}s > ${DRIFT_THRESHOLD}s - adjusting clock"
         date -s "@${MASTER_EPOCH}" >/dev/null 2>&1 \
-          || log "ZEITNEHMER: clock set failed"
+          || log "ZEITNEHMER: clock set failed; continuing"
       else
-        log "ZEITNEHMER: drift ${ADIFF}s within threshold — no adjust"
+        log "ZEITNEHMER: drift ${ADIFF}s within threshold - no adjust"
       fi
-    elif [ -n "$ISO_DT" ] || [ -n "$DT" ]; then
-      log "ZEITNEHMER: could not parse timestamp value"
     fi
 
   else
@@ -635,7 +693,10 @@ RUNNER_EOF
   chown root:root "$ISI_RUNNER" 2>/dev/null || true
 }
 
+# ----------------------------------------------------------------------------
 # ISI payload files
+# ----------------------------------------------------------------------------
+
 write_isi_payloads() {
   log "Writing ISI payload files"
 
@@ -658,7 +719,10 @@ EOF
   chmod 644       "$ISI_PAYLOAD_1" "$ISI_PAYLOAD_2" "$ISI_PAYLOAD_3"
 }
 
+# ----------------------------------------------------------------------------
 # systemd service unit
+# ----------------------------------------------------------------------------
+
 write_isi_service() {
   log "Installing isirunall.service"
 
@@ -688,7 +752,10 @@ restart_isi_service() {
   systemctl restart isirunall.service
 }
 
+# ----------------------------------------------------------------------------
 # Install / uninstall / purge helpers
+# ----------------------------------------------------------------------------
+
 stop_and_disable_unit() {
   local unit_name="$1"
   log "Stopping and disabling ${unit_name}"
@@ -722,7 +789,10 @@ remove_isi_files() {
   rm -f "$ISI_RUNNER" "$ISI_PAYLOAD_1" "$ISI_PAYLOAD_2" "$ISI_PAYLOAD_3" "$ISI_SERVICE_FILE"
 }
 
+# ----------------------------------------------------------------------------
 # Summary printers
+# ----------------------------------------------------------------------------
+
 print_install_summary() {
   cat <<SUMMARY
 
@@ -732,13 +802,14 @@ Service : isirunall.service
 Runner  : ${ISI_RUNNER}
 
 Key behaviours:
-  - STP disabled, forward_delay 0        → bridge ports enter forwarding immediately
-  - bootp-broadcast-always in dhclient conf → OFFER delivered as broadcast, no FDB race
+  - STP disabled, forward_delay 0        -> bridge ports enter forwarding immediately
+  - bootp-broadcast-always in dhclient conf -> OFFER delivered as broadcast, no FDB race
   - clean systemd unit with no ExecStartPre nmcli/ip commands
-  - Deterministic veth MACs        → stable across restarts
-  - Fresh DHCP per namespace       → no stale lease interference
+  - Deterministic veth MACs        -> stable across restarts
+  - Fresh DHCP per namespace       -> no stale lease interference
   - COPILOT IP discovered from DHCP server / routers option / default gateway
   - No hardcoded COPILOT IP
+  - ZEITNEHMER requests DateTime and Time_ISO8601, uses whichever COPILOT returns
 
 Check status:
   sudo systemctl status isirunall.service --no-pager
@@ -777,7 +848,10 @@ Removed service, files, and packages:
 SUMMARY
 }
 
+# ----------------------------------------------------------------------------
 # Action entry points
+# ----------------------------------------------------------------------------
+
 install_main() {
   require_root
   ensure_log_dir
