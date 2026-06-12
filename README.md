@@ -4,6 +4,8 @@ This branch contains setup scripts and documentation for preparing Raspberry Pi 
 
 This branch is dedicated to the full Pi 3 / 4 / 5 InitBox stack.
 
+The lightweight Raspberry Pi Zero W / Zero 2W build is maintained separately in the `pi-zero-W-2W` branch.
+
 ---
 
 ## Operating Model
@@ -21,14 +23,83 @@ The intended workflow is:
 3. Clone or update the `pi-3-4-5` branch.
 4. Run the installer for the `pi-3-4-5` profile.
 5. Run installer sanity checks.
-6. Install the required modules.
-7. Reboot if required.
-8. Verify all required services.
-9. Test role-based startup.
-10. Run field diagnostics.
-11. Deploy the prepared device in the field.
+6. Prepare the Debian package cache.
+7. Install the required modules.
+8. Allow dashboard assets to be downloaded or built once during lab setup.
+9. Reboot if required.
+10. Verify all required services.
+11. Test role-based startup.
+12. Run field diagnostics.
+13. Deploy the prepared device in the field.
 
-All required packages should be installed during lab preparation.
+All required packages and first-time dashboard assets should be installed or cached during lab preparation.
+
+---
+
+## Offline / Field Rerun Model
+
+The Pi 3 / 4 / 5 branch uses a lab-first cache model.
+
+During lab setup with Internet:
+
+* Debian packages are downloaded and kept on the Pi.
+* Module installs use the package helper.
+* `ttyd` is built once and cached on the Pi.
+* The Node-RED installer script is downloaded once and cached on the Pi.
+* Node-RED and `node-red-dashboard` are installed once and then reused on later reruns.
+
+During field or offline reruns:
+
+* Debian packages install from the local cache.
+* Existing Node-RED installation is reused.
+* Existing `node-red-dashboard` installation is reused.
+* Cached `ttyd` binary is reused if `ttyd` is missing from the PATH.
+* The field rerun does not depend on Internet access once the lab cache has been prepared and dashboard has been installed once.
+
+Package cache helper:
+
+```text
+scripts/lib/packages.sh
+```
+
+Package list:
+
+```text
+scripts/packages.txt
+```
+
+Default package cache root:
+
+```text
+/opt/initbox-package-cache
+```
+
+Default Debian package cache:
+
+```text
+/opt/initbox-package-cache/apt
+```
+
+Default dashboard asset cache:
+
+```text
+/opt/initbox-package-cache/dashboard
+```
+
+Dashboard cached assets include:
+
+```text
+/opt/initbox-package-cache/dashboard/ttyd
+/opt/initbox-package-cache/dashboard/update-nodejs-and-nodered-deb.sh
+```
+
+Important limitation:
+
+```text
+A fully offline dashboard install is possible only after dashboard was installed once in the lab with Internet.
+```
+
+This is because Node-RED and npm dependencies must exist locally before a field/offline rerun can reuse them.
 
 ---
 
@@ -92,6 +163,8 @@ The Pi 3 / 4 / 5 branch supports:
 * Hotspot
 * Dashboard
 * Web Terminal
+* Debian package cache
+* Dashboard asset cache
 * Role-based service startup
 * ISI simulator
 * FMS/CAN replay
@@ -117,11 +190,13 @@ scripts/
   initbox-installer.sh
   initbox-status.sh
   update-repo.sh
+  packages.txt
 
   lib/
     profile.sh
     modules.sh
     state.sh
+    packages.sh
 
   pi-3-4-5/
     module-dashboard.sh
@@ -160,9 +235,12 @@ During setup, the installer may:
 
 * Run `apt-get update`
 * Run `apt-get upgrade`
-* Install Debian packages
-* Download required dependencies
-* Build ttyd from source
+* Download Debian packages into the local package cache
+* Install Debian packages from cache or Internet
+* Download the Node-RED installer script once
+* Build and cache `ttyd`
+* Install Node-RED
+* Install `node-red-dashboard`
 * Configure networking
 * Configure systemd services
 * Modify boot or hardware settings
@@ -220,8 +298,10 @@ The installer will:
 * Create install logs.
 * Create the legacy module log path.
 * Grant passwordless sudo to the operator user.
-* Run baseline `apt-get update`.
-* Run baseline `apt-get upgrade`.
+* Run baseline `apt-get update` when Internet is available.
+* Run baseline `apt-get upgrade` when Internet is available.
+* Prepare the package cache when requested.
+* Show package cache status when requested.
 * Require explicit `RUN` confirmation before executing a module script.
 * Record install state.
 
@@ -252,6 +332,8 @@ The installer menu includes:
 ```text
 1-N) Install/select supported module
 c) Run sanity checks
+p) Prepare/download package cache
+k) Show package cache status
 l) Show install log path
 s) Show install state
 q) Quit
@@ -263,16 +345,137 @@ Run sanity checks before installing modules:
 sudo ./scripts/initbox-installer.sh pi-3-4-5 c
 ```
 
+Prepare the Debian package cache in the lab:
+
+```bash
+sudo ./scripts/initbox-installer.sh pi-3-4-5 p
+```
+
+Show package cache status:
+
+```bash
+sudo ./scripts/initbox-installer.sh pi-3-4-5 k
+```
+
 The sanity check verifies:
 
 * Required repository files exist.
 * The loaded profile is `pi-3-4-5`.
 * Required profile values are set.
 * Dashboard support is enabled.
+* `scripts/packages.txt` exists.
+* `scripts/lib/packages.sh` exists.
 * Supported modules have script mappings.
 * Supported module scripts exist.
 * Shell syntax is valid.
 * ShellCheck runs if installed.
+
+---
+
+## Package Cache Preparation
+
+Run this in the lab while the Pi still has Internet:
+
+```bash
+cd /home/initbox/RaspberryPi
+sudo ./scripts/initbox-installer.sh pi-3-4-5 p
+```
+
+This downloads Debian packages listed in:
+
+```text
+scripts/packages.txt
+```
+
+into:
+
+```text
+/opt/initbox-package-cache/apt
+```
+
+The cache helper is:
+
+```text
+scripts/lib/packages.sh
+```
+
+Useful package helper commands:
+
+```bash
+sudo ./scripts/lib/packages.sh status
+sudo ./scripts/lib/packages.sh download scripts/packages.txt
+sudo ./scripts/lib/packages.sh install dnsmasq hostapd dhcpcd5
+sudo ./scripts/lib/packages.sh install-cache dnsmasq hostapd dhcpcd5
+```
+
+Normal module scripts call the helper automatically.
+
+The expected behavior is:
+
+* With Internet: install using `apt-get` and keep packages cached.
+* Without Internet: install from local package cache only.
+* Packages are not purged by module uninstall actions.
+* `purge` is treated as an uninstall compatibility alias.
+
+If offline installation fails, the cache is incomplete. Return to lab Internet and rerun:
+
+```bash
+sudo ./scripts/initbox-installer.sh pi-3-4-5 p
+```
+
+---
+
+## Dashboard Asset Cache
+
+The dashboard module has extra assets beyond Debian packages.
+
+Dashboard module script:
+
+```text
+scripts/pi-3-4-5/module-dashboard.sh
+```
+
+Dashboard cache directory:
+
+```text
+/opt/initbox-package-cache/dashboard
+```
+
+Cached `ttyd` binary:
+
+```text
+/opt/initbox-package-cache/dashboard/ttyd
+```
+
+Cached Node-RED installer script:
+
+```text
+/opt/initbox-package-cache/dashboard/update-nodejs-and-nodered-deb.sh
+```
+
+During the first lab install with Internet:
+
+* `ttyd` is built from GitHub source.
+* The installed `ttyd` binary is copied into the dashboard cache.
+* The official Node-RED installer script is downloaded into the dashboard cache.
+* Node-RED is installed.
+* `node-red-dashboard` is installed in `/home/initbox/.node-red`.
+
+During later offline reruns:
+
+* `ttyd` is restored from the cached binary if missing.
+* Node-RED is reused if already installed.
+* `node-red-dashboard` is reused if already installed.
+* If Node-RED was never installed before going offline, dashboard install cannot complete fully offline.
+
+Verify dashboard cache:
+
+```bash
+ls -lah /opt/initbox-package-cache/dashboard
+command -v ttyd || true
+command -v node-red || true
+sudo -u initbox bash -lc 'cd ~/.node-red && npm list node-red-dashboard --depth=0'
+```
 
 ---
 
@@ -281,16 +484,18 @@ The sanity check verifies:
 Recommended order:
 
 ```text
-1. Hotspot
-2. Dashboard
-3. RTC
-4. Sniffer / Bridge
-5. ISI
-6. FMS
+1. Prepare package cache
+2. Hotspot
+3. Dashboard
+4. RTC
+5. Sniffer / Bridge
+6. ISI
+7. FMS
 ```
 
 Reasoning:
 
+* Package cache makes later field/offline reruns safer.
 * Hotspot provides Wi-Fi access and local DNS.
 * Dashboard provides Node-RED, Web Terminal, portal redirect, and role control.
 * RTC provides time sync helpers used by ZEITNEHMER.
@@ -378,6 +583,17 @@ The hotspot module installs and configures:
 * static `wlan0` hotspot IP
 * wildcard captive DNS
 * local dashboard name resolution
+
+Package-cache dependencies:
+
+```text
+dnsmasq
+hostapd
+dhcpcd5
+iproute2
+iptables
+rfkill
+```
 
 Default hotspot SSID format:
 
@@ -467,6 +683,21 @@ The dashboard module installs and configures:
 * `/etc/pi_roles.conf`
 * `/usr/local/bin/pi-stats.sh`
 
+Package-cache dependencies:
+
+```text
+ca-certificates
+curl
+git
+build-essential
+cmake
+libjson-c-dev
+libwebsockets-dev
+iptables
+nodejs
+npm
+```
+
 Dashboard URLs:
 
 ```text
@@ -527,6 +758,15 @@ The RTC module installs and configures:
 * `rtc-sync.service`
 * `rtc-sync.timer`
 
+Package-cache dependencies:
+
+```text
+i2c-tools
+util-linux-extra
+python3-smbus
+curl
+```
+
 The RTC module supports these COPILOT time inputs:
 
 ```bash
@@ -568,6 +808,16 @@ The sniffer bridge module installs and configures:
 * `/usr/local/bin/bridge-check.sh`
 * `wireshark-autostart.service`
 * `bridge-check.service`
+
+Package-cache dependencies:
+
+```text
+tshark
+zip
+libcap2-bin
+bridge-utils
+iproute2
+```
 
 Capture directory:
 
@@ -671,6 +921,14 @@ The ISI module installs and configures:
   * NIX
   * ZEITNEHMER
 
+Package-cache dependencies:
+
+```text
+isc-dhcp-client
+netcat-openbsd
+iproute2
+```
+
 Payload files:
 
 ```text
@@ -739,6 +997,15 @@ The FMS module installs and configures:
 * `/usr/local/bin/fms.py`
 * `fms.service`
 * placeholder `/usr/local/bin/CAN.trc`
+
+Package-cache dependencies:
+
+```text
+can-utils
+ifupdown
+python3
+iproute2
+```
 
 FMS sends CAN frames only when `/etc/pi_roles.conf` includes:
 
@@ -952,6 +1219,14 @@ i2cdetect -y 1
 ls -l /dev/rtc0
 ```
 
+Package cache checks:
+
+```bash
+sudo ./scripts/lib/packages.sh status
+ls -lah /opt/initbox-package-cache/apt
+ls -lah /opt/initbox-package-cache/dashboard
+```
+
 Trace file checks:
 
 ```bash
@@ -1021,6 +1296,7 @@ ip route
 ip link show
 ss -tulpn
 sudo ./scripts/initbox-status.sh
+sudo ./scripts/lib/packages.sh status
 ```
 
 Confirm:
@@ -1031,7 +1307,43 @@ Confirm:
 * Dashboard works.
 * Web Terminal works.
 * Role-based startup behaves correctly.
+* Package cache exists.
+* Dashboard cache exists after dashboard install.
 * Logs do not show repeated failures.
+
+---
+
+## Offline Rerun Test
+
+After lab setup is complete, test a simulated offline rerun.
+
+First confirm cache exists:
+
+```bash
+sudo ./scripts/lib/packages.sh status
+ls -lah /opt/initbox-package-cache/apt
+ls -lah /opt/initbox-package-cache/dashboard
+```
+
+Confirm dashboard runtime exists:
+
+```bash
+command -v node-red
+command -v ttyd
+sudo -u initbox bash -lc 'cd ~/.node-red && npm list node-red-dashboard --depth=0'
+```
+
+Then disconnect Internet and rerun one or more modules from the installer.
+
+Expected behavior:
+
+* Debian package installs use local cache.
+* Hotspot reruns without Internet.
+* RTC reruns without Internet.
+* Sniffer/bridge reruns without Internet.
+* ISI reruns without Internet.
+* FMS reruns without Internet.
+* Dashboard reruns without Internet only if Node-RED and `node-red-dashboard` were already installed once during lab setup.
 
 ---
 
@@ -1042,7 +1354,13 @@ Before the device leaves the lab:
 * [ ] Correct branch is used: `pi-3-4-5`.
 * [ ] Correct profile is used: `pi-3-4-5`.
 * [ ] Installer sanity checks passed.
-* [ ] Internet was available during setup.
+* [ ] Internet was available during lab setup.
+* [ ] Package cache was prepared.
+* [ ] Package cache status was checked.
+* [ ] Dashboard asset cache was created.
+* [ ] `ttyd` was installed or cached.
+* [ ] Node-RED was installed.
+* [ ] `node-red-dashboard` was installed.
 * [ ] Required modules were installed.
 * [ ] Device was reboot-tested.
 * [ ] Required services are active.
@@ -1055,6 +1373,7 @@ Before the device leaves the lab:
 * [ ] CAN/FMS was checked if required.
 * [ ] Sniffer capture was checked if required.
 * [ ] `log-prep.sh` was checked if sniffer is required.
+* [ ] Offline rerun behavior was tested where required.
 * [ ] Installer log was reviewed.
 * [ ] Install state was reviewed.
 * [ ] Field diagnostics command was run.
@@ -1075,6 +1394,7 @@ ip addr
 ip route
 ip link show
 ss -tulpn
+sudo ./scripts/lib/packages.sh status
 ```
 
 Then check the relevant service:
@@ -1091,6 +1411,65 @@ If a package is missing in the field, the device was not fully prepared in the l
 ---
 
 ## Common Troubleshooting
+
+### Package cache is empty
+
+Check:
+
+```bash
+sudo ./scripts/lib/packages.sh status
+ls -lah /opt/initbox-package-cache/apt
+```
+
+Fix in the lab with Internet:
+
+```bash
+cd /home/initbox/RaspberryPi
+sudo ./scripts/initbox-installer.sh pi-3-4-5 p
+```
+
+---
+
+### Offline package install fails
+
+Check:
+
+```bash
+sudo ./scripts/lib/packages.sh status
+ls -lah /opt/initbox-package-cache/apt
+```
+
+The cache is incomplete. Reconnect Internet in the lab and rerun:
+
+```bash
+sudo ./scripts/initbox-installer.sh pi-3-4-5 p
+```
+
+---
+
+### Dashboard offline rerun fails
+
+Check:
+
+```bash
+command -v node-red || true
+command -v ttyd || true
+ls -lah /opt/initbox-package-cache/dashboard
+sudo -u initbox bash -lc 'cd ~/.node-red && npm list node-red-dashboard --depth=0'
+```
+
+Expected for offline dashboard rerun:
+
+```text
+node-red installed
+node-red-dashboard installed
+ttyd installed or cached
+Node-RED installer cached if first-time rerun is needed in lab
+```
+
+If Node-RED or `node-red-dashboard` was never installed before going offline, reconnect Internet in the lab and run the dashboard module once.
+
+---
 
 ### Dashboard not reachable
 
@@ -1122,6 +1501,8 @@ Check:
 systemctl status ttyd --no-pager
 ss -tulpn | grep 7681
 journalctl -u ttyd -n 100 --no-pager
+command -v ttyd || true
+ls -lah /opt/initbox-package-cache/dashboard
 ```
 
 Expected:
@@ -1129,6 +1510,7 @@ Expected:
 ```text
 ttyd.service active
 port 7681 listening
+ttyd installed or restorable from dashboard cache
 ```
 
 ---
@@ -1284,6 +1666,7 @@ bash -n scripts/update-repo.sh
 bash -n scripts/lib/profile.sh
 bash -n scripts/lib/modules.sh
 bash -n scripts/lib/state.sh
+bash -n scripts/lib/packages.sh
 bash -n scripts/pi-3-4-5/module-dashboard.sh
 bash -n scripts/pi-3-4-5/module-fms.sh
 bash -n scripts/pi-3-4-5/module-hotspot.sh
@@ -1306,6 +1689,8 @@ shellcheck scripts/initbox-installer.sh scripts/initbox-status.sh scripts/update
 * Pi Zero W / Zero 2W work belongs in the `pi-zero-W-2W` branch.
 * Lab setup requires Internet access.
 * Field deployment assumes the Pi is already configured.
+* Debian packages must be cached during lab preparation.
+* Dashboard should be installed once in the lab so Node-RED and npm dependencies exist locally.
 * Dashboard is the primary management interface.
 * Web Terminal is bundled with the dashboard module.
 * `/etc/pi_roles.conf` is the runtime source of truth for role-based startup.
