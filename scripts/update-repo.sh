@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
 
 # InitBox repository update script
-#
 # Safely hard-syncs the local Raspberry Pi repository to origin/main.
 # Intended to be run manually on the Pi after changes are committed on GitHub.
-#
 # Usage:
 #   ./scripts/update-repo.sh
 #   ./scripts/update-repo.sh --dry-run
-#   ./scripts/update-repo.sh --branch main
+#   ./scripts/update-repo.sh --branch pi-zero-W-2W
 
 set -euo pipefail
 
 REPO_DIR="/home/initbox/RaspberryPi"
-BRANCH="main"
+BRANCH="pi-zero-W-2W"
 REMOTE="origin"
 DRY_RUN="no"
 LOG_DIR="/var/log/initbox"
