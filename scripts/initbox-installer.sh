@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 
-# InitBox Raspberry Pi installer
-# Loads a hardware profile, repairs required repo permissions, shows supported
-# modules, runs sanity checks, handles offline package preseed, and runs selected
-# module scripts with explicit confirmation.
-#
+# InitBox Raspberry Pi Zero W / Zero 2W installer
+# Loads the pi-zero2w hardware profile, repairs required repo permissions,
+# shows supported modules, runs sanity checks, handles offline package preseed,
+# and runs selected module scripts with explicit confirmation.
 # Usage:
 #   ./scripts/initbox-installer.sh pi-zero2w
 #   ./scripts/initbox-installer.sh pi-zero2w c
@@ -22,9 +21,7 @@ if [ -z "$REQUESTED_PROFILE_ID" ]; then
   echo
   echo "Usage:"
   echo "  ./scripts/initbox-installer.sh pi-zero2w"
-  echo "  ./scripts/initbox-installer.sh pi-3-4-5"
   echo "  ./scripts/initbox-installer.sh pi-zero2w c"
-  echo "  ./scripts/initbox-installer.sh pi-3-4-5 c"
   echo "  ./scripts/initbox-installer.sh pi-zero2w p"
   echo "  ./scripts/initbox-installer.sh pi-zero2w v"
   echo "  ./scripts/initbox-installer.sh pi-zero2w uninstall"
@@ -51,9 +48,11 @@ PACKAGES_FILE="$REPO_ROOT/scripts/packages.txt"
 PACKAGES_LIB_FILE="$REPO_ROOT/scripts/lib/packages.sh"
 PACKAGE_CACHE_DIR="/opt/initbox/packages"
 
+SUPPORTED_MODULES=()
+
 bootstrap_repo_permissions() {
-  local path
-  local module_script
+  local path=""
+  local module_script=""
   local repo_dirs=()
   local readable_files=()
   local executable_files=()
@@ -89,6 +88,7 @@ bootstrap_repo_permissions() {
 
   executable_files+=("$REPO_ROOT/scripts/initbox-installer.sh")
   executable_files+=("$REPO_ROOT/scripts/initbox-status.sh")
+  executable_files+=("$REPO_ROOT/scripts/update-repo.sh")
 
   for path in "${repo_dirs[@]}"; do
     if [ -d "$path" ]; then
@@ -108,7 +108,7 @@ bootstrap_repo_permissions() {
     fi
   done
 
-  for module_script in "$REPO_ROOT/scripts/pi-zero2w"/*.sh "$REPO_ROOT/scripts/pi-3-4-5"/*.sh; do
+  for module_script in "$REPO_ROOT/scripts/pi-zero2w"/*.sh; do
     if [ -f "$module_script" ]; then
       chmod 755 "$module_script"
     fi
@@ -127,8 +127,6 @@ bootstrap_repo_permissions
 . "$REPO_ROOT/scripts/lib/state.sh"
 
 initbox_load_profile "$REQUESTED_PROFILE_ID"
-
-SUPPORTED_MODULES=()
 
 ensure_log_file() {
   if [ "$(id -u)" -eq 0 ]; then
@@ -149,13 +147,90 @@ ensure_log_file() {
 
 log_line() {
   local message="$1"
-  local timestamp
+  local timestamp=""
 
   timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
 
   if [ -w "$LOG_FILE" ]; then
-    printf '[%s] %s\n' "$timestamp" "$message" >> "$LOG_FILE"
+    printf '[%s] %s\n' "$timestamp" "$message" >>"$LOG_FILE"
   fi
+}
+
+# -----------------------------------------------------------------------------
+# Installer-owned profile/module support logic
+# -----------------------------------------------------------------------------
+
+installer_module_allowed_for_profile() {
+  local profile_id="$1"
+  local module_id="$2"
+
+  case "$profile_id:$module_id" in
+    pi-zero2w:isi|pi-zero2w:fms|pi-zero2w:hotspot|pi-zero2w:web-terminal|pi-zero2w:sniffer-bridge)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+installer_profile_supports_module() {
+  local requested_module="$1"
+  local module_id=""
+
+  [ -n "$requested_module" ] || return 1
+  [ -n "${PROFILE_ID:-}" ] || return 1
+  [ -n "${DEFAULT_MODULES:-}" ] || return 1
+
+  if ! installer_module_allowed_for_profile "$PROFILE_ID" "$requested_module"; then
+    return 1
+  fi
+
+  for module_id in $DEFAULT_MODULES; do
+    if [ "$module_id" = "$requested_module" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+installer_require_supported_module() {
+  local module_id="$1"
+
+  if installer_profile_supports_module "$module_id"; then
+    return 0
+  fi
+
+  echo "ERROR: module '$module_id' is not supported by profile '$PROFILE_ID'."
+  exit 1
+}
+
+build_supported_module_list() {
+  local module_id=""
+
+  SUPPORTED_MODULES=()
+
+  for module_id in $DEFAULT_MODULES; do
+    [ -z "$module_id" ] && continue
+
+    if installer_profile_supports_module "$module_id"; then
+      SUPPORTED_MODULES+=("$module_id")
+    fi
+  done
+}
+
+initbox_module_supports_uninstall() {
+  local module_id="$1"
+
+  case "$PROFILE_ID:$module_id" in
+    pi-zero2w:isi|pi-zero2w:fms|pi-zero2w:hotspot|pi-zero2w:web-terminal|pi-zero2w:sniffer-bridge)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 # -----------------------------------------------------------------------------
@@ -164,7 +239,7 @@ log_line() {
 
 is_system_action() {
   case "$ACTION" in
-    menu|""|u|U|uninstall|remove|p|P|preseed|packages|v|V|verify|verify-packages|baseline|upgrade)
+    menu|""|u|U|uninstall|remove|p|P|preseed|packages|v|V|verify|verify-packages|b|B|baseline|upgrade)
       return 0
       ;;
     *)
@@ -444,39 +519,6 @@ pause() {
   read -r _
 }
 
-add_supported_module() {
-  local module_id="$1"
-
-  if initbox_profile_supports_module "$module_id"; then
-    SUPPORTED_MODULES+=("$module_id")
-  fi
-}
-
-build_supported_module_list() {
-  SUPPORTED_MODULES=()
-
-  add_supported_module "isi"
-  add_supported_module "fms"
-  add_supported_module "hotspot"
-  add_supported_module "web-terminal"
-  add_supported_module "dashboard"
-  add_supported_module "rtc"
-  add_supported_module "sniffer-bridge"
-}
-
-initbox_module_supports_uninstall() {
-  local module_id="$1"
-
-  case "$PROFILE_ID:$module_id" in
-    pi-zero2w:isi|pi-zero2w:fms|pi-zero2w:hotspot|pi-zero2w:web-terminal|pi-zero2w:sniffer-bridge)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 print_header() {
   clear || true
 
@@ -510,20 +552,17 @@ print_header() {
 }
 
 print_menu() {
-  local index
-  local module_id
-  local module_name
-  local module_script
-  local uninstall_available
-
-  uninstall_available="no"
+  local index=1
+  local module_id=""
+  local module_name=""
+  local module_script=""
+  local uninstall_available="no"
 
   echo "Available install modules"
   echo "-------------------------"
   echo "Select a number to install or re-run that module."
   echo
 
-  index=1
   for module_id in "${SUPPORTED_MODULES[@]}"; do
     module_name="$(initbox_module_display_name "$module_id")"
 
@@ -646,7 +685,7 @@ sanity_check_profile_value() {
 }
 
 sanity_check_package_file() {
-  local package_count
+  local package_count=""
 
   if [ ! -f "$PACKAGES_FILE" ]; then
     sanity_fail "missing package list: scripts/packages.txt"
@@ -658,9 +697,7 @@ sanity_check_package_file() {
     return 1
   fi
 
-  package_count="$(
-    grep -Ec '^[[:space:]]*[^[:space:]#]' "$PACKAGES_FILE" || true
-  )"
+  package_count="$(grep -Ec '^[[:space:]]*[^[:space:]#]' "$PACKAGES_FILE" || true)"
 
   if [ "$package_count" -gt 0 ]; then
     sanity_pass "package list has packages: scripts/packages.txt ($package_count)"
@@ -701,12 +738,12 @@ sanity_check_package_helper() {
 
 sanity_check_module_script() {
   local module_id="$1"
-  local module_name
-  local module_script
+  local module_name=""
+  local module_script=""
 
   module_name="$(initbox_module_display_name "$module_id")"
 
-  if ! initbox_profile_supports_module "$module_id"; then
+  if ! installer_profile_supports_module "$module_id"; then
     sanity_pass "module blocked by profile: $module_id ($module_name)"
     return 0
   fi
@@ -726,11 +763,9 @@ sanity_check_module_script() {
 }
 
 run_shellcheck_if_available() {
-  local shellcheck_failures
-  local path
+  local shellcheck_failures=0
+  local path=""
   local shellcheck_files=()
-
-  shellcheck_failures=0
 
   if ! command -v shellcheck >/dev/null 2>&1; then
     echo
@@ -742,6 +777,7 @@ run_shellcheck_if_available() {
 
   shellcheck_files+=("$REPO_ROOT/scripts/initbox-installer.sh")
   shellcheck_files+=("$REPO_ROOT/scripts/initbox-status.sh")
+  shellcheck_files+=("$REPO_ROOT/scripts/update-repo.sh")
   shellcheck_files+=("$REPO_ROOT/scripts/lib/profile.sh")
   shellcheck_files+=("$REPO_ROOT/scripts/lib/modules.sh")
   shellcheck_files+=("$REPO_ROOT/scripts/lib/state.sh")
@@ -761,18 +797,12 @@ run_shellcheck_if_available() {
     fi
   done
 
-  if [ "$shellcheck_failures" -eq 0 ]; then
-    return 0
-  fi
-
-  return 1
+  [ "$shellcheck_failures" -eq 0 ]
 }
 
 run_sanity_checks() {
-  local failures
-  local module_id
-
-  failures=0
+  local failures=0
+  local module_id=""
 
   echo
   echo "InitBox sanity checks"
@@ -785,13 +815,13 @@ run_sanity_checks() {
   bootstrap_repo_permissions
 
   sanity_check_file "README.md" || failures=$((failures + 1))
-
   sanity_check_file "profiles/README.md" || failures=$((failures + 1))
   sanity_check_file "profiles/pi-zero2w.conf" || failures=$((failures + 1))
 
   sanity_check_file "scripts/packages.txt" || failures=$((failures + 1))
   sanity_check_file "scripts/initbox-installer.sh" || failures=$((failures + 1))
   sanity_check_file "scripts/initbox-status.sh" || failures=$((failures + 1))
+  sanity_check_file "scripts/update-repo.sh" || failures=$((failures + 1))
   sanity_check_file "scripts/lib/profile.sh" || failures=$((failures + 1))
   sanity_check_file "scripts/lib/modules.sh" || failures=$((failures + 1))
   sanity_check_file "scripts/lib/state.sh" || failures=$((failures + 1))
@@ -800,6 +830,7 @@ run_sanity_checks() {
   sanity_check_no_markdown_fences "scripts/packages.txt" || failures=$((failures + 1))
   sanity_check_no_markdown_fences "scripts/initbox-installer.sh" || failures=$((failures + 1))
   sanity_check_no_markdown_fences "scripts/initbox-status.sh" || failures=$((failures + 1))
+  sanity_check_no_markdown_fences "scripts/update-repo.sh" || failures=$((failures + 1))
   sanity_check_no_markdown_fences "scripts/lib/profile.sh" || failures=$((failures + 1))
   sanity_check_no_markdown_fences "scripts/lib/modules.sh" || failures=$((failures + 1))
   sanity_check_no_markdown_fences "scripts/lib/state.sh" || failures=$((failures + 1))
@@ -825,17 +856,24 @@ run_sanity_checks() {
       failures=$((failures + 1))
     fi
 
-    if initbox_profile_supports_module "dashboard"; then
+    if installer_profile_supports_module "dashboard"; then
       sanity_fail "Pi Zero W / Zero 2W profile incorrectly supports dashboard"
       failures=$((failures + 1))
     else
       sanity_pass "Pi Zero W / Zero 2W dashboard does not appear as supported module"
     fi
 
-    if initbox_profile_supports_module "web-terminal"; then
+    if installer_profile_supports_module "web-terminal"; then
       sanity_pass "Pi Zero W / Zero 2W supports Web Terminal"
     else
       sanity_fail "Pi Zero W / Zero 2W must support Web Terminal"
+      failures=$((failures + 1))
+    fi
+
+    if installer_profile_supports_module "sniffer-bridge"; then
+      sanity_pass "Pi Zero W / Zero 2W supports Sniffer / Bridge"
+    else
+      sanity_fail "Pi Zero W / Zero 2W must support Sniffer / Bridge"
       failures=$((failures + 1))
     fi
   fi
@@ -873,7 +911,7 @@ confirm_module_action() {
   local module_name="$2"
   local module_script="$3"
   local confirmation_word="$4"
-  local confirmation
+  local confirmation=""
 
   echo
   echo "Ready to ${action} module"
@@ -1015,9 +1053,9 @@ run_module_script() {
 
 handle_selection() {
   local selected_index="$1"
-  local module_id
-  local module_name
-  local module_script
+  local module_id=""
+  local module_name=""
+  local module_script=""
 
   module_id="${SUPPORTED_MODULES[$((selected_index - 1))]}"
   module_name="$(initbox_module_display_name "$module_id")"
@@ -1028,7 +1066,7 @@ handle_selection() {
   echo "Module ID:   $module_id"
   echo "Module name: $module_name"
 
-  initbox_require_supported_module "$module_id"
+  installer_require_supported_module "$module_id"
 
   if ! module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
     echo "ERROR: no script mapping exists for module '$module_id' on profile '$PROFILE_ID'."
@@ -1052,16 +1090,15 @@ handle_selection() {
 }
 
 print_uninstall_menu() {
-  local index
-  local module_id
-  local module_name
-  local module_script
+  local index=1
+  local module_id=""
+  local module_name=""
+  local module_script=""
 
   echo
   echo "Available uninstall modules"
   echo "---------------------------"
 
-  index=1
   for module_id in "${SUPPORTED_MODULES[@]}"; do
     if ! initbox_module_supports_uninstall "$module_id"; then
       continue
@@ -1088,10 +1125,8 @@ print_uninstall_menu() {
 
 get_uninstall_module_by_index() {
   local requested_index="$1"
-  local index
-  local module_id
-
-  index=1
+  local index=1
+  local module_id=""
 
   for module_id in "${SUPPORTED_MODULES[@]}"; do
     if ! initbox_module_supports_uninstall "$module_id"; then
@@ -1110,10 +1145,8 @@ get_uninstall_module_by_index() {
 }
 
 count_uninstall_modules() {
-  local count
-  local module_id
-
-  count=0
+  local count=0
+  local module_id=""
 
   for module_id in "${SUPPORTED_MODULES[@]}"; do
     if initbox_module_supports_uninstall "$module_id"; then
@@ -1126,9 +1159,9 @@ count_uninstall_modules() {
 
 handle_uninstall_selection() {
   local selected_index="$1"
-  local module_id
-  local module_name
-  local module_script
+  local module_id=""
+  local module_name=""
+  local module_script=""
 
   if ! module_id="$(get_uninstall_module_by_index "$selected_index")"; then
     echo
@@ -1144,7 +1177,7 @@ handle_uninstall_selection() {
   echo "Module ID:   $module_id"
   echo "Module name: $module_name"
 
-  initbox_require_supported_module "$module_id"
+  installer_require_supported_module "$module_id"
 
   if ! initbox_module_supports_uninstall "$module_id"; then
     echo "ERROR: module '$module_id' does not support uninstall yet."
@@ -1174,8 +1207,8 @@ handle_uninstall_selection() {
 }
 
 handle_uninstall_menu() {
-  local choice
-  local max_choice
+  local choice=""
+  local max_choice=""
 
   max_choice="$(count_uninstall_modules)"
 
@@ -1214,8 +1247,8 @@ handle_uninstall_menu() {
 }
 
 interactive_menu() {
-  local choice
-  local max_choice
+  local choice=""
+  local max_choice=""
 
   while true; do
     print_header
@@ -1307,7 +1340,7 @@ main() {
     v|V|verify|verify-packages)
       run_package_verify
       ;;
-    baseline|upgrade)
+    b|B|baseline|upgrade)
       run_baseline_apt_update_upgrade
       ;;
     u|U|uninstall|remove)
@@ -1327,9 +1360,7 @@ main() {
       echo
       echo "Usage:"
       echo "  ./scripts/initbox-installer.sh pi-zero2w"
-      echo "  ./scripts/initbox-installer.sh pi-3-4-5"
       echo "  ./scripts/initbox-installer.sh pi-zero2w c"
-      echo "  ./scripts/initbox-installer.sh pi-3-4-5 c"
       echo "  ./scripts/initbox-installer.sh pi-zero2w p"
       echo "  ./scripts/initbox-installer.sh pi-zero2w v"
       echo "  ./scripts/initbox-installer.sh pi-zero2w uninstall"
