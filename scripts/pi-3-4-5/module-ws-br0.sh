@@ -1,87 +1,217 @@
 #!/usr/bin/env bash
+
+# InitBox Raspberry Pi 3 / 4 / 5 sniffer bridge module
+#
+# Installs:
+#   - tshark capture on br0
+#   - dynamic br0 bridge manager
+#   - log-prep helper for zipping and clearing capture files
+#
+# Pi 3 / 4 / 5 role model:
+#   - The dashboard owns /etc/pi_roles.conf.
+#   - Capture starts only when /etc/pi_roles.conf contains a sniffing role.
+#   - Accepted sniff roles: sniff, wireshark, sniffer, sniffer-bridge.
+#
+# Actions:
+#   install    Install/update services and helper scripts
+#   uninstall  Disable/remove services and helper scripts created by this module
+#   purge      Compatibility alias for uninstall; packages are not purged
+
 set -euo pipefail
+
+ACTION="${1:-install}"
 
 : "${OWNER:=initbox}"
 
 LOG_DIR="/home/${OWNER}/pi_logs"
-mkdir -p "$LOG_DIR"
-: "${LOGFILE:=${LOG_DIR}/initbox-install.log}"
+LOGFILE="${LOGFILE:-${LOG_DIR}/initbox-install.log}"
 
-ts(){ date +"%Y-%m-%d %H:%M:%S"; }
-log(){  echo "[WS-BR0 $(ts)] $*"       | tee -a "$LOGFILE"; }
-ok(){   echo "[WS-BR0 $(ts)] [OK] $*"  | tee -a "$LOGFILE"; }
-warn(){ echo "[WS-BR0 $(ts)] [WARN] $*"| tee -a "$LOGFILE" >&2; }
-err(){  echo "[WS-BR0 $(ts)] [ERR] $*" | tee -a "$LOGFILE" >&2; }
+TRACE_DIR="${TRACE_DIR:-/usr/tracefiles}"
+CAPTURE_IFACE="${CAPTURE_IFACE:-br0}"
 
-apt_safe(){
-  apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" >>"$LOGFILE" 2>&1
+WIRESHARK_SCRIPT="/usr/local/bin/wireshark.sh"
+LOG_PREP_SCRIPT="/usr/local/bin/log-prep.sh"
+BRIDGE_SCRIPT="/usr/local/bin/bridge-check.sh"
+
+WIRESHARK_SERVICE="/etc/systemd/system/wireshark-autostart.service"
+BRIDGE_SERVICE="/etc/systemd/system/bridge-check.service"
+
+ts() {
+  date +"%Y-%m-%d %H:%M:%S"
 }
 
-log "Wireshark module needs tshark (CLI capture engine). Installing it automatically"
+log() {
+  echo "[WS-BR0 $(ts)] $*" | tee -a "$LOGFILE"
+}
 
-log "Updating APT and Installing tshark +zip …"
-    apt_safe update -y
+ok() {
+  echo "[WS-BR0 $(ts)] [OK] $*" | tee -a "$LOGFILE"
+}
 
-    SAVED="${DEBIAN_FRONTEND:-}"
-    export DEBIAN_FRONTEND=dialog
+warn() {
+  echo "[WS-BR0 $(ts)] [WARN] $*" | tee -a "$LOGFILE" >&2
+}
 
-    echo "[INFO $(ts)] Installing tshark (debconf may prompt once) …" | tee -a "$LOGFILE"
-    if ! apt-get install -y tshark 2>&1 | tee -a "$LOGFILE"; then
-      export DEBIAN_FRONTEND="$SAVED"
-      err "tshark install failed, aborting Wireshark module."
-      exit 1
+err() {
+  echo "[WS-BR0 $(ts)] [ERR] $*" | tee -a "$LOGFILE" >&2
+}
+
+require_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    err "This module must be run as root."
+    echo "Run with:"
+    echo "  sudo ./scripts/pi-3-4-5/module-ws-br0.sh ${ACTION}"
+    exit 1
+  fi
+}
+
+prepare_log() {
+  mkdir -p "$LOG_DIR"
+  touch "$LOGFILE"
+
+  if id "$OWNER" >/dev/null 2>&1; then
+    chown -R "$OWNER:$OWNER" "$LOG_DIR" || true
+  fi
+}
+
+apt_safe() {
+  DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" >>"$LOGFILE" 2>&1
+}
+
+install_packages() {
+  log "Installing sniffer bridge package requirements."
+
+  log "Running apt-get update."
+  if ! apt_safe update; then
+    err "apt-get update failed."
+    exit 1
+  fi
+
+  log "Preseeding wireshark-common for non-root capture support."
+  if command -v debconf-set-selections >/dev/null 2>&1; then
+    printf 'wireshark-common wireshark-common/install-setuid boolean true\n' | debconf-set-selections
+  else
+    warn "debconf-set-selections not found; continuing."
+  fi
+
+  log "Installing tshark, zip, libcap2-bin, and bridge-utils."
+  if ! apt_safe install -y tshark zip libcap2-bin bridge-utils; then
+    err "package installation failed."
+    exit 1
+  fi
+
+  if command -v dpkg-reconfigure >/dev/null 2>&1; then
+    log "Reconfiguring wireshark-common non-interactively."
+    DEBIAN_FRONTEND=noninteractive dpkg-reconfigure wireshark-common >>"$LOGFILE" 2>&1 || true
+  fi
+}
+
+ensure_groups_and_permissions() {
+  local dumpcap_bin=""
+
+  log "Ensuring wireshark group exists."
+  getent group wireshark >/dev/null 2>&1 || groupadd -r wireshark || true
+
+  if id "$OWNER" >/dev/null 2>&1; then
+    log "Adding ${OWNER} to wireshark group."
+    usermod -aG wireshark "$OWNER" || true
+  else
+    warn "Owner user does not exist yet: ${OWNER}"
+  fi
+
+  dumpcap_bin="$(command -v dumpcap || true)"
+
+  if [ -n "$dumpcap_bin" ]; then
+    log "Setting dumpcap capabilities for non-root capture."
+    if ! setcap 'cap_net_raw,cap_net_admin=eip' "$dumpcap_bin"; then
+      warn "setcap failed on dumpcap; capture may require root."
     fi
+  else
+    warn "dumpcap not found; tshark capture permissions may be limited."
+  fi
 
-    export DEBIAN_FRONTEND="$SAVED"
+  log "Ensuring trace directory exists: ${TRACE_DIR}"
+  install -d -m 0770 -o "$OWNER" -g wireshark "$TRACE_DIR"
+}
 
-    log "Ensuring zip is installed for log-prep …"
-    apt_safe install -y zip
+write_wireshark_script() {
+  log "Writing ${WIRESHARK_SCRIPT}."
 
-log "Ensuring wireshark group and membership …"
-getent group wireshark >/dev/null 2>&1 || groupadd -r wireshark || true
-usermod -aG wireshark "$OWNER" || true
-
-log "Setting dumpcap capabilities for non-root capture …"
-DUMPCAP_BIN="$(command -v dumpcap || true)"
-if [[ -n "$DUMPCAP_BIN" ]]; then
-  setcap 'CAP_NET_RAW,CAP_NET_ADMIN=+eip' "$DUMPCAP_BIN" || \
-    log "Warning: setcap on dumpcap failed (capture may need root)."
-else
-  log "Warning: dumpcap not found; tshark capture permissions may be limited."
-fi
-
-log "Ensuring /usr/tracefiles exists and is writable to initbox:wireshark …"
-install -d -m 0770 -o "$OWNER" -g wireshark /usr/tracefiles
-
-log "Writing /usr/local/bin/wireshark.sh …"
-cat >/usr/local/bin/wireshark.sh <<'EOF'
+  cat >"$WIRESHARK_SCRIPT" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-umask 077
+
+umask 007
 
 TRACE_DIR="${TRACE_DIR:-/usr/tracefiles}"
 BOXNO_FILE="${BOXNO_FILE:-/etc/pi-boxno}"
 IFACE_FILE="${IFACE_FILE:-/etc/pi-capture.iface}"
+ROLE_FILE="${ROLE_FILE:-/etc/pi_roles.conf}"
 DEFAULT_IFACE="${DEFAULT_IFACE:-br0}"
 TSHARK_BIN="${TSHARK_BIN:-/usr/bin/tshark}"
 
 mkdir -p "$TRACE_DIR"
 
+log() {
+  echo "[WS] $*"
+}
+
+read_roles() {
+  local role_text=""
+
+  if [ -r "$ROLE_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$ROLE_FILE" || true
+    role_text="${ROLES:-${roles:-}}"
+    role_text="${role_text,,}"
+    role_text="${role_text//$'\r'/}"
+  fi
+
+  printf '%s' "$role_text"
+}
+
+sniff_role_enabled() {
+  local roles=""
+  local role_word=""
+
+  roles="$(read_roles)"
+
+  if [ -z "$roles" ]; then
+    log "No roles found in ${ROLE_FILE}; sniff capture disabled."
+    return 1
+  fi
+
+  for role_word in $roles; do
+    case "$role_word" in
+      sniff|wireshark|sniffer|sniffer-bridge)
+        log "Sniff role enabled: ${role_word}"
+        return 0
+        ;;
+    esac
+  done
+
+  log "Sniff role not enabled in ${ROLE_FILE}; roles='${roles}'."
+  return 1
+}
+
+if ! sniff_role_enabled; then
+  exit 0
+fi
+
 BOXNO="$(cat "$BOXNO_FILE" 2>/dev/null || echo 1)"
+IFACE="$(cat "$IFACE_FILE" 2>/dev/null || echo "$DEFAULT_IFACE")"
 OUT="${TRACE_DIR}/initbox_${BOXNO}.pcap"
 
-IFACE="$(cat "$IFACE_FILE" 2>/dev/null || echo "$DEFAULT_IFACE")"
-
-# wait up to ~20s for the interface to appear (bridge-check / br0)
-for _ in {1..20}; do
+for _ in $(seq 1 60); do
   if ip link show "$IFACE" >/dev/null 2>&1; then
     break
   fi
+  log "waiting for ${IFACE}"
   sleep 1
 done
 
 if ! ip link show "$IFACE" >/dev/null 2>&1; then
-  echo "[WS] $IFACE not present"
+  log "${IFACE} not present; exiting cleanly"
   exit 0
 fi
 
@@ -90,35 +220,14 @@ exec "$TSHARK_BIN" -Q -i "$IFACE" -f ip \
   -w "$OUT"
 EOF
 
-chmod 755 /usr/local/bin/wireshark.sh
-chown "$OWNER:wireshark" /usr/local/bin/wireshark.sh || true
+  chmod 755 "$WIRESHARK_SCRIPT"
+  chown "$OWNER:wireshark" "$WIRESHARK_SCRIPT" 2>/dev/null || true
+}
 
-log "Installing /etc/systemd/system/wireshark-autostart.service …"
-cat >/etc/systemd/system/wireshark-autostart.service <<EOF
-[Unit]
-Description=Wireshark auto capture on br0 (ring buffer)
-After=network-online.target bridge-check.service
-Wants=network-online.target
+write_log_prep_script() {
+  log "Writing ${LOG_PREP_SCRIPT}."
 
-[Service]
-Type=simple
-User=${OWNER}
-Group=wireshark
-ExecStart=/usr/local/bin/wireshark.sh
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-log "Wireshark service will start after bridge installation"
-log "Wireshark module installed. Captures go to /usr/tracefiles."
-
-log "Writing /usr/local/bin/log-prep.sh …"
-cat >/usr/local/bin/log-prep.sh <<'EOF'
+  cat >"$LOG_PREP_SCRIPT" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -130,240 +239,302 @@ SVC_SNIFF="${SVC_SNIFF:-wireshark-autostart.service}"
 BOXNO="$(cat "$BOXNO_FILE" 2>/dev/null || echo 1)"
 ARCHIVE="${ARCHIVE:-initbox_${BOXNO}_$(date +%Y%m%d).zip}"
 
-# Who should own the resulting ZIP?
 OWNER_USER="${SUDO_USER:-$(logname 2>/dev/null || echo initbox)}"
 OWNER_GROUP="$OWNER_USER"
 
-log(){ echo "[log-prep] $*"; }
-
-# --- same style role reader as pi-servsync.sh ---
-read_roles() {
-  local R=""
-
-  if [[ -r "$ROLE_FILE" ]]; then
-    # shellcheck disable=SC1090
-    . "$ROLE_FILE" || true
-    # Accept ROLES or roles, normalize to lower-case, strip CR + spaces
-    R="${ROLES:-${roles:-}}"
-    R="${R,,}"                # lower
-    R="${R//$'\r'/}"          # strip CR
-  fi
-
-  printf '%s' "$R"
+log() {
+  echo "[log-prep] $*"
 }
 
-roles="$(read_roles)"
+read_roles() {
+  local role_text=""
 
-want_sniff=0
-if [[ -n "$roles" ]]; then
-  for word in $roles; do
-    case "$word" in
-      sniff|wireshark)
-        want_sniff=1
+  if [ -r "$ROLE_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$ROLE_FILE" || true
+    role_text="${ROLES:-${roles:-}}"
+    role_text="${role_text,,}"
+    role_text="${role_text//$'\r'/}"
+  fi
+
+  printf '%s' "$role_text"
+}
+
+sniff_role_enabled() {
+  local roles=""
+  local role_word=""
+
+  roles="$(read_roles)"
+
+  if [ -z "$roles" ]; then
+    log "roles='' -> want_sniff=0"
+    return 1
+  fi
+
+  for role_word in $roles; do
+    case "$role_word" in
+      sniff|wireshark|sniffer|sniffer-bridge)
+        log "roles='${roles}' -> want_sniff=1"
+        return 0
         ;;
     esac
   done
-fi
 
-log "roles='${roles}' -> want_sniff=${want_sniff}"
+  log "roles='${roles}' -> want_sniff=0"
+  return 1
+}
 
 mkdir -p "$TRACE_DIR"
 
-echo "[log-prep] pcap files preparation ..."
+log "pcap files preparation ..."
 
-# Remember whether sniffer was active before we stop it
-was_active=0
 if systemctl is-active --quiet "$SVC_SNIFF"; then
-  was_active=1
-  log "$SVC_SNIFF active before prep (will be stopped)"
+  log "${SVC_SNIFF} active before prep; stopping it"
 else
-  log "$SVC_SNIFF inactive before prep"
+  log "${SVC_SNIFF} inactive before prep"
 fi
 
 systemctl stop "$SVC_SNIFF" 2>/dev/null || true
 
 shopt -s nullglob
 files=("$TRACE_DIR"/*.pcap "$TRACE_DIR"/*.pcapng "$TRACE_DIR"/*.pcap.gz "$TRACE_DIR"/*.pcapng.gz)
-files=("${files[@]}")
 
-if (( ${#files[@]} == 0 )); then
-  echo "[log-prep] No capture files found in ${TRACE_DIR}."
+if [ "${#files[@]}" -eq 0 ]; then
+  log "No capture files found in ${TRACE_DIR}."
 else
-  echo "[log-prep] Compressing ${#files[@]} file(s) into ${TRACE_DIR}/${ARCHIVE} ..."
+  log "Compressing ${#files[@]} file(s) into ${TRACE_DIR}/${ARCHIVE} ..."
   zip -j -q "${TRACE_DIR}/${ARCHIVE}" "${files[@]}"
-  chown "$OWNER_USER":"$OWNER_GROUP" "${TRACE_DIR}/${ARCHIVE}" 2>/dev/null || true
-  echo "[log-prep] Deleting original capture files ..."
+  chown "$OWNER_USER:$OWNER_GROUP" "${TRACE_DIR}/${ARCHIVE}" 2>/dev/null || true
+  log "Deleting original capture files ..."
   rm -f -- "${files[@]}"
 fi
 
-chown "$OWNER_USER":"$OWNER_GROUP" "$TRACE_DIR" 2>/dev/null || true
-echo "[log-prep] Files are stored at: ${TRACE_DIR}"
+chown "$OWNER_USER:$OWNER_GROUP" "$TRACE_DIR" 2>/dev/null || true
+log "Files are stored at: ${TRACE_DIR}"
 
-# Only restart sniffer if it was running AND role still includes a sniffing role
-if (( want_sniff )); then
-  log "Restarting $SVC_SNIFF (want_sniff=1)"
+if sniff_role_enabled; then
+  log "Restarting ${SVC_SNIFF} because sniff role is enabled"
   systemctl start "$SVC_SNIFF" 2>/dev/null || true
 else
-  log "Not restarting $SVC_SNIFF (want_sniff=${want_sniff})"
+  log "Not restarting ${SVC_SNIFF} because sniff role is not enabled"
 fi
 
-echo "[log-prep] ... preparation completed."
+log "... preparation completed."
 EOF
 
-chmod 755 /usr/local/bin/log-prep.sh
-chown "$OWNER:$OWNER" /usr/local/bin/log-prep.sh || true
+  chmod 755 "$LOG_PREP_SCRIPT"
+  chown "$OWNER:$OWNER" "$LOG_PREP_SCRIPT" 2>/dev/null || true
+}
 
-ok "Wireshark + log-prep module installed."
+write_bridge_script() {
+  log "Writing ${BRIDGE_SCRIPT}."
 
-install_bridge_script() {
-log "Writing /usr/local/bin/bridge-check.sh …"
-cat >/usr/local/bin/bridge-check.sh <<'EOF'
+  cat >"$BRIDGE_SCRIPT" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
 BR="${BRIDGE:-br0}"
+ROLE_FILE="${ROLE_FILE:-/etc/pi_roles.conf}"
+LOOP_SLEEP="${LOOP_SLEEP:-3}"
 
-log() { echo "[BRIDGE $(date +%F_%T)] $*"; }
+log() {
+  echo "[BRIDGE $(date +%F_%T)] $*"
+}
 
-is_pi_zero_like() {
-  local m
-  m="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo '')"
-  case "$m" in
-    *"Zero"*)  return 0 ;;  # Zero, Zero W, Zero 2 W
-    *)         return 1 ;;
-  esac
+read_roles() {
+  local role_text=""
+
+  if [ -r "$ROLE_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$ROLE_FILE" || true
+    role_text="${ROLES:-${roles:-}}"
+    role_text="${role_text,,}"
+    role_text="${role_text//$'\r'/}"
+  fi
+
+  printf '%s' "$role_text"
+}
+
+role_enabled() {
+  local wanted_role="$1"
+  local roles=""
+  local role_word=""
+
+  roles="$(read_roles)"
+
+  for role_word in $roles; do
+    case "$wanted_role:$role_word" in
+      isi:isi)
+        return 0
+        ;;
+      sniff:sniff|sniff:wireshark|sniff:sniffer|sniff:sniffer-bridge)
+        return 0
+        ;;
+    esac
+  done
+
+  return 1
 }
 
 get_wired_ifs() {
   find /sys/class/net -maxdepth 1 -mindepth 1 -type l -printf '%f\n' \
-    | grep -E '^(eth[0-9]+|enx[0-9A-Fa-f]{12})$' \
+    | grep -E '^(eth[0-9]+|enx[0-9A-Fa-f]{12}|enp[0-9a-zA-Z]+|end[0-9]+)$' \
     | sort || true
 }
 
-ensure_bridge_1nic() {
-  local IF="$1"
+carrier_is_up() {
+  local iface="$1"
 
-  if ! ip link show "$BR" &>/dev/null; then
-    ip link add name "$BR" type bridge
-    log "Created "$BR" (1-NIC ISI mode)."
+  if [ -r "/sys/class/net/${iface}/carrier" ]; then
+    [ "$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null || echo 0)" = "1" ]
+    return
   fi
 
-  # pure L2: no IP on port or bridge
-  ip addr flush dev "$IF"  || true
-  ip addr flush dev "$BR"  || true
-
-  ip link set "$IF" master "$BR" 2>/dev/null || true
-  ip link set "$IF" up       2>/dev/null || true
-  ip link set "$BR"  up      2>/dev/null || true
-
-  log "${BR} up with single port ${IF} (pure L2 for ISI namespaces)."
+  ip link show "$iface" 2>/dev/null | grep -q "LOWER_UP"
 }
 
-ensure_bridge_2nic() {
-  local A="$1" B="$2"
+list_ports_on_bridge() {
+  ip -o link show master "$BR" 2>/dev/null | awk -F': ' '{print $2}' | cut -d'@' -f1
+}
 
-  if ! ip link show "$BR" &>/dev/null; then
+detach_existing_ports() {
+  local port
+
+  while IFS= read -r port; do
+    [ -z "$port" ] && continue
+    log "Releasing ${port} from ${BR}."
+    ip link set "$port" nomaster 2>/dev/null || true
+    ip link set "$port" up 2>/dev/null || true
+  done < <(list_ports_on_bridge)
+}
+
+ensure_bridge_exists() {
+  if ! ip link show "$BR" >/dev/null 2>&1; then
     ip link add name "$BR" type bridge
-    log "Created ${BR} (2-NIC sniff mode)."
+    log "Created ${BR}."
   fi
 
-  # pure L2: no IP on ports or bridge
-  ip addr flush dev "$A" || true
-  ip addr flush dev "$B" || true
-  ip addr flush dev "$BR" || true
-
-  ip link set "$A" master "$BR" 2>/dev/null || true
-  ip link set "$B" master "$BR" 2>/dev/null || true
-
-  ip link set "$A" up 2>/dev/null || true
-  ip link set "$B" up 2>/dev/null || true
+  ip addr flush dev "$BR" 2>/dev/null || true
   ip link set "$BR" up 2>/dev/null || true
+}
 
-  log "${BR} up with ports ${A}+${B} (pure L2 for Wireshark + ISI)."
+attach_port() {
+  local iface="$1"
+
+  ip addr flush dev "$iface" 2>/dev/null || true
+  ip link set "$iface" up 2>/dev/null || true
+  ip link set "$iface" master "$BR" 2>/dev/null || true
 }
 
 teardown_bridge() {
-  if ! ip link show "$BR" &>/dev/null; then
+  if ! ip link show "$BR" >/dev/null 2>&1; then
     return 0
   fi
 
-  mapfile -t PORTS < <(ip -o link show master "$BR" 2>/dev/null \
-                       | awk -F': ' '{print $2}' | cut -d'@' -f1)
-
-  if ((${#PORTS[@]} > 0)); then
-    log "Releasing ports from ${BR}: ${PORTS[*]}"
-    for IF in "${PORTS[@]}"; do
-      ip link set "$IF" nomaster 2>/dev/null || true
-      ip link set "$IF" up       2>/dev/null || true
-    done
-  fi
-
+  detach_existing_ports
   ip link set "$BR" down 2>/dev/null || true
   ip link del "$BR" type bridge 2>/dev/null || true
-  log "Removed ${BR} (no longer needed)."
+  log "Removed ${BR}."
 }
 
-# On Pi Zero/Zero 2W we let isirunall manage its own local bridge; no dynamic br0.
-if is_pi_zero_like; then
-  log "Pi Zero/Zero 2W detected; dynamic ${BR} disabled."
-  exit 0
-fi
+ensure_bridge_for_ports() {
+  local ports=("$@")
+  local port
+
+  ensure_bridge_exists
+  detach_existing_ports
+
+  for port in "${ports[@]}"; do
+    attach_port "$port"
+  done
+
+  log "${BR} up with ports: ${ports[*]}"
+}
 
 while true; do
-  mapfile -t WIRED_IFS < <(get_wired_ifs)
-  CNT=${#WIRED_IFS[@]}
+  mapfile -t all_wired_ifs < <(get_wired_ifs)
+  active_wired_ifs=()
 
-  ISI_ACTIVE=0
-  if systemctl is-active --quiet isirunall.service; then
-    ISI_ACTIVE=1
+  for iface in "${all_wired_ifs[@]}"; do
+    if carrier_is_up "$iface"; then
+      active_wired_ifs+=("$iface")
+    fi
+  done
+
+  isi_wanted=0
+  sniff_wanted=0
+
+  if role_enabled "isi"; then
+    isi_wanted=1
   fi
 
-  # Wireshark only matters in 2-NIC mode; we just log it for visibility.
-  WS_ACTIVE=0
-  if systemctl is-active --quiet wireshark-autostart.service; then
-    WS_ACTIVE=1
+  if role_enabled "sniff"; then
+    sniff_wanted=1
   fi
 
-  case "$CNT" in
-    0)
-      # No wired NICs: no bridge
+  if [ "$isi_wanted" -eq 0 ] && [ "$sniff_wanted" -eq 0 ]; then
+    teardown_bridge
+    log "No ISI/sniff role enabled; bridge not active."
+  elif [ "${#active_wired_ifs[@]}" -eq 0 ]; then
+    teardown_bridge
+    log "No wired interfaces with carrier; bridge not active."
+  elif [ "${#active_wired_ifs[@]}" -eq 1 ]; then
+    if [ "$isi_wanted" -eq 1 ]; then
+      ensure_bridge_for_ports "${active_wired_ifs[0]}"
+      log "Single active wired interface bridged for ISI: ${active_wired_ifs[0]}"
+    else
       teardown_bridge
-      ;;
-    1)
-      # 1 NIC: only create bridge if ISI is actually running.
-      if (( ISI_ACTIVE )); then
-        ensure_bridge_1nic "${WIRED_IFS[0]}"
-      else
-        teardown_bridge
-        log "1 NIC present, ISI not active -> leaving NIC alone for normal IP/internet."
-      fi
-      ;;
-    *)
-      # >=2 NICs: always maintain a pure L2 bridge for sniffing.
-      ensure_bridge_2nic "${WIRED_IFS[0]}" "${WIRED_IFS[1]}"
-      log "status: CNT=${CNT}, ISI_ACTIVE=${ISI_ACTIVE}, WS_ACTIVE=${WS_ACTIVE}"
-      ;;
-  esac
+      log "Single active wired interface, sniff role only; leaving interface alone."
+    fi
+  else
+    ensure_bridge_for_ports "${active_wired_ifs[@]}"
+    log "Multiple active wired interfaces bridged. isi_wanted=${isi_wanted}, sniff_wanted=${sniff_wanted}"
+  fi
 
-  sleep 3
+  sleep "$LOOP_SLEEP"
 done
 EOF
 
-  chmod 755 /usr/local/bin/bridge-check.sh
-  chown root:root /usr/local/bin/bridge-check.sh || true
+  chmod 755 "$BRIDGE_SCRIPT"
+  chown root:root "$BRIDGE_SCRIPT" 2>/dev/null || true
 }
 
-install_bridge_service() {
-log "Writing bridge-check.service …"
-cat >/etc/systemd/system/bridge-check.service <<EOF
+write_services() {
+  log "Writing ${WIRESHARK_SERVICE}."
+
+  cat >"$WIRESHARK_SERVICE" <<EOF
 [Unit]
-Description=Dynamic bridge manager for ISI + Wireshark (br0)
+Description=InitBox tshark capture on ${CAPTURE_IFACE}
+After=network-online.target bridge-check.service
+Wants=network-online.target bridge-check.service
+
+[Service]
+Type=simple
+User=${OWNER}
+Group=wireshark
+Environment=TRACE_DIR=${TRACE_DIR}
+Environment=DEFAULT_IFACE=${CAPTURE_IFACE}
+ExecStart=${WIRESHARK_SCRIPT}
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  log "Writing ${BRIDGE_SERVICE}."
+
+  cat >"$BRIDGE_SERVICE" <<EOF
+[Unit]
+Description=InitBox dynamic bridge manager for ISI and sniffer capture
 After=network-pre.target
 Wants=network-pre.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/bridge-check.sh
+ExecStart=${BRIDGE_SCRIPT}
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal
@@ -374,15 +545,106 @@ WantedBy=multi-user.target
 EOF
 }
 
-log "Starting Bridge module …"
+enable_and_start_services() {
+  log "Enabling and starting bridge/capture services."
 
-install_bridge_script
-install_bridge_service
+  systemctl daemon-reload
+  systemctl enable bridge-check.service 2>/dev/null || true
+  systemctl restart bridge-check.service 2>/dev/null || true
+  systemctl enable wireshark-autostart.service 2>/dev/null || true
+  systemctl restart wireshark-autostart.service 2>/dev/null || true
+}
 
-systemctl daemon-reload
-systemctl enable bridge-check.service 2>/dev/null || true
-systemctl restart bridge-check.service 2>/dev/null || true
-systemctl enable wireshark-autostart.service || true
-systemctl restart wireshark-autostart.service || true
+install_module() {
+  require_root
+  prepare_log
 
-ok "Wireshark + Bridge + log-prep module installed. Dynamic br0 will now be managed for ISI + Wireshark on Pi 3/4/5."
+  log "Starting Pi 3/4/5 sniffer bridge module installation."
+
+  install_packages
+  ensure_groups_and_permissions
+  write_wireshark_script
+  write_log_prep_script
+  write_bridge_script
+  write_services
+  enable_and_start_services
+
+  ok "Sniffer bridge module installed. Captures go to ${TRACE_DIR}."
+  ok "Dashboard role file controls capture startup: /etc/pi_roles.conf"
+  ok "Use sudo ${LOG_PREP_SCRIPT} to zip and clear capture files."
+}
+
+uninstall_module() {
+  require_root
+  prepare_log
+
+  log "Uninstalling Pi 3/4/5 sniffer bridge module."
+
+  systemctl stop wireshark-autostart.service 2>/dev/null || true
+  systemctl disable wireshark-autostart.service 2>/dev/null || true
+  systemctl stop bridge-check.service 2>/dev/null || true
+  systemctl disable bridge-check.service 2>/dev/null || true
+
+  rm -f "$WIRESHARK_SERVICE"
+  rm -f "$BRIDGE_SERVICE"
+  rm -f "$WIRESHARK_SCRIPT"
+  rm -f "$LOG_PREP_SCRIPT"
+  rm -f "$BRIDGE_SCRIPT"
+
+  systemctl daemon-reload
+
+  if ip link show br0 >/dev/null 2>&1; then
+    ip link set br0 down 2>/dev/null || true
+    ip link del br0 type bridge 2>/dev/null || true
+  fi
+
+  ok "Sniffer bridge services and helper scripts removed."
+  warn "Installed packages were left in place intentionally."
+  warn "Capture files in ${TRACE_DIR} were left in place intentionally."
+}
+
+usage() {
+  cat <<EOF
+Usage:
+  sudo ./scripts/pi-3-4-5/module-ws-br0.sh [install|uninstall|purge]
+
+Actions:
+  install    Install/update sniffer bridge services
+  uninstall  Remove services and helper scripts created by this module
+  purge      Compatibility alias for uninstall; packages are not purged
+
+Role control:
+  The dashboard writes /etc/pi_roles.conf.
+
+  Capture starts only when roles include one of:
+    sniff
+    wireshark
+    sniffer
+    sniffer-bridge
+
+  Bridge starts when roles include:
+    isi
+    or one of the sniff roles above
+EOF
+}
+
+case "$ACTION" in
+  install)
+    install_module
+    ;;
+  uninstall|remove)
+    uninstall_module
+    ;;
+  purge)
+    warn "purge is treated as uninstall; packages are not removed."
+    uninstall_module
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    err "Unknown action: ${ACTION}"
+    usage
+    exit 1
+    ;;
+esac
