@@ -79,8 +79,6 @@ This branch is for Pi Zero W / Zero 2W only.
 Required rules:
 
 * Use Web Terminal, not dashboard.
-* Do not install Node-RED dashboard components.
-* Do not install nginx, lighttpd, or a Python web portal for the Zero captive portal path.
 * Keep `ttyd` on port `7681`.
 * Keep port `80` owned by the lightweight captive HTTP redirect socket.
 * Let `isirunall.service` own `br0` for ISI.
