@@ -2,377 +2,349 @@
 
 # InitBox Raspberry Pi 3 / 4 / 5 installer
 #
-# Loads the pi-3-4-5 hardware profile, repairs required repo permissions,
-# shows supported modules, runs sanity checks, and runs selected module scripts
-# with explicit confirmation.
+# Branch scope:
+#   - pi-3-4-5 only
 #
-# Usage:
-#   sudo ./scripts/initbox-installer.sh pi-3-4-5
-#   ./scripts/initbox-installer.sh pi-3-4-5 c
-#   ./scripts/initbox-installer.sh pi-3-4-5 l
-#   ./scripts/initbox-installer.sh pi-3-4-5 s
+# Lab model:
+#   - Internet is expected during lab preparation.
+#   - Debian packages can be downloaded once into a local cache.
+#   - Field reruns should be able to install from the local cache once
+#     module scripts are wired to scripts/lib/packages.sh.
+#
+# Menu:
+#   - install supported modules
+#   - run sanity checks
+#   - prepare package cache
+#   - show package cache status
+#   - show logs/state
 
 set -euo pipefail
 
-REQUESTED_PROFILE_ID="${1:-}"
-ACTION="${2:-menu}"
+EXPECTED_PROFILE_ID="pi-3-4-5"
 
-if [ -z "$REQUESTED_PROFILE_ID" ]; then
-  echo "ERROR: profile id is required."
-  echo
-  echo "Usage:"
-  echo "  sudo ./scripts/initbox-installer.sh pi-3-4-5"
-  echo "  ./scripts/initbox-installer.sh pi-3-4-5 c"
-  echo "  ./scripts/initbox-installer.sh pi-3-4-5 l"
-  echo "  ./scripts/initbox-installer.sh pi-3-4-5 s"
-  exit 1
-fi
+OWNER="${OWNER:-initbox}"
+PROFILE_ID="${1:-$EXPECTED_PROFILE_ID}"
+INITIAL_ACTION="${2:-}"
 
-if [ "$REQUESTED_PROFILE_ID" != "pi-3-4-5" ]; then
-  echo "ERROR: this branch only supports profile: pi-3-4-5"
-  echo "Requested profile: $REQUESTED_PROFILE_ID"
-  exit 1
-fi
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-LOG_DIR="/var/log/initbox"
-LOG_FILE="$LOG_DIR/install.log"
-LEGACY_MODULE_LOG_DIR="/home/initbox/pi_logs"
-LEGACY_MODULE_LOG_FILE="$LEGACY_MODULE_LOG_DIR/initbox-install.log"
+PROFILE_HELPER="$REPO_ROOT/scripts/lib/profile.sh"
+MODULE_HELPER="$REPO_ROOT/scripts/lib/modules.sh"
+STATE_HELPER="$REPO_ROOT/scripts/lib/state.sh"
+PACKAGES_HELPER="$REPO_ROOT/scripts/lib/packages.sh"
 
-PROFILE_ID=""
+PROFILE_FILE="$REPO_ROOT/profiles/${PROFILE_ID}.conf"
+PACKAGES_FILE="$REPO_ROOT/scripts/packages.txt"
+
+LOG_DIR="/var/log/initbox"
+LOGFILE="${LOGFILE:-${LOG_DIR}/install.log}"
+
+LEGACY_LOG_DIR="/home/${OWNER}/pi_logs"
+LEGACY_LOGFILE="${LEGACY_LOGFILE:-${LEGACY_LOG_DIR}/initbox-install.log}"
+
+STATE_DIR="/etc/initbox"
+STATE_FILE="${STATE_FILE:-${STATE_DIR}/install-state.env}"
+
+OPERATOR_USER="${SUDO_USER:-$OWNER}"
+
 PROFILE_NAME=""
+PROFILE_DESCRIPTION=""
+REQUIRES_LAB_INTERNET=""
+FIELD_INSTALL_ALLOWED=""
 SUPPORTS_DASHBOARD=""
+SUPPORTS_WEB_TERMINAL=""
 DEFAULT_MODULES=""
 PRIMARY_MANAGEMENT_INTERFACE=""
-MODULE_DASHBOARD=""
-INITBOX_STATE_FILE="/etc/initbox/install-state.env"
 
-bootstrap_repo_permissions() {
-  local path
-  local module_script
-  local repo_dirs=()
-  local readable_files=()
-  local executable_files=()
-
-  if [ "$(id -u)" -ne 0 ]; then
-    return 0
-  fi
-
-  mkdir -p "$LOG_DIR"
-  touch "$LOG_FILE"
-
-  mkdir -p "$LEGACY_MODULE_LOG_DIR"
-  touch "$LEGACY_MODULE_LOG_FILE"
-
-  if id initbox >/dev/null 2>&1; then
-    chown -R initbox:initbox "$LEGACY_MODULE_LOG_DIR" || true
-  fi
-
-  repo_dirs+=("$REPO_ROOT")
-  repo_dirs+=("$REPO_ROOT/scripts")
-  repo_dirs+=("$REPO_ROOT/scripts/lib")
-  repo_dirs+=("$REPO_ROOT/scripts/pi-3-4-5")
-  repo_dirs+=("$REPO_ROOT/profiles")
-
-  readable_files+=("$REPO_ROOT/scripts/lib/profile.sh")
-  readable_files+=("$REPO_ROOT/scripts/lib/modules.sh")
-  readable_files+=("$REPO_ROOT/scripts/lib/state.sh")
-  readable_files+=("$REPO_ROOT/profiles/pi-3-4-5.conf")
-  readable_files+=("$REPO_ROOT/profiles/README.md")
-  readable_files+=("$REPO_ROOT/README.md")
-
-  executable_files+=("$REPO_ROOT/scripts/initbox-installer.sh")
-  executable_files+=("$REPO_ROOT/scripts/initbox-status.sh")
-  executable_files+=("$REPO_ROOT/scripts/update-repo.sh")
-
-  for path in "${repo_dirs[@]}"; do
-    if [ -d "$path" ]; then
-      chmod 755 "$path"
-    fi
-  done
-
-  for path in "${readable_files[@]}"; do
-    if [ -f "$path" ]; then
-      chmod 644 "$path"
-    fi
-  done
-
-  for path in "${executable_files[@]}"; do
-    if [ -f "$path" ]; then
-      chmod 755 "$path"
-    fi
-  done
-
-  for module_script in "$REPO_ROOT/scripts/pi-3-4-5"/*.sh; do
-    if [ -f "$module_script" ]; then
-      chmod 755 "$module_script"
-    fi
-  done
+ts() {
+  date +"%Y-%m-%d %H:%M:%S"
 }
 
-bootstrap_repo_permissions
-
-# shellcheck disable=SC1091
-. "$REPO_ROOT/scripts/lib/profile.sh"
-
-# shellcheck disable=SC1091
-. "$REPO_ROOT/scripts/lib/modules.sh"
-
-# shellcheck disable=SC1091
-. "$REPO_ROOT/scripts/lib/state.sh"
-
-initbox_load_profile "$REQUESTED_PROFILE_ID"
-
-SUPPORTED_MODULES=()
-
-ensure_log_file() {
-  if [ "$(id -u)" -eq 0 ]; then
-    mkdir -p "$LOG_DIR"
-    touch "$LOG_FILE"
-
-    mkdir -p "$LEGACY_MODULE_LOG_DIR"
-    touch "$LEGACY_MODULE_LOG_FILE"
-
-    if id initbox >/dev/null 2>&1; then
-      chown -R initbox:initbox "$LEGACY_MODULE_LOG_DIR" || true
-    fi
-  else
-    echo "WARNING: not running as root. Log file may not be writable: $LOG_FILE"
-    echo "WARNING: not running as root. Module log path may not be writable: $LEGACY_MODULE_LOG_FILE"
-  fi
+log() {
+  echo "[INITBOX $(ts)] $*" | tee -a "$LOGFILE"
 }
 
-log_line() {
-  local message="$1"
-  local timestamp
-
-  timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
-
-  if [ -w "$LOG_FILE" ]; then
-    printf '[%s] %s\n' "$timestamp" "$message" >>"$LOG_FILE"
-  fi
+ok() {
+  echo "[INITBOX $(ts)] [OK] $*" | tee -a "$LOGFILE"
 }
 
-is_system_action() {
-  case "$ACTION" in
-    menu|""|u|U|uninstall|remove)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+warn() {
+  echo "[INITBOX $(ts)] [WARN] $*" | tee -a "$LOGFILE" >&2
 }
 
-detect_operator_user() {
-  local candidate=""
-
-  candidate="${INITBOX_SUDO_USER:-}"
-
-  if [ -z "$candidate" ] && [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER:-}" != "root" ]; then
-    candidate="$SUDO_USER"
-  fi
-
-  if [ -z "$candidate" ] && [ -n "${USER:-}" ] && [ "${USER:-}" != "root" ]; then
-    candidate="$USER"
-  fi
-
-  if [ -z "$candidate" ] && id initbox >/dev/null 2>&1; then
-    candidate="initbox"
-  fi
-
-  if [ -z "$candidate" ]; then
-    return 1
-  fi
-
-  if ! id "$candidate" >/dev/null 2>&1; then
-    return 1
-  fi
-
-  printf '%s\n' "$candidate"
+err() {
+  echo "[INITBOX $(ts)] [ERR] $*" | tee -a "$LOGFILE" >&2
 }
 
-require_root_for_system_action() {
-  if ! is_system_action; then
-    return 0
-  fi
-
-  if [ "$(id -u)" -eq 0 ]; then
-    return 0
-  fi
-
-  echo "ERROR: this installer action must run as root."
-  echo
-  echo "Run:"
-  echo "  sudo ./scripts/initbox-installer.sh $REQUESTED_PROFILE_ID $ACTION"
+die() {
+  err "$*"
   exit 1
 }
 
-ensure_passwordless_sudo() {
-  local sudo_user=""
-  local sudoers_file=""
-
-  if ! is_system_action; then
-    return 0
-  fi
-
+require_root() {
   if [ "$(id -u)" -ne 0 ]; then
-    echo "ERROR: passwordless sudo bootstrap must run as root."
-    echo
-    echo "Run:"
-    echo "  sudo ./scripts/initbox-installer.sh $REQUESTED_PROFILE_ID $ACTION"
-    exit 1
+    die "Run this installer with sudo."
   fi
-
-  if ! sudo_user="$(detect_operator_user)"; then
-    echo "ERROR: could not determine operator user for passwordless sudo."
-    echo "Set INITBOX_SUDO_USER=<username> and rerun with sudo."
-    exit 1
-  fi
-
-  sudoers_file="/etc/sudoers.d/010-initbox-${sudo_user}"
-
-  echo "Granting passwordless sudo to user: ${sudo_user}"
-  log_line "SUDO_BOOTSTRAP_START user=${sudo_user} file=${sudoers_file}"
-
-  install -d -m 0755 /etc/sudoers.d
-  printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$sudo_user" >"$sudoers_file"
-  chmod 0440 "$sudoers_file"
-
-  if command -v visudo >/dev/null 2>&1; then
-    if ! visudo -cf "$sudoers_file" >/dev/null; then
-      rm -f "$sudoers_file"
-      echo "ERROR: generated sudoers file failed validation; removed: $sudoers_file"
-      log_line "SUDO_BOOTSTRAP_FAILED user=${sudo_user} reason=visudo"
-      exit 1
-    fi
-  fi
-
-  log_line "SUDO_BOOTSTRAP_DONE user=${sudo_user} file=${sudoers_file}"
 }
 
-run_baseline_apt_update_upgrade() {
-  if [ "$(id -u)" -ne 0 ]; then
-    echo "ERROR: baseline apt-get update/upgrade must run as root."
-    exit 1
+have_internet() {
+  ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1
+}
+
+prepare_log_paths() {
+  install -d -m 0755 "$LOG_DIR"
+  touch "$LOGFILE"
+
+  install -d -m 0755 "$LEGACY_LOG_DIR"
+  touch "$LEGACY_LOGFILE"
+
+  if id "$OWNER" >/dev/null 2>&1; then
+    chown -R "$OWNER:$OWNER" "$LEGACY_LOG_DIR" || true
+  fi
+}
+
+prepare_state_path() {
+  install -d -m 0755 "$STATE_DIR"
+
+  if [ ! -f "$STATE_FILE" ]; then
+    cat >"$STATE_FILE" <<EOF
+# InitBox install state
+PROFILE_ID=""
+PROFILE_NAME=""
+LAST_INSTALL_TIME=""
+LAST_MODULE=""
+LAST_MODULE_STATUS=""
+EOF
+    chmod 644 "$STATE_FILE"
+  fi
+}
+
+write_state_value() {
+  local key="$1"
+  local value="$2"
+  local tmp_file=""
+
+  prepare_state_path
+
+  tmp_file="$(mktemp)"
+
+  if grep -q "^${key}=" "$STATE_FILE"; then
+    sed "s|^${key}=.*|${key}=\"${value}\"|" "$STATE_FILE" >"$tmp_file"
+  else
+    cat "$STATE_FILE" >"$tmp_file"
+    printf '%s="%s"\n' "$key" "$value" >>"$tmp_file"
   fi
 
-  echo
-  echo "Baseline package update"
-  echo "-----------------------"
-  echo "Running apt-get update before module installation."
-  log_line "BASELINE_APT_UPDATE_START profile=$PROFILE_ID"
-
-  if ! apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 update 2>&1 | tee -a "$LOG_FILE"; then
-    log_line "BASELINE_APT_UPDATE_FAILED profile=$PROFILE_ID"
-    echo "ERROR: baseline apt-get update failed. Check log: $LOG_FILE"
-    exit 1
-  fi
-
-  echo
-  echo "Running apt-get upgrade before module installation."
-  log_line "BASELINE_APT_UPGRADE_START profile=$PROFILE_ID"
-
-  export DEBIAN_FRONTEND=noninteractive
-
-  if ! apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 upgrade -y 2>&1 | tee -a "$LOG_FILE"; then
-    log_line "BASELINE_APT_UPGRADE_FAILED profile=$PROFILE_ID"
-    echo "ERROR: baseline apt-get upgrade failed. Check log: $LOG_FILE"
-    exit 1
-  fi
-
-  log_line "BASELINE_APT_DONE profile=$PROFILE_ID"
+  install -m 0644 "$tmp_file" "$STATE_FILE"
+  rm -f "$tmp_file"
 }
 
 record_profile_state() {
-  if [ "$(id -u)" -eq 0 ]; then
-    initbox_state_record_profile "$PROFILE_ID" "$PROFILE_NAME" || true
-  else
-    log_line "STATE_SKIPPED not_root profile=$PROFILE_ID"
+  write_state_value "PROFILE_ID" "$PROFILE_ID"
+  write_state_value "PROFILE_NAME" "$PROFILE_NAME"
+  write_state_value "LAST_INSTALL_TIME" "$(date -Iseconds)"
+}
+
+record_module_state() {
+  local module_id="$1"
+  local status="$2"
+
+  write_state_value "LAST_MODULE" "$module_id"
+  write_state_value "LAST_MODULE_STATUS" "$status"
+  write_state_value "LAST_INSTALL_TIME" "$(date -Iseconds)"
+}
+
+source_helpers() {
+  if [ -f "$PROFILE_HELPER" ]; then
+    # shellcheck disable=SC1090
+    . "$PROFILE_HELPER"
+  fi
+
+  if [ -f "$MODULE_HELPER" ]; then
+    # shellcheck disable=SC1090
+    . "$MODULE_HELPER"
+  fi
+
+  if [ -f "$STATE_HELPER" ]; then
+    # shellcheck disable=SC1090
+    . "$STATE_HELPER"
+  fi
+
+  if [ -f "$PACKAGES_HELPER" ]; then
+    # shellcheck disable=SC1090
+    . "$PACKAGES_HELPER"
   fi
 }
 
-record_module_success_state() {
-  local module_id="$1"
-  local module_name="$2"
-
-  if [ "$(id -u)" -eq 0 ]; then
-    initbox_state_record_module_success "$module_id" "$module_name" || true
-  else
-    log_line "STATE_SKIPPED not_root module_id=$module_id status=success"
+load_profile() {
+  if [ "$PROFILE_ID" != "$EXPECTED_PROFILE_ID" ]; then
+    die "This branch supports only profile '${EXPECTED_PROFILE_ID}'. Requested: '${PROFILE_ID}'"
   fi
-}
 
-record_module_failure_state() {
-  local module_id="$1"
-  local module_name="$2"
-
-  if [ "$(id -u)" -eq 0 ]; then
-    initbox_state_record_module_failure "$module_id" "$module_name" || true
-  else
-    log_line "STATE_SKIPPED not_root module_id=$module_id status=failed"
+  if [ ! -f "$PROFILE_FILE" ]; then
+    die "Profile file not found: $PROFILE_FILE"
   fi
+
+  # shellcheck disable=SC1090
+  . "$PROFILE_FILE"
+
+  if [ "${PROFILE_ID:-}" != "$EXPECTED_PROFILE_ID" ]; then
+    die "Loaded profile does not match expected profile: ${EXPECTED_PROFILE_ID}"
+  fi
+
+  if [ -z "${DEFAULT_MODULES:-}" ]; then
+    die "DEFAULT_MODULES is not set in $PROFILE_FILE"
+  fi
+
+  PROFILE_NAME="${PROFILE_NAME:-Raspberry Pi 3 / 4 / 5}"
+  PROFILE_DESCRIPTION="${PROFILE_DESCRIPTION:-Full InitBox Pi 3 / 4 / 5 appliance}"
+  REQUIRES_LAB_INTERNET="${REQUIRES_LAB_INTERNET:-yes}"
+  FIELD_INSTALL_ALLOWED="${FIELD_INSTALL_ALLOWED:-no}"
+  SUPPORTS_DASHBOARD="${SUPPORTS_DASHBOARD:-yes}"
+  SUPPORTS_WEB_TERMINAL="${SUPPORTS_WEB_TERMINAL:-yes}"
+  PRIMARY_MANAGEMENT_INTERFACE="${PRIMARY_MANAGEMENT_INTERFACE:-dashboard}"
 }
 
-pause() {
-  echo
-  echo "Press Enter to continue."
-  read -r _
-}
+ensure_passwordless_sudo_for_operator() {
+  local sudoers_file="/etc/sudoers.d/010-initbox-${OPERATOR_USER}"
 
-module_already_listed() {
-  local requested_module_id="$1"
-  local existing_module_id
-
-  for existing_module_id in "${SUPPORTED_MODULES[@]}"; do
-    if [ "$existing_module_id" = "$requested_module_id" ]; then
-      return 0
-    fi
-  done
-
-  return 1
-}
-
-add_supported_module() {
-  local module_id="$1"
-
-  if module_already_listed "$module_id"; then
+  if [ "$OPERATOR_USER" = "root" ]; then
+    log "Running as root directly; passwordless sudo setup not required."
     return 0
   fi
 
-  if initbox_profile_supports_module "$module_id"; then
-    SUPPORTED_MODULES+=("$module_id")
+  if ! id "$OPERATOR_USER" >/dev/null 2>&1; then
+    warn "Operator user not found: $OPERATOR_USER"
+    return 0
+  fi
+
+  log "Ensuring passwordless sudo for operator user: ${OPERATOR_USER}"
+
+  cat >"$sudoers_file" <<EOF
+${OPERATOR_USER} ALL=(ALL) NOPASSWD:ALL
+EOF
+
+  chmod 440 "$sudoers_file"
+
+  if visudo -cf "$sudoers_file" >/dev/null 2>&1; then
+    ok "Passwordless sudo configured for ${OPERATOR_USER}."
+  else
+    rm -f "$sudoers_file"
+    die "Generated sudoers file failed validation."
   fi
 }
 
-build_supported_module_list() {
-  local module_id
+run_lab_baseline_apt() {
+  if ! have_internet; then
+    warn "No Internet detected; skipping baseline apt-get update/upgrade."
+    warn "Package installs must use the local cache if already prepared."
+    return 0
+  fi
 
-  SUPPORTED_MODULES=()
+  log "Running lab baseline apt-get update."
 
-  for module_id in $DEFAULT_MODULES; do
-    add_supported_module "$module_id"
+  if ! DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 update 2>&1 | tee -a "$LOGFILE"; then
+    warn "apt-get update failed; continuing to menu."
+    return 0
+  fi
+
+  log "Running lab baseline apt-get upgrade."
+
+  if ! DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 upgrade -y 2>&1 | tee -a "$LOGFILE"; then
+    warn "apt-get upgrade failed; continuing to menu."
+    return 0
+  fi
+}
+
+repair_permissions() {
+  local file
+
+  log "Repairing script permissions."
+
+  for file in \
+    "$REPO_ROOT/scripts/initbox-installer.sh" \
+    "$REPO_ROOT/scripts/initbox-status.sh" \
+    "$REPO_ROOT/scripts/update-repo.sh" \
+    "$REPO_ROOT/scripts/lib/profile.sh" \
+    "$REPO_ROOT/scripts/lib/modules.sh" \
+    "$REPO_ROOT/scripts/lib/state.sh" \
+    "$REPO_ROOT/scripts/lib/packages.sh" \
+    "$REPO_ROOT/scripts/pi-3-4-5/module-dashboard.sh" \
+    "$REPO_ROOT/scripts/pi-3-4-5/module-fms.sh" \
+    "$REPO_ROOT/scripts/pi-3-4-5/module-hotspot.sh" \
+    "$REPO_ROOT/scripts/pi-3-4-5/module-isi.sh" \
+    "$REPO_ROOT/scripts/pi-3-4-5/module-rtc.sh" \
+    "$REPO_ROOT/scripts/pi-3-4-5/module-ws-br0.sh"; do
+    if [ -f "$file" ]; then
+      chmod 755 "$file"
+    fi
   done
-
-  if [ "${#SUPPORTED_MODULES[@]}" -eq 0 ]; then
-    add_supported_module "isi"
-    add_supported_module "fms"
-    add_supported_module "hotspot"
-    add_supported_module "dashboard"
-    add_supported_module "rtc"
-    add_supported_module "sniffer-bridge"
-  fi
 }
 
-initbox_module_supports_uninstall() {
+module_display_name() {
   local module_id="$1"
 
-  case "$PROFILE_ID:$module_id" in
-    pi-3-4-5:*)
-      return 1
+  if declare -F initbox_module_display_name >/dev/null 2>&1; then
+    initbox_module_display_name "$module_id"
+    return 0
+  fi
+
+  case "$module_id" in
+    isi)
+      echo "ISI"
+      ;;
+    fms)
+      echo "FMS"
+      ;;
+    hotspot)
+      echo "Hotspot"
+      ;;
+    dashboard)
+      echo "Dashboard"
+      ;;
+    web-terminal)
+      echo "Web Terminal"
+      ;;
+    rtc)
+      echo "RTC"
+      ;;
+    sniffer-bridge)
+      echo "Sniffer / Bridge"
+      ;;
+    *)
+      echo "$module_id"
+      ;;
+  esac
+}
+
+module_script_path() {
+  local module_id="$1"
+
+  if declare -F initbox_module_script_path >/dev/null 2>&1; then
+    initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT"
+    return $?
+  fi
+
+  case "$module_id" in
+    isi)
+      echo "$REPO_ROOT/scripts/pi-3-4-5/module-isi.sh"
+      ;;
+    fms)
+      echo "$REPO_ROOT/scripts/pi-3-4-5/module-fms.sh"
+      ;;
+    hotspot)
+      echo "$REPO_ROOT/scripts/pi-3-4-5/module-hotspot.sh"
+      ;;
+    dashboard|web-terminal)
+      echo "$REPO_ROOT/scripts/pi-3-4-5/module-dashboard.sh"
+      ;;
+    rtc)
+      echo "$REPO_ROOT/scripts/pi-3-4-5/module-rtc.sh"
+      ;;
+    sniffer-bridge)
+      echo "$REPO_ROOT/scripts/pi-3-4-5/module-ws-br0.sh"
       ;;
     *)
       return 1
@@ -380,235 +352,123 @@ initbox_module_supports_uninstall() {
   esac
 }
 
-print_header() {
-  clear || true
-
-  echo "InitBox Raspberry Pi 3 / 4 / 5 Installer"
-  echo "========================================"
-  echo
-  initbox_print_profile_summary
-  echo
-
-  echo "Lab setup reminder:"
-  echo "  This installer is intended to run in the lab with Internet access."
-  echo "  Field deployment should happen only after setup and verification."
-  echo
-
-  if [ "$(id -u)" -ne 0 ]; then
-    echo "Root warning:"
-    echo "  You are not running as root."
-    echo "  Module installation should be run with sudo."
-    echo
-  fi
-}
-
-print_menu() {
-  local index
+supported_modules() {
   local module_id
-  local module_name
-  local module_script
-  local uninstall_available
+  local seen=" "
 
-  uninstall_available="no"
+  for module_id in $DEFAULT_MODULES; do
+    case "$seen" in
+      *" ${module_id} "*)
+        continue
+        ;;
+    esac
 
-  echo "Available install modules"
-  echo "-------------------------"
-  echo "Select a number to install or re-run that module."
-  echo
-
-  index=1
-  for module_id in "${SUPPORTED_MODULES[@]}"; do
-    module_name="$(initbox_module_display_name "$module_id")"
-
-    if module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
-      if [ -f "$module_script" ]; then
-        printf '  %d) Install %-16s %s\n' "$index" "$module_name" "[script found]"
-      else
-        printf '  %d) Install %-16s %s\n' "$index" "$module_name" "[script missing]"
-      fi
-    else
-      printf '  %d) Install %-16s %s\n' "$index" "$module_name" "[not mapped]"
-    fi
-
-    if initbox_module_supports_uninstall "$module_id"; then
-      uninstall_available="yes"
-    fi
-
-    index=$((index + 1))
+    seen="${seen}${module_id} "
+    echo "$module_id"
   done
+}
 
+show_header() {
+  clear || true
+  echo "InitBox Raspberry Pi 3 / 4 / 5 Installer"
+  echo "========================================="
   echo
-  echo "Available actions"
-  echo "-----------------"
-
-  if [ "$uninstall_available" = "yes" ]; then
-    echo "  u) Uninstall/remove module"
-  fi
-
-  echo "  c) Run sanity checks"
-  echo "  l) Show install log path"
-  echo "  s) Show install state"
-  echo "  q) Quit"
+  echo "Repository:     $REPO_ROOT"
+  echo "Profile:        $PROFILE_ID"
+  echo "Profile name:   $PROFILE_NAME"
+  echo "Interface:      $PRIMARY_MANAGEMENT_INTERFACE"
+  echo "Log:            $LOGFILE"
+  echo "Legacy log:     $LEGACY_LOGFILE"
+  echo "State:          $STATE_FILE"
   echo
 }
 
-show_log_info() {
+show_log_path() {
   echo
-  echo "Install log"
-  echo "-----------"
-  echo "$LOG_FILE"
+  echo "Installer log:"
+  echo "  $LOGFILE"
   echo
-  echo "Legacy module log"
-  echo "-----------------"
-  echo "$LEGACY_MODULE_LOG_FILE"
+  echo "Legacy module log:"
+  echo "  $LEGACY_LOGFILE"
   echo
+  echo "Recent installer log:"
+  echo "----------------------------------------"
 
-  if [ -f "$LOG_FILE" ]; then
-    echo "Recent entries:"
-    tail -n 20 "$LOG_FILE" || true
+  if [ -f "$LOGFILE" ]; then
+    tail -n 80 "$LOGFILE" || true
   else
     echo "Log file does not exist yet."
-    echo "It will be created when running as root."
   fi
 }
 
-show_state_info() {
+show_state() {
   echo
-  initbox_state_print || true
-}
+  echo "Install state:"
+  echo "  $STATE_FILE"
+  echo "----------------------------------------"
 
-sanity_pass() {
-  printf '[PASS] %s\n' "$1"
-}
-
-sanity_fail() {
-  printf '[FAIL] %s\n' "$1"
-  return 1
-}
-
-sanity_check_file() {
-  local path="$1"
-
-  if [ -f "$REPO_ROOT/$path" ]; then
-    sanity_pass "file exists: $path"
+  if declare -F initbox_state_print >/dev/null 2>&1; then
+    initbox_state_print || true
     return 0
   fi
 
-  sanity_fail "missing file: $path"
-  return 1
+  if [ -f "$STATE_FILE" ]; then
+    cat "$STATE_FILE"
+  else
+    echo "State file does not exist yet."
+  fi
 }
 
-sanity_check_no_markdown_fences() {
-  local path="$1"
-  local file_path=""
-  local backtick=""
-  local markdown_fence=""
+show_package_cache_status() {
+  echo
+  echo "Package cache status"
+  echo "----------------------------------------"
 
-  file_path="$REPO_ROOT/$path"
-
-  if [ ! -f "$file_path" ]; then
-    return 0
-  fi
-
-  backtick="$(printf '\140')"
-  markdown_fence="${backtick}${backtick}${backtick}"
-
-  if grep -qF "$markdown_fence" "$file_path"; then
-    sanity_fail "file contains Markdown fence error: $path"
+  if ! declare -F initbox_packages_status >/dev/null 2>&1; then
+    echo "Package helper not loaded: $PACKAGES_HELPER"
     return 1
   fi
 
-  sanity_pass "file has no Markdown fence error: $path"
-  return 0
+  initbox_packages_status
 }
 
-sanity_check_profile_value() {
-  local label="$1"
-  local value="$2"
-
-  if [ -n "$value" ]; then
-    sanity_pass "$label is set"
-    return 0
-  fi
-
-  sanity_fail "$label is missing"
-  return 1
-}
-
-sanity_check_module_script() {
-  local module_id="$1"
-  local module_name
-  local module_script
-
-  module_name="$(initbox_module_display_name "$module_id")"
-
-  if ! initbox_profile_supports_module "$module_id"; then
-    sanity_pass "module blocked by profile: $module_id ($module_name)"
-    return 0
-  fi
-
-  if ! module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
-    sanity_fail "supported module has no script mapping: $module_id ($module_name)"
-    return 1
-  fi
-
-  if [ -f "$module_script" ]; then
-    sanity_pass "supported module script exists: $module_id ($module_name)"
-    return 0
-  fi
-
-  sanity_fail "supported module script missing: $module_id ($module_name) -> $module_script"
-  return 1
-}
-
-run_shellcheck_if_available() {
-  local shellcheck_failures
-  local path
-  local shellcheck_files=()
-
-  shellcheck_failures=0
-
-  if ! command -v shellcheck >/dev/null 2>&1; then
-    echo
-    echo "ShellCheck"
-    echo "----------"
-    echo "ShellCheck is not installed. Skipping ShellCheck validation."
-    return 0
-  fi
-
-  shellcheck_files+=("$REPO_ROOT/scripts/initbox-installer.sh")
-  shellcheck_files+=("$REPO_ROOT/scripts/initbox-status.sh")
-  shellcheck_files+=("$REPO_ROOT/scripts/lib/profile.sh")
-  shellcheck_files+=("$REPO_ROOT/scripts/lib/modules.sh")
-  shellcheck_files+=("$REPO_ROOT/scripts/lib/state.sh")
-  shellcheck_files+=("$REPO_ROOT/scripts/update-repo.sh")
-
+prepare_package_cache() {
   echo
-  echo "ShellCheck"
-  echo "----------"
+  echo "Prepare package cache"
+  echo "----------------------------------------"
+  echo "Package list:"
+  echo "  $PACKAGES_FILE"
+  echo
 
-  for path in "${shellcheck_files[@]}"; do
-    if [ -f "$path" ]; then
-      if shellcheck "$path"; then
-        sanity_pass "shellcheck passed: ${path#"$REPO_ROOT/"}"
-      else
-        shellcheck_failures=$((shellcheck_failures + 1))
-      fi
-    fi
-  done
-
-  if [ "$shellcheck_failures" -eq 0 ]; then
-    return 0
+  if [ ! -f "$PACKAGES_HELPER" ]; then
+    die "Package helper missing: $PACKAGES_HELPER"
   fi
 
-  return 1
+  if [ ! -f "$PACKAGES_FILE" ]; then
+    die "Package list missing: $PACKAGES_FILE"
+  fi
+
+  if ! declare -F initbox_packages_download_apt >/dev/null 2>&1; then
+    die "Package helper function not available: initbox_packages_download_apt"
+  fi
+
+  if ! have_internet; then
+    die "Internet is required to prepare the package cache."
+  fi
+
+  log "Preparing package cache from ${PACKAGES_FILE}."
+
+  initbox_packages_download_apt "$PACKAGES_FILE"
+
+  ok "Package cache prepared."
+  show_package_cache_status
 }
 
 run_sanity_checks() {
-  local failures
+  local failed=0
+  local file
   local module_id
-
-  failures=0
+  local script_path
 
   echo
   echo "InitBox sanity checks"
@@ -618,48 +478,99 @@ run_sanity_checks() {
   echo "$REPO_ROOT"
   echo
 
-  bootstrap_repo_permissions
+  echo "Required files"
+  echo "--------------"
 
-  sanity_check_file "README.md" || failures=$((failures + 1))
-
-  sanity_check_file "profiles/README.md" || failures=$((failures + 1))
-  sanity_check_file "profiles/pi-3-4-5.conf" || failures=$((failures + 1))
-
-  sanity_check_file "scripts/initbox-installer.sh" || failures=$((failures + 1))
-  sanity_check_file "scripts/initbox-status.sh" || failures=$((failures + 1))
-  sanity_check_file "scripts/update-repo.sh" || failures=$((failures + 1))
-  sanity_check_file "scripts/lib/profile.sh" || failures=$((failures + 1))
-  sanity_check_file "scripts/lib/modules.sh" || failures=$((failures + 1))
-  sanity_check_file "scripts/lib/state.sh" || failures=$((failures + 1))
-
-  sanity_check_no_markdown_fences "scripts/initbox-installer.sh" || failures=$((failures + 1))
-  sanity_check_no_markdown_fences "scripts/initbox-status.sh" || failures=$((failures + 1))
-  sanity_check_no_markdown_fences "scripts/update-repo.sh" || failures=$((failures + 1))
-  sanity_check_no_markdown_fences "scripts/lib/profile.sh" || failures=$((failures + 1))
-  sanity_check_no_markdown_fences "scripts/lib/modules.sh" || failures=$((failures + 1))
-  sanity_check_no_markdown_fences "scripts/lib/state.sh" || failures=$((failures + 1))
+  for file in \
+    "$REPO_ROOT/README.md" \
+    "$REPO_ROOT/profiles/README.md" \
+    "$REPO_ROOT/profiles/pi-3-4-5.conf" \
+    "$REPO_ROOT/scripts/initbox-installer.sh" \
+    "$REPO_ROOT/scripts/initbox-status.sh" \
+    "$REPO_ROOT/scripts/update-repo.sh" \
+    "$REPO_ROOT/scripts/packages.txt" \
+    "$REPO_ROOT/scripts/lib/profile.sh" \
+    "$REPO_ROOT/scripts/lib/modules.sh" \
+    "$REPO_ROOT/scripts/lib/state.sh" \
+    "$REPO_ROOT/scripts/lib/packages.sh"; do
+    if [ -f "$file" ]; then
+      echo "[PASS] file exists: ${file#$REPO_ROOT/}"
+    else
+      echo "[FAIL] missing file: ${file#$REPO_ROOT/}"
+      failed=1
+    fi
+  done
 
   echo
   echo "Loaded profile checks"
   echo "---------------------"
 
-  sanity_check_profile_value "PROFILE_ID" "${PROFILE_ID:-}" || failures=$((failures + 1))
-  sanity_check_profile_value "PROFILE_NAME" "${PROFILE_NAME:-}" || failures=$((failures + 1))
-  sanity_check_profile_value "DEFAULT_MODULES" "${DEFAULT_MODULES:-}" || failures=$((failures + 1))
-  sanity_check_profile_value "PRIMARY_MANAGEMENT_INTERFACE" "${PRIMARY_MANAGEMENT_INTERFACE:-}" || failures=$((failures + 1))
-
-  if [ "$PROFILE_ID" != "pi-3-4-5" ]; then
-    sanity_fail "loaded profile must be pi-3-4-5"
-    failures=$((failures + 1))
+  if [ "$PROFILE_ID" = "$EXPECTED_PROFILE_ID" ]; then
+    echo "[PASS] PROFILE_ID is ${EXPECTED_PROFILE_ID}"
   else
-    sanity_pass "loaded profile is pi-3-4-5"
+    echo "[FAIL] PROFILE_ID is not ${EXPECTED_PROFILE_ID}: $PROFILE_ID"
+    failed=1
   fi
 
-  if [ "${SUPPORTS_DASHBOARD:-}" = "yes" ] && [ "${MODULE_DASHBOARD:-}" = "yes" ]; then
-    sanity_pass "Pi 3/4/5 dashboard is enabled"
+  if [ -n "$PROFILE_NAME" ]; then
+    echo "[PASS] PROFILE_NAME is set"
   else
-    sanity_fail "Pi 3/4/5 dashboard should be enabled"
-    failures=$((failures + 1))
+    echo "[FAIL] PROFILE_NAME is empty"
+    failed=1
+  fi
+
+  if [ -n "$DEFAULT_MODULES" ]; then
+    echo "[PASS] DEFAULT_MODULES is set"
+  else
+    echo "[FAIL] DEFAULT_MODULES is empty"
+    failed=1
+  fi
+
+  if [ "$SUPPORTS_DASHBOARD" = "yes" ]; then
+    echo "[PASS] Dashboard is supported"
+  else
+    echo "[FAIL] Dashboard should be supported for pi-3-4-5"
+    failed=1
+  fi
+
+  if [ "$SUPPORTS_WEB_TERMINAL" = "yes" ]; then
+    echo "[PASS] Web Terminal is supported"
+  else
+    echo "[FAIL] Web Terminal should be supported for pi-3-4-5"
+    failed=1
+  fi
+
+  echo
+  echo "Package cache checks"
+  echo "--------------------"
+
+  if [ -x "$PACKAGES_HELPER" ]; then
+    echo "[PASS] packages helper is executable"
+  elif [ -f "$PACKAGES_HELPER" ]; then
+    echo "[WARN] packages helper exists but is not executable"
+  else
+    echo "[FAIL] packages helper missing"
+    failed=1
+  fi
+
+  if [ -f "$PACKAGES_FILE" ]; then
+    echo "[PASS] packages.txt exists"
+    if grep -vE '^[[:space:]]*($|#)' "$PACKAGES_FILE" | grep -q .; then
+      echo "[PASS] packages.txt contains package names"
+    else
+      echo "[FAIL] packages.txt has no package names"
+      failed=1
+    fi
+  else
+    echo "[FAIL] packages.txt missing"
+    failed=1
+  fi
+
+  if declare -F initbox_packages_status >/dev/null 2>&1; then
+    echo "[PASS] package helper functions loaded"
+  else
+    echo "[FAIL] package helper functions not loaded"
+    failed=1
   fi
 
   echo
@@ -668,295 +579,323 @@ run_sanity_checks() {
 
   while IFS= read -r module_id; do
     [ -z "$module_id" ] && continue
-    sanity_check_module_script "$module_id" || failures=$((failures + 1))
-  done < <(initbox_all_known_modules)
 
-  if ! run_shellcheck_if_available; then
-    failures=$((failures + 1))
+    if script_path="$(module_script_path "$module_id")"; then
+      if [ -f "$script_path" ]; then
+        echo "[PASS] supported module script exists: $module_id ($(module_display_name "$module_id"))"
+      else
+        echo "[FAIL] supported module script missing: $module_id -> $script_path"
+        failed=1
+      fi
+    else
+      echo "[FAIL] no module mapping for: $module_id"
+      failed=1
+    fi
+  done < <(supported_modules)
+
+  echo
+  echo "Syntax checks"
+  echo "-------------"
+
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
+
+    if bash -n "$file"; then
+      echo "[PASS] bash -n: ${file#$REPO_ROOT/}"
+    else
+      echo "[FAIL] bash -n: ${file#$REPO_ROOT/}"
+      failed=1
+    fi
+  done < <(
+    find "$REPO_ROOT/scripts" -type f -name '*.sh' | sort
+  )
+
+  echo
+  echo "ShellCheck"
+  echo "----------"
+
+  if command -v shellcheck >/dev/null 2>&1; then
+    if shellcheck "$REPO_ROOT"/scripts/*.sh "$REPO_ROOT"/scripts/lib/*.sh "$REPO_ROOT"/scripts/pi-3-4-5/*.sh; then
+      echo "[PASS] shellcheck"
+    else
+      echo "[FAIL] shellcheck found issues"
+      failed=1
+    fi
+  else
+    echo "[WARN] shellcheck not installed; skipping"
   fi
 
   echo
-  echo "Summary"
-  echo "-------"
 
-  if [ "$failures" -eq 0 ]; then
-    echo "All sanity checks passed."
-    log_line "SANITY_CHECKS_PASSED profile=$PROFILE_ID"
+  if [ "$failed" -eq 0 ]; then
+    ok "All sanity checks passed."
     return 0
   fi
 
-  echo "Sanity checks failed: $failures"
-  log_line "SANITY_CHECKS_FAILED profile=$PROFILE_ID failures=$failures"
+  err "Sanity checks failed."
   return 1
 }
 
-confirm_module_action() {
-  local action="$1"
-  local module_name="$2"
-  local module_script="$3"
-  local confirmation_word="$4"
-  local confirmation
+print_module_menu() {
+  local index=1
+  local module_id
+  local script_path
+  local module_name
+
+  echo "Supported modules"
+  echo "-----------------"
+
+  while IFS= read -r module_id; do
+    [ -z "$module_id" ] && continue
+
+    module_name="$(module_display_name "$module_id")"
+
+    if script_path="$(module_script_path "$module_id")"; then
+      if [ -f "$script_path" ]; then
+        printf '%2d) %-16s %s\n' "$index" "$module_id" "$module_name"
+      else
+        printf '%2d) %-16s %s [missing script]\n' "$index" "$module_id" "$module_name"
+      fi
+    else
+      printf '%2d) %-16s %s [no mapping]\n' "$index" "$module_id" "$module_name"
+    fi
+
+    index=$((index + 1))
+  done < <(supported_modules)
 
   echo
-  echo "Ready to ${action} module"
-  echo "-------------------------"
-  echo "Profile: $PROFILE_ID"
-  echo "Module:  $module_name"
-  echo "Script:  $module_script"
-  echo "Log:     $LOG_FILE"
-  echo "State:   ${INITBOX_STATE_FILE:-/etc/initbox/install-state.env}"
+  echo "Other options"
+  echo "-------------"
+  echo " c) Run sanity checks"
+  echo " p) Prepare/download package cache"
+  echo " k) Show package cache status"
+  echo " l) Show install log"
+  echo " s) Show install state"
+  echo " q) Quit"
   echo
+}
 
-  case "$action" in
-    install)
-      echo "This may install packages, modify system configuration, enable services, or require reboot."
-      echo "Only continue if this Pi is in the lab with Internet access."
-      ;;
-    *)
-      echo "This will run module action: $action"
-      ;;
-  esac
+module_by_index() {
+  local wanted_index="$1"
+  local index=1
+  local module_id
 
-  echo
-  printf 'Type %s to continue, or anything else to cancel: ' "$confirmation_word"
-  read -r confirmation
+  while IFS= read -r module_id; do
+    [ -z "$module_id" ] && continue
 
-  if [ "$confirmation" != "$confirmation_word" ]; then
-    echo
-    echo "Cancelled. No action has been performed."
-    log_line "CANCELLED action=$action profile=$PROFILE_ID module=$module_name script=$module_script"
-    return 1
-  fi
+    if [ "$index" -eq "$wanted_index" ]; then
+      echo "$module_id"
+      return 0
+    fi
 
-  return 0
+    index=$((index + 1))
+  done < <(supported_modules)
+
+  return 1
 }
 
 confirm_run() {
-  local module_name="$1"
-  local module_script="$2"
+  local module_id="$1"
+  local module_name="$2"
+  local reply=""
 
-  confirm_module_action "install" "$module_name" "$module_script" "RUN"
+  echo
+  echo "Selected module:"
+  echo "  ${module_id} (${module_name})"
+  echo
+  echo "Type RUN to execute this module."
+  echo "Anything else cancels."
+  echo
+
+  if [ -e /dev/tty ]; then
+    read -r -p "Confirmation: " reply </dev/tty || reply=""
+  else
+    read -r -p "Confirmation: " reply || reply=""
+  fi
+
+  [ "$reply" = "RUN" ]
 }
 
-run_module_action() {
-  local module_script="$1"
-  local module_action="$2"
+run_module() {
+  local module_id="$1"
+  local module_name=""
+  local script_path=""
 
-  case "$module_action" in
-    install)
-      bash "$module_script"
+  module_name="$(module_display_name "$module_id")"
+
+  if ! script_path="$(module_script_path "$module_id")"; then
+    err "No script mapping for module: $module_id"
+    return 1
+  fi
+
+  if [ ! -f "$script_path" ]; then
+    err "Module script missing: $script_path"
+    return 1
+  fi
+
+  if ! confirm_run "$module_id" "$module_name"; then
+    warn "Cancelled module: $module_id"
+    return 0
+  fi
+
+  log "Starting module: ${module_id} (${module_name})"
+  record_module_state "$module_id" "started"
+
+  if bash "$script_path" install; then
+    ok "Module completed: ${module_id}"
+    record_module_state "$module_id" "success"
+    return 0
+  fi
+
+  err "Module failed: ${module_id}"
+  record_module_state "$module_id" "failed"
+  return 1
+}
+
+pause_for_user() {
+  local reply=""
+
+  echo
+  if [ -e /dev/tty ]; then
+    read -r -p "Press Enter to continue..." reply </dev/tty || true
+  else
+    read -r -p "Press Enter to continue..." reply || true
+  fi
+}
+
+handle_choice() {
+  local choice="$1"
+  local module_id=""
+
+  case "$choice" in
+    c|C)
+      run_sanity_checks || true
+      ;;
+    p|P)
+      prepare_package_cache || true
+      ;;
+    k|K)
+      show_package_cache_status || true
+      ;;
+    l|L)
+      show_log_path
+      ;;
+    s|S)
+      show_state
+      ;;
+    q|Q)
+      echo "Quit."
+      exit 0
+      ;;
+    ''|*[!0-9]*)
+      warn "Unknown menu choice: $choice"
       ;;
     *)
-      bash "$module_script" "$module_action"
+      if module_id="$(module_by_index "$choice")"; then
+        run_module "$module_id" || true
+      else
+        warn "No module at menu index: $choice"
+      fi
       ;;
   esac
 }
 
-run_module_script() {
-  local module_id="$1"
-  local module_name="$2"
-  local module_script="$3"
-  local module_action="${4:-install}"
-
-  echo
-  echo "Running module script..."
-  echo "------------------------"
-  echo "Action: $module_action"
-  echo "Script: $module_script"
-  echo
-
-  log_line "START action=$module_action profile=$PROFILE_ID module_id=$module_id module_name=$module_name script=$module_script"
-
-  if [ -w "$LOG_FILE" ]; then
-    if run_module_action "$module_script" "$module_action" 2>&1 | tee -a "$LOG_FILE"; then
-      log_line "SUCCESS action=$module_action profile=$PROFILE_ID module_id=$module_id module_name=$module_name"
-
-      case "$module_action" in
-        install)
-          record_module_success_state "$module_id" "$module_name"
-          ;;
-      esac
-
-      echo
-      echo "Module script completed successfully."
-    else
-      log_line "FAILED action=$module_action profile=$PROFILE_ID module_id=$module_id module_name=$module_name"
-      record_module_failure_state "$module_id" "$module_name"
-      echo
-      echo "ERROR: module script failed. Check log: $LOG_FILE"
-      return 1
-    fi
-  else
-    echo "WARNING: log file is not writable. Running without log capture."
-
-    if run_module_action "$module_script" "$module_action"; then
-      case "$module_action" in
-        install)
-          record_module_success_state "$module_id" "$module_name"
-          ;;
-      esac
-
-      echo
-      echo "Module script completed successfully."
-    else
-      record_module_failure_state "$module_id" "$module_name"
-      echo
-      echo "ERROR: module script failed."
-      return 1
-    fi
-  fi
-}
-
-handle_selection() {
-  local selected_index="$1"
-  local module_id
-  local module_name
-  local module_script
-
-  module_id="${SUPPORTED_MODULES[$((selected_index - 1))]}"
-  module_name="$(initbox_module_display_name "$module_id")"
-
-  echo
-  echo "Selected install module"
-  echo "-----------------------"
-  echo "Module ID:   $module_id"
-  echo "Module name: $module_name"
-
-  initbox_require_supported_module "$module_id"
-
-  if ! module_script="$(initbox_module_script_path "$PROFILE_ID" "$module_id" "$REPO_ROOT")"; then
-    echo "ERROR: no script mapping exists for module '$module_id' on profile '$PROFILE_ID'."
-    log_line "ERROR no_mapping profile=$PROFILE_ID module_id=$module_id"
-    exit 1
-  fi
-
-  echo "Script:      $module_script"
-
-  if [ ! -f "$module_script" ]; then
-    echo
-    echo "ERROR: module script is missing."
-    echo "No installation has been performed."
-    log_line "ERROR missing_script profile=$PROFILE_ID module_id=$module_id script=$module_script"
-    exit 1
-  fi
-
-  if confirm_run "$module_name" "$module_script"; then
-    run_module_script "$module_id" "$module_name" "$module_script" "install"
-  fi
-}
-
-handle_uninstall_menu() {
-  echo
-  echo "No Pi 3/4/5 modules currently declare installer-managed uninstall support."
-  echo "Uninstall support should be added module-by-module before enabling this menu."
-  return 0
-}
-
-interactive_menu() {
-  local choice
-  local max_choice
+run_menu() {
+  local choice=""
 
   while true; do
-    print_header
-    print_menu
+    show_header
+    print_module_menu
 
-    max_choice="${#SUPPORTED_MODULES[@]}"
+    if [ -e /dev/tty ]; then
+      read -r -p "Select option: " choice </dev/tty || choice=""
+    else
+      read -r -p "Select option: " choice || choice=""
+    fi
 
-    printf 'Select install module [1-%s], c for checks, l for log, s for state, or q: ' "$max_choice"
-    read -r choice
-
-    choice="${choice//$'\r'/}"
-
-    case "$choice" in
-      q|Q)
-        echo "Quit."
-        log_line "INSTALLER_CLOSED profile=$PROFILE_ID"
-        exit 0
-        ;;
-      u|U)
-        handle_uninstall_menu || true
-        pause
-        ;;
-      c|C)
-        run_sanity_checks || true
-        pause
-        ;;
-      l|L)
-        show_log_info
-        pause
-        ;;
-      s|S)
-        show_state_info
-        pause
-        ;;
-      ''|*[!0-9]*)
-        echo
-        echo "Invalid choice: $choice"
-        pause
-        ;;
-      *)
-        if [ "$choice" -ge 1 ] && [ "$choice" -le "$max_choice" ]; then
-          handle_selection "$choice"
-          pause
-        else
-          echo
-          echo "Invalid choice: $choice"
-          pause
-        fi
-        ;;
-    esac
+    handle_choice "$choice"
+    pause_for_user
   done
 }
 
-main() {
-  ensure_log_file
-  require_root_for_system_action
-  ensure_passwordless_sudo
-
-  case "$ACTION" in
-    menu|"")
-      run_baseline_apt_update_upgrade
+run_initial_action_if_requested() {
+  case "$INITIAL_ACTION" in
+    "")
+      return 1
       ;;
-  esac
-
-  build_supported_module_list
-  record_profile_state
-
-  log_line "INSTALLER_OPENED profile=$PROFILE_ID"
-
-  if [ "${#SUPPORTED_MODULES[@]}" -eq 0 ]; then
-    echo "ERROR: no supported modules found for profile '$PROFILE_ID'."
-    log_line "ERROR no_supported_modules profile=$PROFILE_ID"
-    exit 1
-  fi
-
-  case "$ACTION" in
-    menu|"")
-      interactive_menu
-      ;;
-    u|U|uninstall|remove)
-      handle_uninstall_menu
-      ;;
-    c|C|check|checks|sanity)
+    c|check|checks|sanity)
       run_sanity_checks
+      return 0
       ;;
-    l|L|log|logs)
-      show_log_info
+    p|packages|cache|download-cache)
+      prepare_package_cache
+      return 0
       ;;
-    s|S|state)
-      show_state_info
+    k|cache-status|packages-status)
+      show_package_cache_status
+      return 0
+      ;;
+    l|log|logs)
+      show_log_path
+      return 0
+      ;;
+    s|state)
+      show_state
+      return 0
       ;;
     *)
-      echo "ERROR: unknown action: $ACTION"
-      echo
-      echo "Usage:"
-      echo "  sudo ./scripts/initbox-installer.sh pi-3-4-5"
-      echo "  ./scripts/initbox-installer.sh pi-3-4-5 c"
-      echo "  ./scripts/initbox-installer.sh pi-3-4-5 l"
-      echo "  ./scripts/initbox-installer.sh pi-3-4-5 s"
-      exit 1
+      warn "Unknown initial action: $INITIAL_ACTION"
+      return 1
       ;;
   esac
+}
+
+usage() {
+  cat <<EOF
+Usage:
+  sudo ./scripts/initbox-installer.sh pi-3-4-5
+  sudo ./scripts/initbox-installer.sh pi-3-4-5 c
+  sudo ./scripts/initbox-installer.sh pi-3-4-5 p
+  sudo ./scripts/initbox-installer.sh pi-3-4-5 k
+  sudo ./scripts/initbox-installer.sh pi-3-4-5 l
+  sudo ./scripts/initbox-installer.sh pi-3-4-5 s
+
+Profile:
+  pi-3-4-5 only
+
+Actions:
+  c   Run sanity checks
+  p   Prepare/download package cache from scripts/packages.txt
+  k   Show package cache status
+  l   Show install log
+  s   Show install state
+EOF
+}
+
+main() {
+  case "${1:-}" in
+    -h|--help|help)
+      usage
+      exit 0
+      ;;
+  esac
+
+  require_root
+  prepare_log_paths
+  prepare_state_path
+  source_helpers
+  load_profile
+  repair_permissions
+  record_profile_state
+
+  ensure_passwordless_sudo_for_operator
+  run_lab_baseline_apt
+
+  if run_initial_action_if_requested; then
+    exit 0
+  fi
+
+  run_menu
 }
 
 main "$@"
