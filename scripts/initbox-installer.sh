@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 
 # InitBox Raspberry Pi installer
-#
 # Loads a hardware profile, repairs required repo permissions, shows supported
-# modules, runs sanity checks, and runs selected module scripts with explicit
-# confirmation.
-#
+# modules, runs sanity checks, and runs selected module scripts with explicit confirmation.
 # Usage:
 #   ./scripts/initbox-installer.sh pi-zero2w
 #   ./scripts/initbox-installer.sh pi-3-4-5
@@ -151,6 +148,142 @@ log_line() {
   if [ -w "$LOG_FILE" ]; then
     printf '[%s] %s\n' "$timestamp" "$message" >> "$LOG_FILE"
   fi
+}
+
+
+# -----------------------------------------------------------------------------
+# Early privilege and baseline package bootstrap
+# -----------------------------------------------------------------------------
+
+is_system_action() {
+  case "$ACTION" in
+    menu|""|u|U|uninstall|remove)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+detect_operator_user() {
+  local candidate=""
+
+  candidate="${INITBOX_SUDO_USER:-}"
+
+  if [ -z "$candidate" ] && [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER:-}" != "root" ]; then
+    candidate="$SUDO_USER"
+  fi
+
+  if [ -z "$candidate" ] && [ -n "${USER:-}" ] && [ "${USER:-}" != "root" ]; then
+    candidate="$USER"
+  fi
+
+  if [ -z "$candidate" ] && id initbox >/dev/null 2>&1; then
+    candidate="initbox"
+  fi
+
+  if [ -z "$candidate" ]; then
+    return 1
+  fi
+
+  if ! id "$candidate" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  printf '%s\n' "$candidate"
+}
+
+require_root_for_system_action() {
+  if ! is_system_action; then
+    return 0
+  fi
+
+  if [ "$(id -u)" -eq 0 ]; then
+    return 0
+  fi
+
+  echo "ERROR: this installer action must run as root."
+  echo
+  echo "Run:"
+  echo "  sudo ./scripts/initbox-installer.sh $REQUESTED_PROFILE_ID $ACTION"
+  exit 1
+}
+
+ensure_passwordless_sudo() {
+  local sudo_user=""
+  local sudoers_file=""
+
+  if ! is_system_action; then
+    return 0
+  fi
+
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: passwordless sudo bootstrap must run as root."
+    echo
+    echo "Run:"
+    echo "  sudo ./scripts/initbox-installer.sh $REQUESTED_PROFILE_ID $ACTION"
+    exit 1
+  fi
+
+  if ! sudo_user="$(detect_operator_user)"; then
+    echo "ERROR: could not determine operator user for passwordless sudo."
+    echo "Set INITBOX_SUDO_USER=<username> and rerun with sudo."
+    exit 1
+  fi
+
+  sudoers_file="/etc/sudoers.d/010-initbox-${sudo_user}"
+
+  echo "Granting passwordless sudo to user: ${sudo_user}"
+  log_line "SUDO_BOOTSTRAP_START user=${sudo_user} file=${sudoers_file}"
+
+  install -d -m 0755 /etc/sudoers.d
+  printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$sudo_user" >"$sudoers_file"
+  chmod 0440 "$sudoers_file"
+
+  if command -v visudo >/dev/null 2>&1; then
+    if ! visudo -cf "$sudoers_file" >/dev/null; then
+      rm -f "$sudoers_file"
+      echo "ERROR: generated sudoers file failed validation; removed: $sudoers_file"
+      log_line "SUDO_BOOTSTRAP_FAILED user=${sudo_user} reason=visudo"
+      exit 1
+    fi
+  fi
+
+  log_line "SUDO_BOOTSTRAP_DONE user=${sudo_user} file=${sudoers_file}"
+}
+
+run_baseline_apt_update_upgrade() {
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: baseline apt-get update/upgrade must run as root."
+    exit 1
+  fi
+
+  echo
+  echo "Baseline package update"
+  echo "-----------------------"
+  echo "Running apt-get update before module installation."
+  log_line "BASELINE_APT_UPDATE_START profile=$PROFILE_ID"
+
+  if ! apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 update 2>&1 | tee -a "$LOG_FILE"; then
+    log_line "BASELINE_APT_UPDATE_FAILED profile=$PROFILE_ID"
+    echo "ERROR: baseline apt-get update failed. Check log: $LOG_FILE"
+    exit 1
+  fi
+
+  echo
+  echo "Running apt-get upgrade before module installation."
+  log_line "BASELINE_APT_UPGRADE_START profile=$PROFILE_ID"
+
+  export DEBIAN_FRONTEND=noninteractive
+
+  if ! apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 upgrade -y 2>&1 | tee -a "$LOG_FILE"; then
+    log_line "BASELINE_APT_UPGRADE_FAILED profile=$PROFILE_ID"
+    echo "ERROR: baseline apt-get upgrade failed. Check log: $LOG_FILE"
+    exit 1
+  fi
+
+  log_line "BASELINE_APT_DONE profile=$PROFILE_ID"
 }
 
 record_profile_state() {
@@ -989,6 +1122,15 @@ interactive_menu() {
 
 main() {
   ensure_log_file
+  require_root_for_system_action
+  ensure_passwordless_sudo
+
+  case "$ACTION" in
+    menu|"")
+      run_baseline_apt_update_upgrade
+      ;;
+  esac
+
   build_supported_module_list
   record_profile_state
 
