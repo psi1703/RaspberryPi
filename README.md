@@ -20,8 +20,6 @@ The profile file is:
 profiles/pi-zero2w.conf
 ```
 
-This branch intentionally does not document or support the Pi 3 / 4 / 5 dashboard profile.
-
 ---
 
 ## Operating Model
