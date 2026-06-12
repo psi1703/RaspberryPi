@@ -273,10 +273,10 @@ attach_port_to_bridge() {
   local iface="$1"
   local current_master=""
 
-  ip link show "$iface" >/dev/null 2>&1 || {
-    log "ERROR: Interface ${iface} disappeared before bridge attach."
-    exit 1
-  }
+  if ! ip link show "$iface" >/dev/null 2>&1; then
+    log "WARN: Interface ${iface} disappeared before bridge attach; skipping it."
+    return 0
+  fi
 
   current_master="$(basename "$(readlink "/sys/class/net/${iface}/master" 2>/dev/null || echo '')")"
 
@@ -418,15 +418,10 @@ add_veth_to_br() {
 # ---------------------------------------------------------------------------
 # DHCP inside namespace
 #
-# Broadcast flag via conf file:
-#   "send flags 0x8000" sets the broadcast bit (bit 15) in the BOOTP flags
-#   field of DHCPDISCOVER/DHCPREQUEST.  RFC 2131-compliant servers must then
-#   send DHCPOFFER/DHCPACK to 255.255.255.255 instead of unicasting to the
-#   client MAC.  This eliminates the FDB learning race where a unicast OFFER
-#   arrives before the bridge has learned the veth MAC and gets dropped.
-#
-#   Note: dhclient 4.4.3-P1 on Debian Bookworm does not have the -B CLI flag
-#   (stripped from the package); the conf file directive is used instead.
+# Broadcast DHCP via dhclient config:
+#   bootp-broadcast-always asks dhclient to set the BOOTP broadcast flag.
+#   This avoids a bridge/FDB learning race where an early unicast OFFER can be
+#   missed before the bridge has learned the namespace veth MAC.
 # ---------------------------------------------------------------------------
 
 request_fresh_dhcp() {
@@ -441,11 +436,9 @@ request_fresh_dhcp() {
   rm -f "$lease_file" "$pid_file" "$conf_file"
   : >"$lease_file"
 
-  # send flags 0x8000 sets the broadcast bit in BOOTP flags — COPILOT must
-  # respond with a broadcast OFFER, avoiding the bridge FDB learning race.
-  # Top-level directive (no interface block) avoids a dhclient parse warning.
+  # Ask for broadcast replies without using invalid "send flags" syntax.
   # No send host-name so the namespace stays anonymous on the COPILOT LAN.
-  printf 'request subnet-mask, routers, domain-name-servers, broadcast-address;\nsend flags 0x8000;\n' \
+  printf 'bootp-broadcast-always;\nrequest subnet-mask, routers, domain-name-servers, broadcast-address;\n' \
     >"$conf_file"
 
   ip netns exec "$ns" ip addr flush dev "$iface" 2>/dev/null || true
@@ -457,7 +450,6 @@ request_fresh_dhcp() {
       -4 \
       -1 \
       -v \
-      -d \
       -cf "$conf_file" \
       -lf "$lease_file" \
       -pf "$pid_file" \
@@ -731,12 +723,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-ExecStartPre=/usr/bin/nmcli device set eth0 managed no
-ExecStartPre=/usr/bin/nmcli device set eth1 managed no
-ExecStartPre=/sbin/ip addr flush dev eth0
-ExecStartPre=/sbin/ip addr flush dev eth1
 ExecStart=${ISI_RUNNER}
 Restart=on-failure
+RestartSec=3
 StandardOutput=journal
 StandardError=journal
 
@@ -802,8 +791,8 @@ Runner  : ${ISI_RUNNER}
 
 Key behaviours:
   - STP disabled, forward_delay 0        → bridge ports enter forwarding immediately
-  - send flags 0x8000 in dhclient conf   → OFFER delivered as broadcast, no FDB race
-  - ExecStartPre releases NM eth0/eth1   → NM can't race to re-grab interfaces
+  - bootp-broadcast-always in dhclient conf → OFFER delivered as broadcast, no FDB race
+  - clean systemd unit with no ExecStartPre nmcli/ip commands
   - Deterministic veth MACs        → stable across restarts
   - Fresh DHCP per namespace       → no stale lease interference
   - COPILOT IP discovered from DHCP server / routers option / default gateway
