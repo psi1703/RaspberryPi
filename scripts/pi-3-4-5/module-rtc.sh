@@ -8,6 +8,11 @@
 #   - /usr/local/bin/rtc-sync.sh
 #   - rtc-sync.service and rtc-sync.timer
 #
+# Package model:
+#   - Uses scripts/lib/packages.sh
+#   - With Internet: installs through apt-get and keeps packages cached
+#   - Without Internet: installs from local package cache only
+#
 # Time sources:
 #   - COPILOT DateTime: DD.MM.YYYY-HH:MM:SS
 #   - COPILOT Time_ISO8601: YYYY-MM-DDTHH:MM:SSZ or offset form
@@ -24,6 +29,11 @@ set -euo pipefail
 ACTION="${1:-install}"
 
 : "${OWNER:=initbox}"
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PACKAGES_HELPER="$REPO_ROOT/scripts/lib/packages.sh"
 
 LOG_DIR="/home/${OWNER}/pi_logs"
 LOGFILE="${LOGFILE:-${LOG_DIR}/initbox-install.log}"
@@ -70,20 +80,29 @@ prepare_log() {
   fi
 }
 
-apt_safe() {
-  DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"
-}
-
-install_packages() {
-  log "Installing RTC helper dependencies."
-
-  if ! apt_safe update; then
-    err "apt-get update failed."
+require_package_helper() {
+  if [ ! -f "$PACKAGES_HELPER" ]; then
+    err "Package helper not found: $PACKAGES_HELPER"
+    err "Expected file: scripts/lib/packages.sh"
     exit 1
   fi
 
-  if ! apt_safe install -y i2c-tools util-linux-extra python3-smbus curl; then
-    warn "Some RTC helper packages failed to install; continuing where possible."
+  chmod 755 "$PACKAGES_HELPER" 2>/dev/null || true
+}
+
+install_packages() {
+  log "Installing RTC helper dependencies through InitBox package cache helper."
+
+  require_package_helper
+
+  if ! bash "$PACKAGES_HELPER" install \
+    i2c-tools \
+    util-linux-extra \
+    python3-smbus \
+    curl 2>&1 | tee -a "$LOGFILE"; then
+    warn "Some RTC helper packages failed to install."
+    warn "If this Pi is offline, prepare the package cache first with:"
+    warn "  sudo ./scripts/initbox-installer.sh pi-3-4-5 p"
   fi
 }
 
@@ -539,6 +558,13 @@ Actions:
   install    Install/update RTC sync helper and timer
   uninstall  Remove RTC sync service/helper created by this module
   purge      Compatibility alias for uninstall; packages are not purged
+
+Package cache:
+  This module uses:
+    scripts/lib/packages.sh
+
+  To prepare package cache in the lab:
+    sudo ./scripts/initbox-installer.sh pi-3-4-5 p
 
 Installed helper:
   ${RTC_SYNC_SCRIPT}
