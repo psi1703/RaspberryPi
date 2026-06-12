@@ -14,4 +14,3 @@ tshark
 wireshark-common
 zip
 libcap2-bin
-python3
