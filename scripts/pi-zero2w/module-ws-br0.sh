@@ -2,18 +2,15 @@
 set -euo pipefail
 
 # InitBox Pi Zero W / Zero 2W tshark capture module
-#
 # Actions:
 #   install   Install tshark capture on br0 and log-prep helper.
 #   uninstall Remove capture service and helper scripts created by this module.
 #   remove    Alias for uninstall.
 #   purge     Compatibility alias for uninstall. It does not purge packages.
-#
 # Notes for Pi Zero W / Zero 2W:
 #   - This module does not manage or create br0.
 #   - The ISI module owns br0.
 #   - The capture service waits for br0 and starts when ISI creates it.
-#
 # Offline field-mode policy:
 #   - Debian packages are installed from the InitBox local package cache.
 #   - Uninstall removes services/config/runtime files only.
@@ -36,13 +33,11 @@ TRACE_DIR="${TRACE_DIR:-/usr/tracefiles}"
 BOXNO_FILE="${BOXNO_FILE:-/etc/pi-boxno}"
 IFACE_FILE="${IFACE_FILE:-/etc/pi-capture.iface}"
 DEFAULT_IFACE="${DEFAULT_IFACE:-br0}"
-ROLE_FILE="${ROLE_FILE:-/etc/pi_roles.conf}"
 
 WIRESHARK_SCRIPT="/usr/local/bin/wireshark.sh"
 LOG_PREP_SCRIPT="/usr/local/bin/log-prep.sh"
 WIRESHARK_SERVICE="/etc/systemd/system/wireshark-autostart.service"
 
-# ----------------------------------------------------------------------------
 # Logging
 # ----------------------------------------------------------------------------
 
@@ -66,7 +61,6 @@ err() {
   echo "[WS-BR0 $(ts)] [ERR] $*" | tee -a "$LOGFILE" >&2
 }
 
-# ----------------------------------------------------------------------------
 # Shared helpers
 # ----------------------------------------------------------------------------
 
@@ -113,7 +107,6 @@ load_package_helper() {
   fi
 }
 
-# ----------------------------------------------------------------------------
 # Dependency management
 # ----------------------------------------------------------------------------
 
@@ -146,7 +139,6 @@ install_dependencies() {
   fi
 }
 
-# ----------------------------------------------------------------------------
 # Capture permissions
 # ----------------------------------------------------------------------------
 
@@ -186,7 +178,6 @@ configure_permissions() {
   install -d -m 0770 -o "$OWNER" -g wireshark "$TRACE_DIR"
 }
 
-# ----------------------------------------------------------------------------
 # Capture runner
 # ----------------------------------------------------------------------------
 
@@ -305,7 +296,6 @@ CAPTURE_EOF
   chown root:wireshark "$WIRESHARK_SCRIPT" 2>/dev/null || true
 }
 
-# ----------------------------------------------------------------------------
 # Log preparation helper
 # ----------------------------------------------------------------------------
 
@@ -318,90 +308,69 @@ set -euo pipefail
 
 TRACE_DIR="${TRACE_DIR:-/usr/tracefiles}"
 BOXNO_FILE="${BOXNO_FILE:-/etc/pi-boxno}"
-ROLE_FILE="${ROLE_FILE:-/etc/pi_roles.conf}"
 SVC_SNIFF="${SVC_SNIFF:-wireshark-autostart.service}"
 
 BOXNO="$(cat "$BOXNO_FILE" 2>/dev/null || echo 1)"
 BOXNO="${BOXNO//$'\r'/}"
+
+if [ -z "$BOXNO" ]; then
+  BOXNO="1"
+fi
+
 ARCHIVE="${ARCHIVE:-initbox_${BOXNO}_$(date +%Y%m%d).zip}"
 OWNER_USER="${SUDO_USER:-$(logname 2>/dev/null || echo initbox)}"
 OWNER_GROUP="$OWNER_USER"
+SERVICE_WAS_ACTIVE=0
 
 log() {
   echo "[log-prep] $*"
 }
 
-read_roles() {
-  local role_text=""
-
-  if [ -r "$ROLE_FILE" ]; then
-    # shellcheck disable=SC1090
-    . "$ROLE_FILE" || true
-    role_text="${ROLES:-${roles:-}}"
-    role_text="${role_text,,}"
-    role_text="${role_text//$'\r'/}"
-  fi
-
-  printf '%s' "$role_text"
-}
-
-roles="$(read_roles)"
-want_sniff=0
-
-if [ -n "$roles" ]; then
-  for word in $roles; do
-    case "$word" in
-      sniff|wireshark|tshark|capture|sniffer)
-        want_sniff=1
-        ;;
-    esac
-  done
-fi
-
-log "roles='${roles}' -> want_sniff=${want_sniff}"
 mkdir -p "$TRACE_DIR"
 
-echo "[log-prep] pcap files preparation ..."
+log "pcap files preparation ..."
+log "trace directory: ${TRACE_DIR}"
+log "archive target: ${TRACE_DIR}/${ARCHIVE}"
 
 if systemctl is-active --quiet "$SVC_SNIFF"; then
+  SERVICE_WAS_ACTIVE=1
   log "$SVC_SNIFF active before prep; stopping it"
+  systemctl stop "$SVC_SNIFF" 2>/dev/null || true
 else
-  log "$SVC_SNIFF inactive before prep"
+  log "$SVC_SNIFF inactive before prep; leaving it inactive after prep"
 fi
-
-systemctl stop "$SVC_SNIFF" 2>/dev/null || true
 
 shopt -s nullglob
 files=("$TRACE_DIR"/*.pcap "$TRACE_DIR"/*.pcapng "$TRACE_DIR"/*.pcap.gz "$TRACE_DIR"/*.pcapng.gz)
 
 if [ "${#files[@]}" -eq 0 ]; then
-  echo "[log-prep] No capture files found in ${TRACE_DIR}."
+  log "No capture files found in ${TRACE_DIR}."
 else
-  echo "[log-prep] Compressing ${#files[@]} file(s) into ${TRACE_DIR}/${ARCHIVE} ..."
+  log "Compressing ${#files[@]} file(s) into ${TRACE_DIR}/${ARCHIVE} ..."
   zip -j -q "${TRACE_DIR}/${ARCHIVE}" "${files[@]}"
   chown "$OWNER_USER:$OWNER_GROUP" "${TRACE_DIR}/${ARCHIVE}" 2>/dev/null || true
-  echo "[log-prep] Deleting original capture files ..."
+
+  log "Deleting original capture files ..."
   rm -f -- "${files[@]}"
 fi
 
 chown "$OWNER_USER:$OWNER_GROUP" "$TRACE_DIR" 2>/dev/null || true
-echo "[log-prep] Files are stored at: ${TRACE_DIR}"
+log "Files are stored at: ${TRACE_DIR}"
 
-if [ "$want_sniff" -eq 1 ]; then
-  log "Restarting $SVC_SNIFF"
+if [ "$SERVICE_WAS_ACTIVE" -eq 1 ]; then
+  log "Restarting $SVC_SNIFF because it was active before prep"
   systemctl start "$SVC_SNIFF" 2>/dev/null || true
 else
-  log "Not restarting $SVC_SNIFF because sniff role is not enabled"
+  log "Not restarting $SVC_SNIFF because it was not active before prep"
 fi
 
-echo "[log-prep] ... preparation completed."
+log "... preparation completed."
 LOG_PREP_EOF
 
   chmod 755 "$LOG_PREP_SCRIPT"
   chown root:root "$LOG_PREP_SCRIPT" 2>/dev/null || true
 }
 
-# ----------------------------------------------------------------------------
 # systemd service
 # ----------------------------------------------------------------------------
 
@@ -454,7 +423,6 @@ remove_files() {
   systemctl daemon-reload
 }
 
-# ----------------------------------------------------------------------------
 # Summaries
 # ----------------------------------------------------------------------------
 
@@ -473,6 +441,7 @@ Important Pi Zero W / Zero 2W behavior:
   - This module does not create or manage br0.
   - The ISI module creates br0 after the COPILOT 10.x.x.x gate passes.
   - tshark waits for br0 and starts capturing when br0 exists.
+  - log-prep.sh restarts capture only if wireshark-autostart.service was active before prep.
   - Use ${IFACE_FILE} to override the capture interface.
   - wireshark-common may be installed automatically as a tshark dependency.
   - uninstall does not remove packages or the offline package cache.
@@ -505,7 +474,6 @@ Not removed:
 SUMMARY_EOF
 }
 
-# ----------------------------------------------------------------------------
 # Actions
 # ----------------------------------------------------------------------------
 
