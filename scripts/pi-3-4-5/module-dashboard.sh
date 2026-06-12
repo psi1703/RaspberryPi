@@ -1,115 +1,164 @@
 #!/usr/bin/env bash
+
+# InitBox Raspberry Pi 3 / 4 / 5 dashboard module
+#
+# Installs:
+#   - Node-RED dashboard controller
+#   - ttyd web terminal
+#   - captive portal redirect to Node-RED
+#   - role sync helper using /etc/pi_roles.conf
+#   - Pi stats helper for dashboard use
+#
+# Pi 3 / 4 / 5 role model:
+#   - Dashboard/Node-RED owns /etc/pi_roles.conf.
+#   - pi-servsync.sh applies roles to services.
+#   - Sniffer roles accepted: sniff, wireshark, sniffer, sniffer-bridge.
+#
+# Actions:
+#   install    Install/update dashboard services and helper scripts
+#   uninstall  Disable/remove services and helper scripts created by this module
+#   purge      Compatibility alias for uninstall; packages are not purged
+
 set -euo pipefail
+
+ACTION="${1:-install}"
 
 : "${OWNER:=initbox}"
 : "${SCRIPT_DIR:=$(cd "$(dirname "$0")" && pwd)}"
-: "${LOGFILE:=/home/${OWNER}/pi_logs/initbox-install.log}"
 
-ts(){ date +"%Y-%m-%d %H:%M:%S"; }
-log(){  echo "[DASH $(ts)] $*" | tee -a "$LOGFILE"; }
-ok(){   echo "[DASH   $(ts)] [OK] $*" | tee -a "$LOGFILE"; }
-warn(){ echo "[DASH $(ts)] [WARN] $*" | tee -a "$LOGFILE" >&2; }
-err(){  echo "[DASH $(ts)] [ERR] $*" | tee -a "$LOGFILE" >&2; }
+LOG_DIR="/home/${OWNER}/pi_logs"
+LOGFILE="${LOGFILE:-${LOG_DIR}/initbox-install.log}"
 
-apt_safe(){ apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"; }
+ROLE_FILE="${ROLE_FILE:-/etc/pi_roles.conf}"
+MODS_FILE="${MODS_FILE:-/etc/initbox-mods.conf}"
+
+TTYD_PORT="${TTYD_PORT:-7681}"
+DASHBOARD_PORT="${DASHBOARD_PORT:-1880}"
+HOTSPOT_IFACE="${HOTSPOT_IFACE:-wlan0}"
+
+ts() {
+  date +"%Y-%m-%d %H:%M:%S"
+}
+
+log() {
+  echo "[DASH $(ts)] $*" | tee -a "$LOGFILE"
+}
+
+ok() {
+  echo "[DASH $(ts)] [OK] $*" | tee -a "$LOGFILE"
+}
+
+warn() {
+  echo "[DASH $(ts)] [WARN] $*" | tee -a "$LOGFILE" >&2
+}
+
+err() {
+  echo "[DASH $(ts)] [ERR] $*" | tee -a "$LOGFILE" >&2
+}
+
+require_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    err "This module must be run as root."
+    echo "Run with:"
+    echo "  sudo ./scripts/pi-3-4-5/module-dashboard.sh ${ACTION}"
+    exit 1
+  fi
+}
+
+prepare_log() {
+  mkdir -p "$LOG_DIR"
+  touch "$LOGFILE"
+
+  if id "$OWNER" >/dev/null 2>&1; then
+    chown -R "$OWNER:$OWNER" "$LOG_DIR" || true
+  fi
+}
+
+apt_safe() {
+  DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"
+}
 
 have_internet() {
-  ping -c1 -W1 8.8.8.8 >/dev/null 2>&1 || return 1
+  ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1
 }
 
 emit_unit() {
   local path="$1"
   local body="$2"
+
   printf '%s\n' "$body" >"$path"
 }
-# ------------ TTYD build + service ------------
-install_ttyd() {
-if ! build_ttyd_from_git; then
-    warn "ttyd build failed or skipped; continuing without web terminal."
-    return 0
+
+install_base_packages() {
+  log "Installing base dashboard package requirements."
+
+  if ! apt_safe update; then
+    err "apt-get update failed."
+    exit 1
   fi
-  emit_ttyd_service
+
+  if ! apt_safe install -y curl ca-certificates build-essential git cmake libjson-c-dev libwebsockets-dev iptables; then
+    err "base package installation failed."
+    exit 1
+  fi
 }
 
-build_ttyd_from_git(){
+build_ttyd_from_git() {
+  local tmp=""
+
   if command -v ttyd >/dev/null 2>&1; then
     log "ttyd already installed at $(command -v ttyd)"
     return 0
   fi
 
   if ! have_internet; then
-    warn "No internet, skipping ttyd build (required for web terminal)."
+    warn "No internet; skipping ttyd build."
     return 1
   fi
 
-  log "Installing ttyd build dependencies …"
-  if ! apt_safe update -y; then
-    warn "apt update failed; skipping ttyd build."
-    return 1
-  fi
-  if ! apt_safe install -y build-essential cmake git libjson-c-dev libwebsockets-dev; then
-    warn "Failed to install ttyd build dependencies; skipping web terminal."
-    return 1
-  fi
+  log "Building ttyd from git."
 
-  log "Building ttyd from git …"
-
-  local tmp
-  tmp="$(mktemp -d)" || { warn "mktemp failed, skipping ttyd build."; return 1; }
-
-  log "Cloning and building ttyd from git …"
-
+  tmp="$(mktemp -d)"
   if ! git clone https://github.com/tsl0922/ttyd.git "$tmp/ttyd"; then
     warn "git clone for ttyd failed; skipping web terminal."
     rm -rf "$tmp"
     return 1
   fi
 
-  if ! cd "$tmp/ttyd"; then
-    warn "Could not cd into ttyd source dir; skipping web terminal."
+  mkdir -p "$tmp/ttyd/build"
+
+  if ! (
+    cd "$tmp/ttyd/build"
+    cmake ..
+    make -j"$(nproc)"
+    make install
+  ); then
+    warn "ttyd build/install failed; skipping web terminal."
     rm -rf "$tmp"
     return 1
   fi
 
-  mkdir -p build
-  if ! cd build; then
-    warn "Could not cd into ttyd build dir; skipping web terminal."
-    rm -rf "$tmp"
-    return 1
-  fi
-
-  if ! cmake ..; then
-    warn "cmake for ttyd failed; skipping web terminal."
-    rm -rf "$tmp"
-    return 1
-  fi
-
-  if ! make -j"$(nproc)"; then
-    warn "make for ttyd failed; skipping web terminal."
-    rm -rf "$tmp"
-    return 1
-  fi
-
-  if ! make install; then
-    warn "make install for ttyd failed; skipping web terminal."
-    rm -rf "$tmp"
-    return 1
-  fi
-
-  cd /
   rm -rf "$tmp"
+
   ok "ttyd installed at $(command -v ttyd || echo /usr/local/bin/ttyd)"
   return 0
 }
 
-emit_ttyd_service(){
-  if ! command -v ttyd >/dev/null 2>&1; then
+emit_ttyd_service() {
+  local ttyd_bin=""
+
+  ttyd_bin="$(command -v ttyd || true)"
+
+  if [ -z "$ttyd_bin" ]; then
     warn "ttyd binary not found; skipping ttyd.service creation."
-    return
+    return 0
   fi
 
-  emit_unit /etc/systemd/system/ttyd.service "[Unit]
-Description=ttyd web terminal
+  log "Installing ttyd.service."
+
+  cat >/etc/systemd/system/ttyd.service <<EOF
+[Unit]
+Description=InitBox ttyd web terminal
 After=network-online.target
 Wants=network-online.target
 
@@ -117,151 +166,189 @@ Wants=network-online.target
 Type=simple
 User=${OWNER}
 Group=${OWNER}
-ExecStart=$(command -v ttyd) -p 7681 --writable -i 0.0.0.0 bash -l
+ExecStart=${ttyd_bin} -p ${TTYD_PORT} --writable -i 0.0.0.0 bash -l
 Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
-"
+EOF
 }
 
-# ---------- Node-RED install ----------
+install_ttyd() {
+  if ! build_ttyd_from_git; then
+    warn "ttyd build failed or skipped; continuing without web terminal."
+    return 0
+  fi
+
+  emit_ttyd_service
+}
+
 install_nodered() {
-  log "Installing Node-RED via official installer (interactive) …"
-
-  # Make sure basic tools are present
-  apt_safe update -y
-  apt_safe install -y curl ca-certificates build-essential || true
-
-  # Official installer for Debian/RPi
   local url="https://github.com/node-red/linux-installers/releases/latest/download/update-nodejs-and-nodered-deb"
   local tmp_script="/tmp/update-nodejs-and-nodered-deb.sh"
 
-  log "Downloading Node-RED installer script to ${tmp_script} …"
-  if ! curl -fsSL "$url" -o "$tmp_script"; then
-    err "Failed to download Node-RED installer from ${url}"
+  log "Installing Node-RED via official installer."
+
+  if ! have_internet; then
+    err "Internet is required for first-time Node-RED installation."
     return 1
   fi
+
+  log "Downloading Node-RED installer script to ${tmp_script}."
+  if ! curl -fsSL "$url" -o "$tmp_script"; then
+    err "Failed to download Node-RED installer."
+    return 1
+  fi
+
   chmod +x "$tmp_script"
 
   if [ -e /dev/tty ]; then
-    log "Launching official Node-RED installer (you will see its prompts; choose user: ${OWNER}) …"
-    # Run as root, but feed stdin from the real terminal so the menu works
+    log "Launching official Node-RED installer. Use target user: ${OWNER}."
     if ! bash "$tmp_script" </dev/tty; then
-      err "Node-RED installer failed; check its output and ${LOGFILE}."
       rm -f "$tmp_script"
+      err "Node-RED installer failed."
       return 1
     fi
   else
-    warn "No /dev/tty available; running Node-RED installer non-interactively; may fail."
+    warn "No /dev/tty available; running Node-RED installer non-interactively."
     if ! bash "$tmp_script"; then
-      err "Node-RED installer failed in non-interactive mode; check ${LOGFILE}."
       rm -f "$tmp_script"
+      err "Node-RED installer failed in non-interactive mode."
       return 1
     fi
   fi
 
   rm -f "$tmp_script"
 
-  # Sanity check: node-red must now exist
   if ! command -v node-red >/dev/null 2>&1; then
-    err "node-red command not found after installer; aborting dashboard module."
+    err "node-red command not found after installer."
     return 1
   fi
-  log "Node-RED installed: $(node-red --version 2>&1 | head -n1)"
 
-  # Disable upstream nodered.service; we manage our own pi-nodered.service
+  log "Node-RED installed: $(node-red --version 2>&1 | head -n 1)"
+
   if systemctl list-unit-files | grep -q '^nodered\.service'; then
-    log "Disabling upstream nodered.service …"
+    log "Disabling upstream nodered.service; InitBox uses pi-nodered.service."
     systemctl disable --now nodered.service 2>/dev/null || true
   fi
 
-  # Ensure ~/.node-red exists and is owned by OWNER
-  install -d -m 0755 -o "${OWNER}" -g "${OWNER}" "/home/${OWNER}/.node-red"
+  install -d -m 0755 -o "$OWNER" -g "$OWNER" "/home/${OWNER}/.node-red"
 
-  # As OWNER: ensure .node-red/public exists, copy logo.png, and install node-red-dashboard
-  su - "${OWNER}" -s /bin/bash <<'EOS'
-set -e
+  su - "$OWNER" -s /bin/bash <<'EOS'
+set -euo pipefail
 
 NR_DIR="${HOME}/.node-red"
 PUBLIC_DIR="${NR_DIR}/public"
 
 mkdir -p "${PUBLIC_DIR}"
 
-# Copy logo.png from home into public if present
 if [ -f "${HOME}/logo.png" ]; then
   cp -f "${HOME}/logo.png" "${PUBLIC_DIR}/logo.png"
 fi
 
 cd "${NR_DIR}"
 
-# Make sure we have a basic package.json so npm has metadata
 if [ ! -f package.json ]; then
   npm init -y >/dev/null 2>&1 || true
 fi
 
-# Ensure node-red-dashboard is installed
 if ! npm list node-red-dashboard --depth=0 >/dev/null 2>&1; then
   npm install --unsafe-perm node-red-dashboard
 fi
 EOS
-
 }
 
-# ---------- Deploy flows/settings ----------
 deploy_flows_settings() {
-  local NR_DIR="/home/${OWNER}/.node-red"
-  local HOST; HOST="$(hostname 2>/dev/null || echo raspberrypi)"
+  local nr_dir="/home/${OWNER}/.node-red"
+  local host=""
+  local flows_src=""
 
-  local FLOWS_SRC=""
-  if   [[ -f "${SCRIPT_DIR}/flows_initbox.json" ]]; then
-    FLOWS_SRC="${SCRIPT_DIR}/flows_initbox.json"
-  elif [[ -f "${SCRIPT_DIR}/flows_dashboard.json" ]]; then
-    FLOWS_SRC="${SCRIPT_DIR}/flows_dashboard.json"
-  elif [[ -f "${SCRIPT_DIR}/flows.json" ]]; then
-    FLOWS_SRC="${SCRIPT_DIR}/flows.json"
+  host="$(hostname 2>/dev/null || echo raspberrypi)"
+
+  if [ -f "${SCRIPT_DIR}/flows_initbox.json" ]; then
+    flows_src="${SCRIPT_DIR}/flows_initbox.json"
+  elif [ -f "${SCRIPT_DIR}/flows_dashboard.json" ]; then
+    flows_src="${SCRIPT_DIR}/flows_dashboard.json"
+  elif [ -f "${SCRIPT_DIR}/flows.json" ]; then
+    flows_src="${SCRIPT_DIR}/flows.json"
   fi
 
-  if [[ -n "$FLOWS_SRC" ]]; then
-    log "Deploying Node-RED flows from $(basename "$FLOWS_SRC") …"
-    install -m 0644 "$FLOWS_SRC" "${NR_DIR}/flows_initbox.json"
-    install -m 0644 "$FLOWS_SRC" "${NR_DIR}/flows_${HOST}.json"
+  install -d -m 0755 -o "$OWNER" -g "$OWNER" "$nr_dir"
+
+  if [ -n "$flows_src" ]; then
+    log "Deploying Node-RED flows from $(basename "$flows_src")."
+    install -m 0644 "$flows_src" "${nr_dir}/flows_initbox.json"
+    install -m 0644 "$flows_src" "${nr_dir}/flows_${host}.json"
   else
     log "No flows_initbox.json/flows_dashboard.json/flows.json found; leaving default flows."
   fi
 
-  if [[ -f "${SCRIPT_DIR}/settings.js" ]]; then
-    log "Deploying Node-RED settings.js …"
-    install -m 0644 "${SCRIPT_DIR}/settings.js" "${NR_DIR}/settings.js"
+  if [ -f "${SCRIPT_DIR}/settings.js" ]; then
+    log "Deploying Node-RED settings.js."
+    install -m 0644 "${SCRIPT_DIR}/settings.js" "${nr_dir}/settings.js"
   else
     log "No custom settings.js found; using default Node-RED settings."
   fi
 
-  chown -R "${OWNER}:${OWNER}" "$NR_DIR" || true
+  chown -R "${OWNER}:${OWNER}" "$nr_dir" || true
 }
 
-# ---------- module flag ----------
 install_initbox_mods() {
-  log "Ensuring /etc/initbox-mods.conf exists …"
-  if [[ ! -f /etc/initbox-mods.conf ]]; then
-    cat >/etc/initbox-mods.conf <<'EOF'
+  log "Ensuring ${MODS_FILE} exists."
+
+  if [ ! -f "$MODS_FILE" ]; then
+    cat >"$MODS_FILE" <<'EOF'
 ISI=0
 FMS=0
 WSBR0=0
+DASHBOARD=1
 EOF
-    chmod 644 /etc/initbox-mods.conf
-    log "Created /etc/initbox-mods.conf with default flags."
+    chmod 644 "$MODS_FILE"
+    log "Created ${MODS_FILE} with default flags."
   else
-    log "/etc/initbox-mods.conf already exists; leaving contents unchanged."
+    log "${MODS_FILE} already exists; leaving contents unchanged."
   fi
 }
 
-# ---------- pi-nodered.service ----------
+install_role_file() {
+  log "Ensuring ${ROLE_FILE} exists."
+
+  if [ ! -f "$ROLE_FILE" ]; then
+    cat >"$ROLE_FILE" <<'EOF'
+# InitBox role file managed by the dashboard.
+#
+# Supported role words:
+#   isi
+#   fms
+#   sniff
+#   wireshark
+#   sniffer
+#   sniffer-bridge
+#
+# Example:
+#   ROLES="isi fms sniff"
+
+ROLES=""
+EOF
+    chmod 664 "$ROLE_FILE"
+    chown root:"$OWNER" "$ROLE_FILE" 2>/dev/null || chown root:root "$ROLE_FILE" || true
+    log "Created ${ROLE_FILE}."
+  else
+    chmod 664 "$ROLE_FILE" || true
+    chown root:"$OWNER" "$ROLE_FILE" 2>/dev/null || true
+    log "${ROLE_FILE} already exists; leaving contents unchanged."
+  fi
+}
+
 install_nodered_service() {
-  log "Installing pi-nodered.service …"
+  log "Installing pi-nodered.service."
+
   cat >/etc/systemd/system/pi-nodered.service <<EOF
 [Unit]
-Description=Pi Node-RED (dashboard controller)
+Description=InitBox Node-RED dashboard controller
 After=network-online.target
 Wants=network-online.target
 
@@ -281,9 +368,9 @@ WantedBy=multi-user.target
 EOF
 }
 
-# ---------- Embed pi-rolectl.sh ----------
 install_pi_rolectl() {
-  log "Writing /usr/local/bin/pi-rolectl.sh …"
+  log "Writing /usr/local/bin/pi-rolectl.sh."
+
   cat >/usr/local/bin/pi-rolectl.sh <<'EOF'
 #!/usr/bin/env bash
 exec /usr/local/bin/pi-servsync.sh "$@"
@@ -293,62 +380,64 @@ EOF
   chown root:root /usr/local/bin/pi-rolectl.sh || true
 }
 
-# ---------- Embed pi-servsync.sh ----------
 install_pi_servsync() {
-  log "Writing /usr/local/bin/pi-servsync.sh …"
+  log "Writing /usr/local/bin/pi-servsync.sh."
+
   cat >/usr/local/bin/pi-servsync.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${ROLE_FILE=/etc/pi_roles.conf}"
+ROLE_FILE="${ROLE_FILE:-/etc/pi_roles.conf}"
+
 SVC_ISI="isirunall.service"
 SVC_FMS="fms.service"
 SVC_SNIFF="wireshark-autostart.service"
+SVC_BRIDGE="bridge-check.service"
 
 log() {
   echo "[servsync] $*"
-  logger -t pi-servsync -- "$*"
+  logger -t pi-servsync -- "$*" 2>/dev/null || true
 }
 
-# --- robust role reader: source the file, normalize, strip CR/WS ---
 read_roles() {
-  local R=""
+  local role_text=""
 
-  if [[ -r "$ROLE_FILE" ]]; then
+  if [ -r "$ROLE_FILE" ]; then
     # shellcheck disable=SC1090
     . "$ROLE_FILE" || true
-    # Accept ROLES or roles, normalize to lower-case
-    R="${ROLES:-${roles:-}}"
-    R="${R,,}"                # lower-case
-    R="${R//$'\r'/}"          # strip CR
+    role_text="${ROLES:-${roles:-}}"
+    role_text="${role_text,,}"
+    role_text="${role_text//$'\r'/}"
   fi
 
-  printf '%s' "$R"
+  printf '%s' "$role_text"
 }
 
 start_enable() {
   local unit="$1"
+
   systemctl enable --now "$unit" >/dev/null 2>&1 || true
-  # give systemd a moment to settle
   sleep 0.2
+
   if systemctl is-active --quiet "$unit"; then
-    log "started $unit"
+    log "started ${unit}"
   else
-    log "failed to start $unit"
+    log "failed to start ${unit}"
   fi
 }
 
 stop_disable() {
   local unit="$1"
-  systemctl stop "$unit" >/dev/null 2>&1 || true
 
+  systemctl stop "$unit" >/dev/null 2>&1 || true
   systemctl disable "$unit" >/dev/null 2>&1 || true
 
-  log "stopped+disabled $unit"
+  log "stopped+disabled ${unit}"
 }
 
 mode="${1:-apply}"
 force_stop=0
+
 case "$mode" in
   stop|stopall|--force-stop)
     force_stop=1
@@ -364,32 +453,58 @@ want_isi=0
 want_sniff=0
 want_fms=0
 
-if (( ! force_stop )); then
-  for word in $roles; do
-    case "$word" in
-      isi)      want_isi=1 ;;
-      sniff)    want_sniff=1 ;;
-      fms)      want_fms=1 ;;
+if [ "$force_stop" -eq 0 ]; then
+  for role_word in $roles; do
+    case "$role_word" in
+      isi)
+        want_isi=1
+        ;;
+      fms)
+        want_fms=1
+        ;;
+      sniff|wireshark|sniffer|sniffer-bridge)
+        want_sniff=1
+        ;;
     esac
   done
 fi
 
 log "parsed roles='${roles}' -> isi:${want_isi} sniff:${want_sniff} fms:${want_fms}"
 
-(( want_sniff )) && start_enable "$SVC_SNIFF" || stop_disable "$SVC_SNIFF"
-(( want_isi   )) && start_enable "$SVC_ISI"   || stop_disable "$SVC_ISI"
-(( want_fms   )) && start_enable "$SVC_FMS"   || stop_disable "$SVC_FMS"
+if [ "$want_isi" -eq 1 ] || [ "$want_sniff" -eq 1 ]; then
+  start_enable "$SVC_BRIDGE"
+else
+  stop_disable "$SVC_BRIDGE"
+fi
+
+if [ "$want_sniff" -eq 1 ]; then
+  start_enable "$SVC_SNIFF"
+else
+  stop_disable "$SVC_SNIFF"
+fi
+
+if [ "$want_isi" -eq 1 ]; then
+  start_enable "$SVC_ISI"
+else
+  stop_disable "$SVC_ISI"
+fi
+
+if [ "$want_fms" -eq 1 ]; then
+  start_enable "$SVC_FMS"
+else
+  stop_disable "$SVC_FMS"
+fi
 
 exit 0
 EOF
 
   chmod 755 /usr/local/bin/pi-servsync.sh
-  chown "$OWNER:$OWNER" /usr/local/bin/pi-servsync.sh || true
+  chown root:root /usr/local/bin/pi-servsync.sh || true
 }
 
-# ---------- Embed portal.sh ----------
 install_portal() {
-  log "Writing /usr/local/bin/portal.sh …"
+  log "Writing /usr/local/bin/portal.sh."
+
   cat >/usr/local/bin/portal.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -398,118 +513,112 @@ IFACE="${1:-wlan0}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-1880}"
 
 if ! iptables -t nat -C PREROUTING -i "$IFACE" -p tcp --dport 80 \
-       -j REDIRECT --to-ports "$DASHBOARD_PORT" 2>/dev/null; then
+  -j REDIRECT --to-ports "$DASHBOARD_PORT" 2>/dev/null; then
   iptables -t nat -A PREROUTING -i "$IFACE" -p tcp --dport 80 \
-       -j REDIRECT --to-ports "$DASHBOARD_PORT"
+    -j REDIRECT --to-ports "$DASHBOARD_PORT"
 fi
 EOF
 
   chmod 755 /usr/local/bin/portal.sh
-  chown "$OWNER:$OWNER" /usr/local/bin/portal.sh || true
+  chown root:root /usr/local/bin/portal.sh || true
 }
 
-# ---------- Embed pi-stats.sh ----------
 install_pi_stats() {
-  log "Writing /usr/local/bin/pi-stats.sh …"
+  log "Writing /usr/local/bin/pi-stats.sh."
+
   cat >/usr/local/bin/pi-stats.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ----- small helper to escape JSON strings -----
 escape_json() {
-  local s=${1:-}
-  s=${s//\\/\\\\}   # backslash
-  s=${s//\"/\\\"}   # double quote
+  local s="${1:-}"
+
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
   printf '%s' "$s"
 }
 
-# ----- Basic hardware info -----
 model="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo Unknown)"
 serial="$(awk -F: '/Serial/{print $2}' /proc/cpuinfo | xargs || true)"
 
-# ----- CPU % -----
 read -r u1 n1 s1 i1 io1 irq1 sirq1 st1 _ < <(awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8,$9}' /proc/stat)
 sleep 0.5
 read -r u2 n2 s2 i2 io2 irq2 sirq2 st2 _ < <(awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8,$9}' /proc/stat)
-t=$(( (u2+n2+s2+i2+io2+irq2+sirq2+st2) - (u1+n1+s1+i1+io1+irq1+sirq1+st1) ))
-id=$(( i2 - i1 ))
-cpu_pct=$(awk -v t="$t" -v id="$id" 'BEGIN{ if(t>0) printf "%.1f", 100*(t-id)/t; else print "0.0" }')
 
-# ----- Memory % -----
-mem_total_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo)
-mem_avail_kb=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
-mem_used_pct=$(awk -v t="$mem_total_kb" -v a="$mem_avail_kb" 'BEGIN{ if(t>0) printf "%.1f", 100*(t-a)/t; else print "0.0" }')
+total_delta=$(((u2 + n2 + s2 + i2 + io2 + irq2 + sirq2 + st2) - (u1 + n1 + s1 + i1 + io1 + irq1 + sirq1 + st1)))
+idle_delta=$((i2 - i1))
 
-# ----- Disk (root) -----
-disk_used_pct=$(df -P / | awk 'NR==2{gsub(/%/,"",$5); print $5}')
-disk_avail_gb=$(df -P -BG / | awk 'NR==2{gsub(/G/,"",$4); print $4}')
+cpu_pct="$(awk -v total="$total_delta" -v idle="$idle_delta" 'BEGIN{if(total>0) printf "%.1f", 100*(total-idle)/total; else print "0.0"}')"
 
-# ----- Temp, uptime, load -----
+mem_total_kb="$(awk '/MemTotal/{print $2}' /proc/meminfo)"
+mem_avail_kb="$(awk '/MemAvailable/{print $2}' /proc/meminfo)"
+mem_used_pct="$(awk -v total="$mem_total_kb" -v avail="$mem_avail_kb" 'BEGIN{if(total>0) printf "%.1f", 100*(total-avail)/total; else print "0.0"}')"
+
+disk_used_pct="$(df -P / | awk 'NR==2{gsub(/%/,"",$5); print $5}')"
+disk_avail_gb="$(df -P -BG / | awk 'NR==2{gsub(/G/,"",$4); print $4}')"
+
 temp_raw="$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 0)"
-temp_c=$(awk -v v="$temp_raw" 'BEGIN{ printf "%.1f", v/1000 }')
-uptime_s=$(awk '{printf "%d",$1}' /proc/uptime)
-load1=$(awk '{print $1}' /proc/loadavg)
+temp_c="$(awk -v val="$temp_raw" 'BEGIN{printf "%.1f", val/1000}')"
+uptime_s="$(awk '{printf "%d",$1}' /proc/uptime)"
+load1="$(awk '{print $1}' /proc/loadavg)"
 
-# ----- Device / OS / IP / SSID -----
 hostname_val="$(hostname 2>/dev/null || echo raspberrypi)"
 
 os_name="Linux"
-if [[ -r /etc/os-release ]]; then
+if [ -r /etc/os-release ]; then
   # shellcheck disable=SC1091
   . /etc/os-release || true
   os_name="${PRETTY_NAME:-${NAME:-Linux}}"
 fi
 
-ipaddr="$(ip -4 addr show wlan0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)"
-if [[ -z "$ipaddr" ]]; then
+ipaddr="$(ip -4 addr show wlan0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n 1)"
+if [ -z "$ipaddr" ]; then
   ipaddr="$(hostname -I 2>/dev/null | awk '{print $1}')"
 fi
 
 ssid=""
-if [[ -r /etc/hostapd/hostapd.conf ]]; then
-  ssid="$(awk -F= '/^ssid=/{print $2}' /etc/hostapd/hostapd.conf 2>/dev/null | head -n1)"
+if [ -r /etc/hostapd/hostapd.conf ]; then
+  ssid="$(awk -F= '/^ssid=/{print $2}' /etc/hostapd/hostapd.conf 2>/dev/null | head -n 1)"
 fi
-if [[ -z "$ssid" ]]; then
+
+if [ -z "$ssid" ]; then
   ssid="$hostname_val"
 fi
 
 device_id="$ssid"
 
-# ----- Print JSON on a single line -----
 printf '{'
 printf '"device_id":"%s",' "$(escape_json "$device_id")"
-printf '"ip":"%s",'          "$(escape_json "$ipaddr")"
-printf '"hostname":"%s",'    "$(escape_json "$hostname_val")"
-printf '"os":"%s",'          "$(escape_json "$os_name")"
-printf '"model":"%s",'       "$(escape_json "$model")"
-printf '"serial":"%s",'      "$(escape_json "$serial")"
-printf '"cpu_pct":%.1f,'     "$cpu_pct"
+printf '"ip":"%s",' "$(escape_json "$ipaddr")"
+printf '"hostname":"%s",' "$(escape_json "$hostname_val")"
+printf '"os":"%s",' "$(escape_json "$os_name")"
+printf '"model":"%s",' "$(escape_json "$model")"
+printf '"serial":"%s",' "$(escape_json "$serial")"
+printf '"cpu_pct":%.1f,' "$cpu_pct"
 printf '"mem_used_pct":%.1f,' "$mem_used_pct"
 printf '"disk_used_pct":%.1f,' "$disk_used_pct"
 printf '"disk_avail_gb":%.1f,' "$disk_avail_gb"
-printf '"temp_c":%.1f,'      "$temp_c"
-printf '"uptime_s":%d,'      "$uptime_s"
-printf '"load1":%.2f'        "$load1"
+printf '"temp_c":%.1f,' "$temp_c"
+printf '"uptime_s":%d,' "$uptime_s"
+printf '"load1":%.2f' "$load1"
 printf '}\n'
 EOF
 
   chmod 755 /usr/local/bin/pi-stats.sh
-  chown "$OWNER:$OWNER" /usr/local/bin/pi-stats.sh || true
+  chown root:root /usr/local/bin/pi-stats.sh || true
 }
 
-# ---------- pi-servsync & portal.service ----------
-  install_services() {
-  log "Installing pi-servsync.service …"
+install_services() {
+  log "Installing pi-servsync.service."
+
   cat >/etc/systemd/system/pi-servsync.service <<EOF
 [Unit]
-Description=Apply /etc/pi_roles.conf to services (ISI / Wireshark / FMS)
+Description=Apply /etc/pi_roles.conf to InitBox services
 After=multi-user.target
+Wants=multi-user.target
 
 [Service]
 Type=simple
-User=initbox
-Group=initbox
-Environment=ROLES_CONF=/etc/pi_roles.conf
 ExecStart=/usr/local/bin/pi-servsync.sh
 Restart=always
 RestartSec=2
@@ -520,45 +629,144 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-  log "Installing portal.service …"
+  log "Installing portal.service."
+
   cat >/etc/systemd/system/portal.service <<EOF
 [Unit]
-Description=INITbox captive-portal redirect (80 -> 1880)
+Description=InitBox captive portal redirect (${HOTSPOT_IFACE}:80 -> ${DASHBOARD_PORT})
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=initbox
+ExecStart=/usr/local/bin/portal.sh ${HOTSPOT_IFACE}
+RemainAfterExit=yes
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
-ExecStart=/usr/local/bin/portal.sh
-RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 EOF
 }
 
-# ---------- Main ----------
-log "Starting Dashboard (ttyd + portal) module …"
+enable_and_start_services() {
+  log "Enabling and restarting dashboard services."
 
-install_ttyd
-install_nodered
-deploy_flows_settings
-install_nodered_service
-install_pi_rolectl
-install_pi_servsync
-install_portal
-install_pi_stats
-install_services
+  systemctl daemon-reload
 
-systemctl daemon-reload
-systemctl enable pi-nodered.service pi-servsync.service ttyd.service portal.service 2>/dev/null || true
-systemctl restart pi-nodered.service 2>/dev/null || true
-systemctl restart pi-servsync.service 2>/dev/null || true
-systemctl restart ttyd.service 2>/dev/null || true
-systemctl restart portal.service 2>/dev/null || true
+  systemctl enable pi-nodered.service pi-servsync.service portal.service 2>/dev/null || true
+  systemctl restart pi-nodered.service 2>/dev/null || true
+  systemctl restart pi-servsync.service 2>/dev/null || true
+  systemctl restart portal.service 2>/dev/null || true
 
-log "Dashboard module installed. Node-RED on port 1880; portal redirects wlan0:80 -> 1880."
-log "Login link : http://initbox.wlan:1880/ui"
+  if [ -f /etc/systemd/system/ttyd.service ]; then
+    systemctl enable ttyd.service 2>/dev/null || true
+    systemctl restart ttyd.service 2>/dev/null || true
+  fi
+}
+
+install_module() {
+  require_root
+  prepare_log
+
+  log "Starting Dashboard module installation."
+
+  install_base_packages
+  install_ttyd
+  install_nodered
+  deploy_flows_settings
+  install_initbox_mods
+  install_role_file
+  install_nodered_service
+  install_pi_rolectl
+  install_pi_servsync
+  install_portal
+  install_pi_stats
+  install_services
+  enable_and_start_services
+
+  ok "Dashboard module installed."
+  ok "Node-RED dashboard: http://initbox.wlan:${DASHBOARD_PORT}/ui"
+  ok "Web terminal: http://initbox.wlan:${TTYD_PORT}"
+  ok "Role file: ${ROLE_FILE}"
+}
+
+uninstall_module() {
+  require_root
+  prepare_log
+
+  log "Uninstalling Dashboard module."
+
+  systemctl stop portal.service 2>/dev/null || true
+  systemctl disable portal.service 2>/dev/null || true
+
+  systemctl stop pi-servsync.service 2>/dev/null || true
+  systemctl disable pi-servsync.service 2>/dev/null || true
+
+  systemctl stop pi-nodered.service 2>/dev/null || true
+  systemctl disable pi-nodered.service 2>/dev/null || true
+
+  systemctl stop ttyd.service 2>/dev/null || true
+  systemctl disable ttyd.service 2>/dev/null || true
+
+  rm -f /etc/systemd/system/portal.service
+  rm -f /etc/systemd/system/pi-servsync.service
+  rm -f /etc/systemd/system/pi-nodered.service
+  rm -f /etc/systemd/system/ttyd.service
+
+  rm -f /usr/local/bin/portal.sh
+  rm -f /usr/local/bin/pi-servsync.sh
+  rm -f /usr/local/bin/pi-rolectl.sh
+  rm -f /usr/local/bin/pi-stats.sh
+
+  systemctl daemon-reload
+
+  ok "Dashboard services and helper scripts removed."
+  warn "Node-RED, ttyd, npm packages, ${ROLE_FILE}, and ${MODS_FILE} were left in place intentionally."
+}
+
+usage() {
+  cat <<EOF
+Usage:
+  sudo ./scripts/pi-3-4-5/module-dashboard.sh [install|uninstall|purge]
+
+Actions:
+  install    Install/update dashboard services
+  uninstall  Remove dashboard services and helper scripts
+  purge      Compatibility alias for uninstall; packages are not purged
+
+Role file:
+  ${ROLE_FILE}
+
+Supported role words:
+  isi
+  fms
+  sniff
+  wireshark
+  sniffer
+  sniffer-bridge
+EOF
+}
+
+case "$ACTION" in
+  install)
+    install_module
+    ;;
+  uninstall|remove)
+    uninstall_module
+    ;;
+  purge)
+    warn "purge is treated as uninstall; packages are not removed."
+    uninstall_module
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    err "Unknown action: ${ACTION}"
+    usage
+    exit 1
+    ;;
+esac
