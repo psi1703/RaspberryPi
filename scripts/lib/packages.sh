@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 
 # InitBox offline package helper
-#
 # Reads scripts/packages.txt, downloads all required .deb packages during lab
 # setup, verifies the local package cache, and installs packages from the local
 # cache during field setup.
-#
 # Expected functions:
 #   initbox_packages_preseed <packages_file> <cache_dir>
 #   initbox_packages_verify  <packages_file> <cache_dir>
@@ -164,6 +162,7 @@ initbox_packages_verify() {
   local package_count
   local deb_count
   local package_name
+  local deb_file
   local failures
 
   initbox_packages_require_file "$packages_file"
@@ -199,20 +198,24 @@ initbox_packages_verify() {
     if find "$cache_dir" -maxdepth 1 -type f -name "${package_name}_*.deb" | grep -q .; then
       initbox_packages_log "[PASS] cached package found: $package_name"
     else
-      initbox_packages_log "[WARN] exact cached .deb not found for requested package: $package_name"
-      initbox_packages_log "       This can be normal if the package is virtual or already supplied by another dependency."
+      initbox_packages_log "[INFO] exact cached .deb not found for requested package: $package_name"
+      initbox_packages_log "       It may already be installed, virtual, renamed by architecture, or included through dependencies."
     fi
   done < <(initbox_packages_read_list "$packages_file")
 
   initbox_packages_log ""
   initbox_packages_log "Testing local .deb metadata readability..."
 
-  if dpkg-deb --info "$cache_dir"/*.deb >/dev/null 2>&1; then
-    initbox_packages_log "[PASS] cached .deb files are readable by dpkg-deb"
-  else
-    initbox_packages_log "[FAIL] one or more cached .deb files are not readable"
-    failures=$((failures + 1))
-  fi
+  while IFS= read -r deb_file; do
+    [ -z "$deb_file" ] && continue
+
+    if dpkg-deb --info "$deb_file" >/dev/null 2>&1; then
+      initbox_packages_log "[PASS] readable .deb: $(basename "$deb_file")"
+    else
+      initbox_packages_log "[FAIL] unreadable .deb: $deb_file"
+      failures=$((failures + 1))
+    fi
+  done < <(find "$cache_dir" -maxdepth 1 -type f -name '*.deb' | sort)
 
   if [ "$failures" -eq 0 ]; then
     initbox_packages_log ""
@@ -222,6 +225,7 @@ initbox_packages_verify() {
 
   initbox_packages_log ""
   initbox_packages_log "Offline package verification failed."
+  initbox_packages_log "Unreadable .deb files: $failures"
   return 1
 }
 
