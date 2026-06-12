@@ -8,6 +8,11 @@
 #   - fms.py CAN replay helper
 #   - fms.service
 #
+# Package model:
+#   - Uses scripts/lib/packages.sh
+#   - With Internet: installs through apt-get and keeps packages cached
+#   - Without Internet: installs from local package cache only
+#
 # Pi 3 / 4 / 5 role model:
 #   - Dashboard/Node-RED owns /etc/pi_roles.conf.
 #   - fms.py sends CAN frames only when the role file contains: fms
@@ -22,6 +27,11 @@ set -euo pipefail
 ACTION="${1:-install}"
 
 : "${OWNER:=initbox}"
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PACKAGES_HELPER="$REPO_ROOT/scripts/lib/packages.sh"
 
 LOG_DIR="/home/${OWNER}/pi_logs"
 LOGFILE="${LOGFILE:-${LOG_DIR}/initbox-install.log}"
@@ -69,20 +79,29 @@ prepare_log() {
   fi
 }
 
-apt_safe() {
-  DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"
-}
-
-install_packages() {
-  log "Installing FMS dependencies."
-
-  if ! apt_safe update; then
-    err "apt-get update failed."
+require_package_helper() {
+  if [ ! -f "$PACKAGES_HELPER" ]; then
+    err "Package helper not found: $PACKAGES_HELPER"
+    err "Expected file: scripts/lib/packages.sh"
     exit 1
   fi
 
-  if ! apt_safe install -y can-utils ifupdown python3 iproute2; then
+  chmod 755 "$PACKAGES_HELPER" 2>/dev/null || true
+}
+
+install_packages() {
+  log "Installing FMS dependencies through InitBox package cache helper."
+
+  require_package_helper
+
+  if ! bash "$PACKAGES_HELPER" install \
+    can-utils \
+    ifupdown \
+    python3 \
+    iproute2 2>&1 | tee -a "$LOGFILE"; then
     err "FMS dependency installation failed."
+    err "If this Pi is offline, prepare the package cache first with:"
+    err "  sudo ./scripts/initbox-installer.sh pi-3-4-5 p"
     exit 1
   fi
 }
@@ -235,7 +254,7 @@ def fms_role_enabled() -> bool:
     roles = read_roles()
 
     if "fms" in roles:
-      return True
+        return True
 
     if not roles:
         log(f"[FMS] No roles found in {ROLE_FILE}; FMS disabled.")
@@ -498,6 +517,13 @@ Actions:
   install    Install/update FMS CAN replay service
   uninstall  Remove FMS service and helper script
   purge      Compatibility alias for uninstall; packages are not purged
+
+Package cache:
+  This module uses:
+    scripts/lib/packages.sh
+
+  To prepare package cache in the lab:
+    sudo ./scripts/initbox-installer.sh pi-3-4-5 p
 
 Role control:
   Dashboard writes:
