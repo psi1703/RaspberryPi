@@ -1,0 +1,17 @@
+ca-certificates
+curl
+dnsmasq
+hostapd
+dhcpcd5
+iproute2
+iptables
+rfkill
+isc-dhcp-client
+netcat-openbsd
+can-utils
+ifupdown
+tshark
+wireshark-common
+zip
+libcap2-bin
+python3
