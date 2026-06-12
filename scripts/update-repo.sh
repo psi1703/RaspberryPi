@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 
 # InitBox repository update script
-# Safely hard-syncs the local Raspberry Pi repository to origin/main.
-# Intended to be run manually on the Pi after changes are committed on GitHub.
-# Usage:
+# Hard-syncs the local Raspberry Pi repository to the selected GitHub branch.
+# Intended usage:
 #   ./scripts/update-repo.sh
 #   ./scripts/update-repo.sh --dry-run
 #   ./scripts/update-repo.sh --branch pi-zero-W-2W
+# Notes:
+#   - This is a deployment clone, not a development clone.
+#   - Local edits are intentionally discarded.
+#   - Script chmod repair is done after sync.
+#   - Git file-mode tracking is disabled locally so chmod repair does not leave
+#     the working tree dirty with permission-only "M" entries.
 
 set -euo pipefail
 
@@ -24,22 +29,25 @@ Usage:
   ./scripts/update-repo.sh [options]
 
 Options:
-  --branch BRANCH   Git branch to sync from. Default: main
+  --branch BRANCH   Git branch to sync from. Default: pi-zero-W-2W
   --dry-run         Show what would be updated without changing files
   -h, --help        Show this help
 
-This script performs a safer hard sync:
+This script performs a deployment hard sync:
   git fetch origin <branch>
   git reset --hard origin/<branch>
   git clean -fd
 
-It refuses to continue if the repository path is invalid.
+It then repairs local execute permissions for scripts.
+
+Important:
+  Local edits are discarded. Commit changes to GitHub before running this script.
 EOF
 }
 
 log_line() {
   local message="$1"
-  local timestamp
+  local timestamp=""
 
   timestamp="$(date '+%Y-%m-%d %H:%M:%S %Z')"
   printf '[%s] %s\n' "$timestamp" "$message"
@@ -126,9 +134,17 @@ validate_repo() {
   fi
 }
 
+configure_deployment_git_behavior() {
+  log_line "configuring deployment Git behavior"
+
+  # This clone repairs executable permissions locally after every sync.
+  # Do not let chmod-only changes make the deployment tree appear dirty.
+  git config core.fileMode false
+}
+
 print_repo_state() {
-  local current_head
-  local remote_head
+  local current_head=""
+  local remote_head=""
 
   current_head="$(git rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
   remote_head="$(git rev-parse --short "$REMOTE/$BRANCH" 2>/dev/null || printf 'unknown')"
@@ -166,6 +182,8 @@ dry_run_update() {
   echo "Commands that would run:"
   echo "  git reset --hard $REMOTE/$BRANCH"
   echo "  git clean -fd"
+  echo "  git config core.fileMode false"
+  echo "  repair local script permissions"
 }
 
 hard_sync_repo() {
@@ -190,16 +208,16 @@ repair_permissions() {
     chmod 755 scripts/initbox-status.sh
   fi
 
+  if [ -f scripts/update-repo.sh ]; then
+    chmod 755 scripts/update-repo.sh
+  fi
+
   if [ -d scripts/lib ]; then
     find scripts/lib -type f -name "*.sh" -exec chmod 644 {} \;
   fi
 
   if [ -d scripts/pi-zero2w ]; then
     find scripts/pi-zero2w -type f -name "*.sh" -exec chmod 755 {} \;
-  fi
-
-  if [ -d scripts/pi-3-4-5 ]; then
-    find scripts/pi-3-4-5 -type f -name "*.sh" -exec chmod 755 {} \;
   fi
 
   if [ -d profiles ]; then
@@ -218,6 +236,10 @@ run_basic_validation() {
     bash -n scripts/initbox-status.sh
   fi
 
+  if [ -f scripts/update-repo.sh ]; then
+    bash -n scripts/update-repo.sh
+  fi
+
   if [ -f scripts/lib/profile.sh ]; then
     bash -n scripts/lib/profile.sh
   fi
@@ -230,10 +252,31 @@ run_basic_validation() {
     bash -n scripts/lib/state.sh
   fi
 
+  if [ -f scripts/lib/packages.sh ]; then
+    bash -n scripts/lib/packages.sh
+  fi
+
   if command -v shellcheck >/dev/null 2>&1; then
-    shellcheck scripts/initbox-installer.sh scripts/initbox-status.sh scripts/lib/*.sh
+    shellcheck \
+      scripts/initbox-installer.sh \
+      scripts/initbox-status.sh \
+      scripts/update-repo.sh \
+      scripts/lib/*.sh
   else
     log_line "ShellCheck not installed locally; skipping ShellCheck validation"
+  fi
+}
+
+show_final_status() {
+  local status_output=""
+
+  status_output="$(git status --short)"
+
+  if [ -n "$status_output" ]; then
+    log_line "working tree still has non-permission local changes after update"
+    printf '%s\n' "$status_output"
+  else
+    log_line "working tree is clean after update"
   fi
 }
 
@@ -248,6 +291,7 @@ main() {
   require_command chmod
 
   validate_repo
+  configure_deployment_git_behavior
   fetch_remote
 
   if [ "$DRY_RUN" = "yes" ]; then
@@ -260,6 +304,7 @@ main() {
   repair_permissions
   run_basic_validation
   print_repo_state
+  show_final_status
 
   log_line "InitBox repo update finished successfully"
 }
