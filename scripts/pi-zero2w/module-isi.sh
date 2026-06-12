@@ -7,7 +7,6 @@ set -euo pipefail
 #   install   Install and enable ISI simulator.
 #   uninstall Remove ISI service and files created by this module.
 #   purge     Uninstall and also purge ISI dependency packages.
-#
 # Default action:
 #   install
 
@@ -28,10 +27,7 @@ DHCPCD_CONF="/etc/dhcpcd.conf"
 DHCPCD_BLOCK_START="# BEGIN InitBox ISI bridge unmanaged"
 DHCPCD_BLOCK_END="# END InitBox ISI bridge unmanaged"
 
-# ----------------------------------------------------------------------------
 # Logging
-# ----------------------------------------------------------------------------
-
 ts() { date +"%Y-%m-%d %H:%M:%S"; }
 log()  { echo "[ISI $(ts)] $*"        | tee -a "$LOGFILE"; }
 ok()   { echo "[ISI $(ts)] [OK] $*"   | tee -a "$LOGFILE"; }
@@ -42,10 +38,7 @@ apt_safe() {
   apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"
 }
 
-# ----------------------------------------------------------------------------
 # Shared helpers
-# ----------------------------------------------------------------------------
-
 require_root() {
   if [ "$(id -u)" -ne 0 ]; then
     err "this module must be run as root"
@@ -59,10 +52,7 @@ ensure_log_dir() {
   chown "$OWNER:$OWNER" "$LOGFILE" 2>/dev/null || true
 }
 
-# ----------------------------------------------------------------------------
 # Dependency management
-# ----------------------------------------------------------------------------
-
 install_dependencies() {
   log "Installing ISI simulator dependencies"
   apt_safe update
@@ -75,10 +65,7 @@ purge_isi_packages() {
   apt_safe autoremove -y
 }
 
-# ----------------------------------------------------------------------------
 # Network manager configuration
-# ----------------------------------------------------------------------------
-
 remove_dhcpcd_isi_block() {
   local tmp_file=""
 
@@ -149,10 +136,7 @@ remove_isi_network_manager_overrides() {
   systemctl restart dhcpcd       2>/dev/null || true
 }
 
-# ----------------------------------------------------------------------------
 # isirunall.sh — the persistent runner written to disk
-# ----------------------------------------------------------------------------
-
 write_isi_runner() {
   log "Writing ${ISI_RUNNER}"
 
@@ -177,23 +161,16 @@ ISI_FILES=(
 NAMES=(DRACHE NIX ZEITNEHMER)
 NS=(ns1 ns2 ns3)
 
-# ---------------------------------------------------------------------------
 # State
-# ---------------------------------------------------------------------------
 DEST_IP=""
 NS_IPS=()
 BRIDGE_CREATED_BY_ISI=0
 BRIDGE_PORTS_ADDED_BY_ISI=()
 
-# ---------------------------------------------------------------------------
 # Logging
-# ---------------------------------------------------------------------------
 log() { echo "[ISI $(date +%F_%T)] $*"; }
 
-# ---------------------------------------------------------------------------
 # Interface helpers
-# ---------------------------------------------------------------------------
-
 is_excluded_interface() {
   local iface="$1"
   case "$iface" in
@@ -259,10 +236,7 @@ detect_bridge_ports() {
   printf '%s\n' "${wired_ifs[@]}"
 }
 
-# ---------------------------------------------------------------------------
 # Bridge setup / teardown
-# ---------------------------------------------------------------------------
-
 is_pi_zero_like() {
   local model
   model="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || echo '')"
@@ -350,10 +324,7 @@ teardown_bridge_for_isi() {
   fi
 }
 
-# ---------------------------------------------------------------------------
 # Namespace setup / teardown
-# ---------------------------------------------------------------------------
-
 cleanup_ns() {
   local ns pid link_name
 
@@ -415,14 +386,11 @@ add_veth_to_br() {
   ip netns exec "$ns" ip link set "$ifn" up
 }
 
-# ---------------------------------------------------------------------------
 # DHCP inside namespace
-#
 # Broadcast DHCP via dhclient config:
 #   bootp-broadcast-always asks dhclient to set the BOOTP broadcast flag.
 #   This avoids a bridge/FDB learning race where an early unicast OFFER can be
 #   missed before the bridge has learned the namespace veth MAC.
-# ---------------------------------------------------------------------------
 
 request_fresh_dhcp() {
   local ns="$1"
@@ -467,10 +435,7 @@ request_fresh_dhcp() {
   printf '%s\n' "$dhcp_out"
 }
 
-# ---------------------------------------------------------------------------
 # COPILOT IP discovery from DHCP output
-# ---------------------------------------------------------------------------
-
 discover_copilot_from_dhcp() {
   local dhcp_out="$1"
   local srv="" gw=""
@@ -500,10 +465,7 @@ discover_copilot_from_dhcp() {
   fi
 }
 
-# ---------------------------------------------------------------------------
 # ISI client loops
-# ---------------------------------------------------------------------------
-
 start_isi_loop() {
   local ns="$1"
   local file="$2"
@@ -518,10 +480,7 @@ start_isi_loop() {
   " &
 }
 
-# ---------------------------------------------------------------------------
 # Cleanup trap
-# ---------------------------------------------------------------------------
-
 full_cleanup() {
   cleanup_ns
   cleanup_dhcp_runtime
@@ -530,10 +489,7 @@ full_cleanup() {
 
 trap full_cleanup EXIT
 
-# ---------------------------------------------------------------------------
 # Main: bridge → namespaces → DHCP → ISI loops
-# ---------------------------------------------------------------------------
-
 setup_bridge_for_isi
 cleanup_dhcp_runtime
 cleanup_ns
@@ -601,9 +557,7 @@ log "COPILOT target: ${DEST_IP}"
 start_isi_loop "${NS[0]}" "${ISI_FILES[0]}" "${NAMES[0]}"
 start_isi_loop "${NS[1]}" "${ISI_FILES[1]}" "${NAMES[1]}"
 
-# ---------------------------------------------------------------------------
 # ZEITNEHMER loop — also does clock sync
-# ---------------------------------------------------------------------------
 zeit_ns="${NS[2]}"
 zeit_file="${ISI_FILES[2]}"
 
@@ -681,10 +635,7 @@ RUNNER_EOF
   chown root:root "$ISI_RUNNER" 2>/dev/null || true
 }
 
-# ----------------------------------------------------------------------------
 # ISI payload files
-# ----------------------------------------------------------------------------
-
 write_isi_payloads() {
   log "Writing ISI payload files"
 
@@ -707,10 +658,7 @@ EOF
   chmod 644       "$ISI_PAYLOAD_1" "$ISI_PAYLOAD_2" "$ISI_PAYLOAD_3"
 }
 
-# ----------------------------------------------------------------------------
 # systemd service unit
-# ----------------------------------------------------------------------------
-
 write_isi_service() {
   log "Installing isirunall.service"
 
@@ -740,10 +688,7 @@ restart_isi_service() {
   systemctl restart isirunall.service
 }
 
-# ----------------------------------------------------------------------------
 # Install / uninstall / purge helpers
-# ----------------------------------------------------------------------------
-
 stop_and_disable_unit() {
   local unit_name="$1"
   log "Stopping and disabling ${unit_name}"
@@ -777,10 +722,7 @@ remove_isi_files() {
   rm -f "$ISI_RUNNER" "$ISI_PAYLOAD_1" "$ISI_PAYLOAD_2" "$ISI_PAYLOAD_3" "$ISI_SERVICE_FILE"
 }
 
-# ----------------------------------------------------------------------------
 # Summary printers
-# ----------------------------------------------------------------------------
-
 print_install_summary() {
   cat <<SUMMARY
 
@@ -835,10 +777,7 @@ Removed service, files, and packages:
 SUMMARY
 }
 
-# ----------------------------------------------------------------------------
 # Action entry points
-# ----------------------------------------------------------------------------
-
 install_main() {
   require_root
   ensure_log_dir
