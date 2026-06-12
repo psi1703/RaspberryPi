@@ -5,9 +5,7 @@
 # modules, runs sanity checks, and runs selected module scripts with explicit confirmation.
 # Usage:
 #   ./scripts/initbox-installer.sh pi-zero2w
-#   ./scripts/initbox-installer.sh pi-3-4-5
 #   ./scripts/initbox-installer.sh pi-zero2w c
-#   ./scripts/initbox-installer.sh pi-3-4-5 c
 #   ./scripts/initbox-installer.sh pi-zero2w uninstall
 
 set -euo pipefail
