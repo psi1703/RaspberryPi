@@ -7,6 +7,11 @@
 #   - dynamic br0 bridge manager
 #   - log-prep helper for zipping and clearing capture files
 #
+# Package model:
+#   - Uses scripts/lib/packages.sh
+#   - With Internet: installs through apt-get and keeps packages cached
+#   - Without Internet: installs from local package cache only
+#
 # Pi 3 / 4 / 5 role model:
 #   - The dashboard owns /etc/pi_roles.conf.
 #   - Capture starts only when /etc/pi_roles.conf contains a sniffing role.
@@ -22,6 +27,11 @@ set -euo pipefail
 ACTION="${1:-install}"
 
 : "${OWNER:=initbox}"
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PACKAGES_HELPER="$REPO_ROOT/scripts/lib/packages.sh"
 
 LOG_DIR="/home/${OWNER}/pi_logs"
 LOGFILE="${LOGFILE:-${LOG_DIR}/initbox-install.log}"
@@ -74,18 +84,20 @@ prepare_log() {
   fi
 }
 
-apt_safe() {
-  DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" >>"$LOGFILE" 2>&1
+require_package_helper() {
+  if [ ! -f "$PACKAGES_HELPER" ]; then
+    err "Package helper not found: $PACKAGES_HELPER"
+    err "Expected file: scripts/lib/packages.sh"
+    exit 1
+  fi
+
+  chmod 755 "$PACKAGES_HELPER" 2>/dev/null || true
 }
 
 install_packages() {
-  log "Installing sniffer bridge package requirements."
+  log "Installing sniffer bridge package requirements through InitBox package cache helper."
 
-  log "Running apt-get update."
-  if ! apt_safe update; then
-    err "apt-get update failed."
-    exit 1
-  fi
+  require_package_helper
 
   log "Preseeding wireshark-common for non-root capture support."
   if command -v debconf-set-selections >/dev/null 2>&1; then
@@ -94,9 +106,15 @@ install_packages() {
     warn "debconf-set-selections not found; continuing."
   fi
 
-  log "Installing tshark, zip, libcap2-bin, and bridge-utils."
-  if ! apt_safe install -y tshark zip libcap2-bin bridge-utils; then
-    err "package installation failed."
+  if ! bash "$PACKAGES_HELPER" install \
+    tshark \
+    zip \
+    libcap2-bin \
+    bridge-utils \
+    iproute2 2>&1 | tee -a "$LOGFILE"; then
+    err "Sniffer bridge dependency installation failed."
+    err "If this Pi is offline, prepare the package cache first with:"
+    err "  sudo ./scripts/initbox-installer.sh pi-3-4-5 p"
     exit 1
   fi
 
@@ -131,7 +149,12 @@ ensure_groups_and_permissions() {
   fi
 
   log "Ensuring trace directory exists: ${TRACE_DIR}"
-  install -d -m 0770 -o "$OWNER" -g wireshark "$TRACE_DIR"
+
+  if id "$OWNER" >/dev/null 2>&1 && getent group wireshark >/dev/null 2>&1; then
+    install -d -m 0770 -o "$OWNER" -g wireshark "$TRACE_DIR"
+  else
+    install -d -m 0770 "$TRACE_DIR"
+  fi
 }
 
 write_wireshark_script() {
@@ -612,6 +635,13 @@ Actions:
   install    Install/update sniffer bridge services
   uninstall  Remove services and helper scripts created by this module
   purge      Compatibility alias for uninstall; packages are not purged
+
+Package cache:
+  This module uses:
+    scripts/lib/packages.sh
+
+  To prepare package cache in the lab:
+    sudo ./scripts/initbox-installer.sh pi-3-4-5 p
 
 Role control:
   The dashboard writes /etc/pi_roles.conf.
