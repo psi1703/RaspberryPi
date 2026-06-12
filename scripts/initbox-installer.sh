@@ -661,7 +661,7 @@ sanity_check_package_file() {
   fi
 
   package_count="$(
-    grep -Ev '^[[:space:]]*($|#)' "$PACKAGES_FILE" | wc -l | tr -d '[:space:]'
+    grep -Ec '^[[:space:]]*[^[:space:]#]' "$PACKAGES_FILE" || true
   )"
 
   if [ "$package_count" -gt 0 ]; then
