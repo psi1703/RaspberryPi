@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# InitBox Pi Zero 2W Hotspot module
-#
+# InitBox Pi Zero W / Zero 2W Hotspot module
 # Actions:
 #   install   Install and enable InitBox hotspot.
 #   uninstall Remove services/config created by this module, but keep packages.
-#   purge     Uninstall and also purge hotspot packages.
-#
+#   remove    Alias for uninstall.
+#   purge     Compatibility alias for uninstall. It does not purge packages.
 # Default action:
 #   install
+# Offline field-mode policy:
+#   - Debian packages are installed from the InitBox local package cache.
+#   - Uninstall removes services/config only.
+#   - Purge is disabled and behaves like uninstall.
+#   - Installed packages and cached .deb files are kept.
 
 ACTION="${1:-install}"
 
@@ -17,6 +21,13 @@ ACTION="${1:-install}"
 : "${HOTSPOT_PASS:=TomatoH34d}"
 : "${HOTSPOT_INTERFACE:=wlan0}"
 : "${LOGFILE:=/home/${OWNER}/pi_logs/initbox-install.log}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${INITBOX_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
+INITBOX_PACKAGES_FILE="${INITBOX_PACKAGES_FILE:-$REPO_ROOT/scripts/packages.txt}"
+INITBOX_PACKAGE_CACHE_DIR="${INITBOX_PACKAGE_CACHE_DIR:-/opt/initbox/packages}"
+PACKAGES_LIB_FILE="$REPO_ROOT/scripts/lib/packages.sh"
 
 HOSTAPD_CONF="/etc/hostapd/hostapd.conf"
 HOSTAPD_DEFAULT="/etc/default/hostapd"
@@ -53,10 +64,6 @@ err() {
   echo "[HOTSPOT $(ts)] [ERR] $*" | tee -a "$LOGFILE" >&2
 }
 
-apt_safe() {
-  apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"
-}
-
 ask() {
   local prompt="$1"
   local default="$2"
@@ -85,6 +92,39 @@ ensure_log_dir() {
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
+}
+
+load_package_helper() {
+  if [ ! -f "$PACKAGES_LIB_FILE" ]; then
+    err "package helper missing: $PACKAGES_LIB_FILE"
+    exit 1
+  fi
+
+  # shellcheck disable=SC1090
+  . "$PACKAGES_LIB_FILE"
+
+  if ! declare -F initbox_packages_install >/dev/null 2>&1; then
+    err "package helper does not define initbox_packages_install"
+    exit 1
+  fi
+}
+
+install_dependencies() {
+  log "Installing hotspot dependencies from InitBox package cache"
+  log "packages file: $INITBOX_PACKAGES_FILE"
+  log "cache dir:     $INITBOX_PACKAGE_CACHE_DIR"
+
+  load_package_helper
+
+  initbox_packages_install \
+    "$INITBOX_PACKAGES_FILE" \
+    "$INITBOX_PACKAGE_CACHE_DIR" \
+    dnsmasq \
+    hostapd \
+    dhcpcd5 \
+    iproute2 \
+    iptables \
+    rfkill
 }
 
 calc_hotspot_subnet() {
@@ -124,12 +164,6 @@ get_box_number() {
   fi
 
   echo "$boxno"
-}
-
-install_dependencies() {
-  log "Installing hotspot dependencies"
-  apt_safe update
-  apt_safe install -y dnsmasq hostapd dhcpcd5 iproute2 iptables rfkill
 }
 
 stop_conflicting_wifi_clients() {
@@ -450,13 +484,6 @@ remove_hotspot_services_and_config() {
   systemctl reset-failed 2>/dev/null || true
 }
 
-purge_hotspot_packages() {
-  log "purging hotspot packages"
-
-  apt_safe purge -y dnsmasq hostapd dhcpcd5
-  apt_safe autoremove -y
-}
-
 print_summary() {
   local ssid="$1"
   local hip="$2"
@@ -473,6 +500,11 @@ print_summary() {
   echo
   echo "Captive DNS:"
   echo "  address=/#/${hip}"
+  echo
+  echo "Offline field-mode behavior:"
+  echo "  - Debian packages are installed from ${INITBOX_PACKAGE_CACHE_DIR}"
+  echo "  - uninstall does not remove packages or cached .deb files"
+  echo "  - purge is disabled and behaves like uninstall"
   echo
   echo "Check services:"
   echo "  sudo systemctl status hostapd dnsmasq dhcpcd --no-pager"
@@ -503,24 +535,12 @@ print_uninstall_summary() {
   echo
   echo "Not removed:"
   echo "  - installed packages"
+  echo "  - cached .deb files under ${INITBOX_PACKAGE_CACHE_DIR}"
   echo "  - ${BOXNO_FILE}"
   echo
   echo "Check:"
   echo "  sudo systemctl status hostapd dnsmasq dhcpcd --no-pager"
   echo "  ip -4 addr show ${HOTSPOT_INTERFACE}"
-}
-
-print_purge_summary() {
-  echo
-  echo "InitBox hotspot purged"
-  echo "----------------------"
-  echo "Removed InitBox hotspot services/configuration and purged:"
-  echo "  - dnsmasq"
-  echo "  - hostapd"
-  echo "  - dhcpcd5"
-  echo
-  echo "Not removed:"
-  echo "  - ${BOXNO_FILE}"
 }
 
 install_main() {
@@ -566,16 +586,6 @@ uninstall_main() {
   ok "Hotspot module uninstalled."
 }
 
-purge_main() {
-  require_root
-  ensure_log_dir
-
-  remove_hotspot_services_and_config
-  purge_hotspot_packages
-  print_purge_summary
-  ok "Hotspot module purged."
-}
-
 main() {
   case "$ACTION" in
     install|"")
@@ -585,10 +595,11 @@ main() {
       uninstall_main
       ;;
     purge)
-      purge_main
+      warn "purge is disabled by offline field-mode policy; running uninstall only"
+      uninstall_main
       ;;
     *)
-      err "unknown action '$ACTION'. Use install, uninstall, or purge."
+      err "unknown action '$ACTION'. Use install or uninstall."
       exit 1
       ;;
   esac
