@@ -7,6 +7,11 @@
 #   - ISI payload files for DRACHE, NIX, and ZEITNEHMER
 #   - isirunall.service
 #
+# Package model:
+#   - Uses scripts/lib/packages.sh
+#   - With Internet: installs through apt-get and keeps packages cached
+#   - Without Internet: installs from local package cache only
+#
 # Pi 3 / 4 / 5 role model:
 #   - Dashboard/Node-RED owns /etc/pi_roles.conf.
 #   - isirunall.sh starts only when the role file contains: isi
@@ -22,6 +27,11 @@ set -euo pipefail
 ACTION="${1:-install}"
 
 : "${OWNER:=initbox}"
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PACKAGES_HELPER="$REPO_ROOT/scripts/lib/packages.sh"
 
 LOG_DIR="/home/${OWNER}/pi_logs"
 LOGFILE="${LOGFILE:-${LOG_DIR}/initbox-install.log}"
@@ -73,20 +83,28 @@ prepare_log() {
   fi
 }
 
-apt_safe() {
-  DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"
-}
-
-install_packages() {
-  log "Installing ISI simulator dependencies."
-
-  if ! apt_safe update; then
-    err "apt-get update failed."
+require_package_helper() {
+  if [ ! -f "$PACKAGES_HELPER" ]; then
+    err "Package helper not found: $PACKAGES_HELPER"
+    err "Expected file: scripts/lib/packages.sh"
     exit 1
   fi
 
-  if ! apt_safe install -y isc-dhcp-client netcat-openbsd iproute2; then
+  chmod 755 "$PACKAGES_HELPER" 2>/dev/null || true
+}
+
+install_packages() {
+  log "Installing ISI simulator dependencies through InitBox package cache helper."
+
+  require_package_helper
+
+  if ! bash "$PACKAGES_HELPER" install \
+    isc-dhcp-client \
+    netcat-openbsd \
+    iproute2 2>&1 | tee -a "$LOGFILE"; then
     err "ISI dependency installation failed."
+    err "If this Pi is offline, prepare the package cache first with:"
+    err "  sudo ./scripts/initbox-installer.sh pi-3-4-5 p"
     exit 1
   fi
 }
@@ -376,6 +394,7 @@ run_rtc_sync() {
   local parsed="$1"
   local mode=""
   local value=""
+  local rc=0
 
   mode="${parsed%%:*}"
   value="${parsed#*:}"
@@ -602,6 +621,13 @@ Actions:
   install    Install/update ISI simulator service
   uninstall  Remove ISI service and helper files
   purge      Compatibility alias for uninstall; packages are not purged
+
+Package cache:
+  This module uses:
+    scripts/lib/packages.sh
+
+  To prepare package cache in the lab:
+    sudo ./scripts/initbox-installer.sh pi-3-4-5 p
 
 Role control:
   Dashboard writes:
