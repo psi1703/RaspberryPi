@@ -23,7 +23,8 @@ set -euo pipefail
 EXPECTED_PROFILE_ID="pi-3-4-5"
 
 OWNER="${OWNER:-initbox}"
-PROFILE_ID="${1:-$EXPECTED_PROFILE_ID}"
+REQUESTED_PROFILE_ID="${1:-$EXPECTED_PROFILE_ID}"
+PROFILE_ID="$REQUESTED_PROFILE_ID"
 INITIAL_ACTION="${2:-}"
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
@@ -35,7 +36,7 @@ MODULE_HELPER="$REPO_ROOT/scripts/lib/modules.sh"
 STATE_HELPER="$REPO_ROOT/scripts/lib/state.sh"
 PACKAGES_HELPER="$REPO_ROOT/scripts/lib/packages.sh"
 
-PROFILE_FILE="$REPO_ROOT/profiles/${PROFILE_ID}.conf"
+PROFILE_FILE="$REPO_ROOT/profiles/${REQUESTED_PROFILE_ID}.conf"
 PACKAGES_FILE="$REPO_ROOT/scripts/packages.txt"
 
 LOG_DIR="/var/log/initbox"
@@ -184,6 +185,9 @@ source_helpers() {
 }
 
 load_profile() {
+  PROFILE_ID="$REQUESTED_PROFILE_ID"
+  PROFILE_FILE="$REPO_ROOT/profiles/${PROFILE_ID}.conf"
+
   if [ "$PROFILE_ID" != "$EXPECTED_PROFILE_ID" ]; then
     die "This branch supports only profile '${EXPECTED_PROFILE_ID}'. Requested: '${PROFILE_ID}'"
   fi
