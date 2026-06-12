@@ -14,6 +14,13 @@ set -euo pipefail
 #   - Uninstall removes services/config/runtime files only.
 #   - Purge is disabled and behaves like uninstall.
 #   - Installed packages and cached .deb files are kept.
+# COPILOT network safety policy:
+#   - Installing this module must not bridge Ethernet immediately.
+#   - isirunall.service is enabled but stopped after install.
+#   - At runtime, the runner only creates br0 after detecting a wired Ethernet
+#     interface with carrier and a 10.x.x.x IPv4 address.
+#   - If the COPILOT 10.x network is not detected, the runner exits cleanly
+#     without changing Ethernet bridge state.
 
 ACTION="${1:-install}"
 
@@ -115,7 +122,7 @@ install_dependencies() {
 }
 
 # ----------------------------------------------------------------------------
-# Network manager configuration
+# Network manager cleanup helpers
 # ----------------------------------------------------------------------------
 
 remove_dhcpcd_isi_block() {
@@ -131,56 +138,6 @@ remove_dhcpcd_isi_block() {
   ' "$DHCPCD_CONF" >"$tmp_file"
   cat "$tmp_file" >"$DHCPCD_CONF"
   rm -f "$tmp_file"
-}
-
-configure_isi_network_managers() {
-  local iface=""
-
-  log "Configuring host network managers to leave ISI bridge ports unmanaged"
-
-  if systemctl list-unit-files NetworkManager.service >/dev/null 2>&1; then
-    mkdir -p "$(dirname "$NM_ISI_CONF")"
-
-    cat >"$NM_ISI_CONF" <<'NM_EOF'
-[keyfile]
-unmanaged-devices=interface-name:eth0;interface-name:eth1;interface-name:br0;interface-name:veth*
-NM_EOF
-
-    systemctl restart NetworkManager 2>/dev/null || true
-
-    for iface in eth0 eth1; do
-      nmcli device set "$iface" managed no 2>/dev/null || true
-    done
-  fi
-
-  if systemctl list-unit-files dhcpcd.service >/dev/null 2>&1; then
-    touch "$DHCPCD_CONF"
-    remove_dhcpcd_isi_block
-
-    cat >>"$DHCPCD_CONF" <<EOF
-
-$DHCPCD_BLOCK_START
-# InitBox ISI bridge members are L2-only.
-# DHCP must run only inside ISI namespaces, not on host bridge ports.
-denyinterfaces eth0 eth1 br0 veth*
-$DHCPCD_BLOCK_END
-EOF
-
-    systemctl restart dhcpcd 2>/dev/null || true
-  fi
-
-  for iface in eth0 eth1 br0; do
-    ip addr flush dev "$iface" 2>/dev/null || true
-  done
-
-  while read -r iface; do
-    [ -n "$iface" ] && ip addr flush dev "$iface" 2>/dev/null || true
-  done < <(
-    ip -o link show \
-      | awk -F': ' '{print $2}' \
-      | cut -d'@' -f1 \
-      | grep -E '^veth[0-9]+_host$' 2>/dev/null || true
-  )
 }
 
 remove_isi_network_manager_overrides() {
@@ -314,6 +271,69 @@ detect_bridge_ports() {
   fi
 
   printf '%s\n' "${wired_ifs[@]}"
+}
+
+# ---------------------------------------------------------------------------
+# COPILOT network gate
+# ---------------------------------------------------------------------------
+
+interface_has_carrier() {
+  local iface="$1"
+
+  [ -r "/sys/class/net/${iface}/carrier" ] || return 1
+  [ "$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null || echo 0)" = "1" ]
+}
+
+interface_has_10_network() {
+  local iface="$1"
+
+  ip -4 -o addr show dev "$iface" 2>/dev/null \
+    | awk '{print $4}' \
+    | grep -Eq '^10\.'
+}
+
+detect_copilot_gate_port() {
+  local iface=""
+
+  while IFS= read -r iface; do
+    [ -z "$iface" ] && continue
+
+    if ! interface_has_carrier "$iface"; then
+      log "Gate: ${iface} has no carrier; skipping."
+      continue
+    fi
+
+    if interface_has_10_network "$iface"; then
+      log "Gate: COPILOT candidate detected on ${iface}; IPv4 is in 10.x.x.x."
+      printf '%s\n' "$iface"
+      return 0
+    fi
+
+    log "Gate: ${iface} has carrier but no 10.x.x.x IPv4 address."
+  done < <(detect_wired_ethernet_ports)
+
+  return 1
+}
+
+require_copilot_network_gate() {
+  local gate_port=""
+
+  if ! gate_port="$(detect_copilot_gate_port)"; then
+    log "COPILOT network gate not passed."
+    log "No wired Ethernet interface has both carrier and a 10.x.x.x IPv4 address."
+    log "Refusing to create ${BRIDGE}; leaving Ethernet untouched."
+    log "Connect the Pi to the COPILOT network first, then restart isirunall.service."
+    exit 0
+  fi
+
+  log "COPILOT network gate passed on ${gate_port}."
+
+  if [ -n "$UPLINK_IF" ]; then
+    log "Operator supplied UPLINK_IF=${UPLINK_IF}; only that interface will be bridged."
+  else
+    log "UPLINK_IF is not set; all detected wired Ethernet ports will be bridged."
+    log "This supports Pi-in-the-middle mode, for example eth0 to COPILOT and eth1 to switch."
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -597,9 +617,10 @@ full_cleanup() {
 trap full_cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# Main: bridge -> namespaces -> DHCP -> ISI loops
+# Main: gate -> bridge -> namespaces -> DHCP -> ISI loops
 # ---------------------------------------------------------------------------
 
+require_copilot_network_gate
 setup_bridge_for_isi
 cleanup_dhcp_runtime
 cleanup_ns
@@ -823,7 +844,7 @@ EOF
 restart_isi_service() {
   systemctl daemon-reload
   systemctl enable isirunall.service
-  systemctl restart isirunall.service
+  systemctl stop isirunall.service 2>/dev/null || true
 }
 
 # ----------------------------------------------------------------------------
@@ -876,6 +897,14 @@ ISI simulator installed
 Service : isirunall.service
 Runner  : ${ISI_RUNNER}
 
+Safety behaviour:
+  - install does not start isirunall.service
+  - install does not bridge, flush, or enslave Ethernet ports
+  - runtime refuses to create br0 unless a wired Ethernet port has carrier and 10.x.x.x IPv4
+  - when the COPILOT gate is not passed, Ethernet is left untouched
+  - when UPLINK_IF is unset, all detected wired Ethernet ports are bridged after the gate passes
+  - when UPLINK_IF is set, only that interface is bridged
+
 Key behaviours:
   - STP disabled, forward_delay 0
   - bootp-broadcast-always in dhclient config
@@ -893,8 +922,10 @@ Offline field-mode behaviour:
 Check status:
   sudo systemctl status isirunall.service --no-pager
   sudo journalctl -u isirunall.service -n 100 --no-pager
-  bridge link
-  sudo ip netns exec ns1 ip -br addr
+
+Manual start when connected to COPILOT 10.x network:
+  sudo systemctl restart isirunall.service
+  sudo journalctl -u isirunall.service -n 100 --no-pager
 SUMMARY
 }
 
@@ -926,13 +957,12 @@ install_main() {
   require_root
   ensure_log_dir
   install_dependencies
-  configure_isi_network_managers
   write_isi_runner
   write_isi_payloads
   write_isi_service
   restart_isi_service
   print_install_summary
-  ok "ISI simulator module installed."
+  ok "ISI simulator module installed. Service is enabled but not started."
 }
 
 uninstall_main() {
