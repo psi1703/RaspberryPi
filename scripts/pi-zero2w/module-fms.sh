@@ -1,20 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# InitBox Pi Zero 2W FMS module
-#
+# InitBox Pi Zero W / Zero 2W FMS module
 # Actions:
 #   install   Install and enable CAN/FMS replay service.
 #   uninstall Remove FMS service and files created by this module.
-#   purge     Uninstall and also purge FMS dependency packages.
-#
+#   remove    Alias for uninstall.
+#   purge     Compatibility alias for uninstall. It does not purge packages.
 # Default action:
 #   install
+# Offline field-mode policy:
+#   - Debian packages are installed from the InitBox local package cache.
+#   - Uninstall removes services/config only.
+#   - Purge is disabled and behaves like uninstall.
+#   - Installed packages and cached .deb files are kept.
 
 ACTION="${1:-install}"
 
 : "${OWNER:=initbox}"
 : "${LOGFILE:=/home/${OWNER}/pi_logs/initbox-install.log}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${INITBOX_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
+INITBOX_PACKAGES_FILE="${INITBOX_PACKAGES_FILE:-$REPO_ROOT/scripts/packages.txt}"
+INITBOX_PACKAGE_CACHE_DIR="${INITBOX_PACKAGE_CACHE_DIR:-/opt/initbox/packages}"
+PACKAGES_LIB_FILE="$REPO_ROOT/scripts/lib/packages.sh"
 
 FMS_SCRIPT="/usr/local/bin/fms.py"
 FMS_SERVICE_FILE="/etc/systemd/system/fms.service"
@@ -45,10 +56,6 @@ err() {
   echo "[FMS  $(ts)] [ERR] $*" | tee -a "$LOGFILE" >&2
 }
 
-apt_safe() {
-  apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"
-}
-
 require_root() {
   if [ "$(id -u)" -ne 0 ]; then
     err "this module must be run as root"
@@ -60,6 +67,21 @@ ensure_log_dir() {
   mkdir -p "$(dirname "$LOGFILE")"
   touch "$LOGFILE"
   chown "$OWNER:$OWNER" "$LOGFILE" 2>/dev/null || true
+}
+
+load_package_helper() {
+  if [ ! -f "$PACKAGES_LIB_FILE" ]; then
+    err "package helper missing: $PACKAGES_LIB_FILE"
+    exit 1
+  fi
+
+  # shellcheck disable=SC1090
+  . "$PACKAGES_LIB_FILE"
+
+  if ! declare -F initbox_packages_install >/dev/null 2>&1; then
+    err "package helper does not define initbox_packages_install"
+    exit 1
+  fi
 }
 
 boot_config_path() {
@@ -77,9 +99,17 @@ boot_config_path() {
 }
 
 install_dependencies() {
-  log "Installing FMS dependencies"
-  apt_safe update
-  apt_safe install -y can-utils ifupdown
+  log "Installing FMS dependencies from InitBox package cache"
+  log "packages file: $INITBOX_PACKAGES_FILE"
+  log "cache dir:     $INITBOX_PACKAGE_CACHE_DIR"
+
+  load_package_helper
+
+  initbox_packages_install \
+    "$INITBOX_PACKAGES_FILE" \
+    "$INITBOX_PACKAGE_CACHE_DIR" \
+    can-utils \
+    ifupdown
 }
 
 patch_mcp2515_overlay() {
@@ -347,13 +377,6 @@ bring_can0_down() {
   fi
 }
 
-purge_fms_packages() {
-  log "Purging FMS dependency packages"
-
-  apt_safe purge -y can-utils ifupdown
-  apt_safe autoremove -y
-}
-
 print_install_summary() {
   echo
   echo "FMS module installed"
@@ -361,6 +384,12 @@ print_install_summary() {
   echo "Service: ${FMS_SERVICE_FILE}"
   echo "Script:  ${FMS_SCRIPT}"
   echo "TRC:     ${FMS_TRC_FILE}"
+  echo
+  echo "Offline field-mode behaviour:"
+  echo "  - Debian packages are installed from ${INITBOX_PACKAGE_CACHE_DIR}"
+  echo "  - python3 is expected from Raspberry Pi OS and is not installed by this module"
+  echo "  - uninstall does not remove packages or cached .deb files"
+  echo "  - purge is disabled and behaves like uninstall"
   echo
   echo "Important:"
   echo "  Reboot once if the MCP2515 overlay was just added."
@@ -383,24 +412,12 @@ print_uninstall_summary() {
   echo
   echo "Not removed:"
   echo "  - installed dependency packages"
+  echo "  - cached .deb files under ${INITBOX_PACKAGE_CACHE_DIR}"
   echo "  - ${FMS_TRC_FILE}"
   echo "  - dtparam=spi=on"
   echo
   echo "Important:"
   echo "  Reboot once for boot config changes to fully apply."
-}
-
-print_purge_summary() {
-  echo
-  echo "FMS module purged"
-  echo "-----------------"
-  echo "Removed FMS service/configuration and purged:"
-  echo "  - can-utils"
-  echo "  - ifupdown"
-  echo
-  echo "Not removed:"
-  echo "  - ${FMS_TRC_FILE}"
-  echo "  - dtparam=spi=on"
 }
 
 install_main() {
@@ -435,24 +452,6 @@ uninstall_main() {
   ok "FMS module uninstalled."
 }
 
-purge_main() {
-  require_root
-  ensure_log_dir
-
-  stop_and_disable_unit "fms.service"
-  bring_can0_down
-  remove_fms_files
-  remove_network_interfaces_block
-  remove_mcp2515_overlay
-  purge_fms_packages
-
-  systemctl daemon-reload
-  systemctl reset-failed 2>/dev/null || true
-
-  print_purge_summary
-  ok "FMS module purged."
-}
-
 main() {
   case "$ACTION" in
     install|"")
@@ -462,10 +461,11 @@ main() {
       uninstall_main
       ;;
     purge)
-      purge_main
+      warn "purge is disabled by offline field-mode policy; running uninstall only"
+      uninstall_main
       ;;
     *)
-      err "unknown action '$ACTION'. Use install, uninstall, or purge."
+      err "unknown action '$ACTION'. Use install or uninstall."
       exit 1
       ;;
   esac
