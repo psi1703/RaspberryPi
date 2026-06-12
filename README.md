@@ -309,7 +309,7 @@ Do not run `ttyd` directly on port `80`. Windows captive portal detection expect
 
 ---
 
-## ISI Model on Pi Zero W / Zero 2W
+## ISI simulator on Pi Zero W / Zero 2W
 
 `module-isi.sh` installs `isirunall.service` and writes:
 
@@ -379,10 +379,13 @@ DRACHE and NIX responses may be suppressed in the journal to avoid burying ZEITN
 On Pi Zero W / Zero 2W:
 
 * ISI owns and creates `br0`.
+* The sniffer module does not create, flush, enslave, or manage Ethernet interfaces.
 * The capture service waits for `br0` to exist.
-* The capture service records traffic from `br0`.
+* The capture service records traffic from `br0` after ISI creates the bridge.
 * No dynamic `bridge-check.service` should manage `br0` on this branch.
 * Packet capture uses `tshark`.
+
+This separation is intentional. ISI controls bridge lifecycle because it knows when the COPILOT `10.x.x.x` network gate has passed. The sniffer module is passive and should only observe traffic on `br0`.
 
 Capture files are stored in:
 
@@ -396,9 +399,99 @@ The helper script:
 /usr/local/bin/log-prep.sh
 ```
 
-can stop the sniffer, zip capture files, remove originals, and restart capture when configured to do so.
+prepares capture files for collection. It can:
 
----
+* stop the sniffer service temporarily;
+* zip existing `.pcap`, `.pcapng`, `.pcap.gz`, and `.pcapng.gz` files;
+* delete the original capture files after ZIP creation;
+* leave the ZIP archive in `/usr/tracefiles`;
+* restart capture only when capture was already active before preparation.
+
+`log-prep.sh` must not depend on `/etc/pi_roles.conf` or a legacy `sniff` role on this branch.
+
+Correct restart policy:
+
+```text
+wireshark-autostart.service active before log-prep:
+  stop service
+  zip capture files
+  delete original capture files
+  restart service
+
+wireshark-autostart.service inactive before log-prep:
+  zip capture files if any exist
+  delete original capture files after ZIP creation
+  leave service inactive
+```
+
+Expected active-service log example:
+
+```text
+[log-prep] wireshark-autostart.service active before prep; stopping it
+[log-prep] Compressing 2 file(s) into /usr/tracefiles/initbox_1_20260612.zip ...
+[log-prep] Deleting original capture files ...
+[log-prep] Files are stored at: /usr/tracefiles
+[log-prep] Restarting wireshark-autostart.service because it was active before prep
+[log-prep] ... preparation completed.
+```
+
+Expected inactive-service log example:
+
+```text
+[log-prep] wireshark-autostart.service inactive before prep; leaving it inactive after prep
+[log-prep] Files are stored at: /usr/tracefiles
+[log-prep] Not restarting wireshark-autostart.service because it was not active before prep
+[log-prep] ... preparation completed.
+```
+
+The sniffer module should install only the packages it needs through the offline package helper:
+
+```text
+tshark
+zip
+libcap2-bin
+```
+
+The module may configure `wireshark-common` if it is installed as a dependency of `tshark`, but `wireshark-common` should not be listed manually in `scripts/packages.txt`.
+
+The module should allow non-root packet capture by setting capabilities on `dumpcap`:
+
+```text
+cap_net_raw,cap_net_admin=eip
+```
+
+The `initbox` user should be added to the `wireshark` group when that group exists.
+
+Uninstall behavior must be conservative:
+
+* stop and disable the capture service;
+* remove service files created by this module;
+* remove helper scripts created by this module;
+* leave captured trace files and ZIP archives in `/usr/tracefiles`;
+* do not purge packages;
+* treat `purge` as a compatibility alias for `uninstall`.
+
+If `br0` does not exist yet, the sniffer service should wait rather than fail permanently. To create `br0`, connect the Pi to the COPILOT-side network and start ISI:
+
+```bash
+sudo systemctl restart isirunall.service
+ip link show br0
+```
+
+Then check the capture service:
+
+```bash
+sudo systemctl status wireshark-autostart.service --no-pager
+sudo journalctl -u wireshark-autostart.service -n 100 --no-pager
+ls -lh /usr/tracefiles
+```
+
+To prepare capture files for collection:
+
+```bash
+sudo /usr/local/bin/log-prep.sh
+ls -lh /usr/tracefiles
+```
 
 ## Installer Menu
 
@@ -701,6 +794,17 @@ ip link show can0
 sudo systemctl status wireshark-autostart.service --no-pager
 sudo journalctl -u wireshark-autostart.service -n 100 --no-pager
 ls -lh /usr/tracefiles
+```bash
+sudo /usr/local/bin/log-prep.sh
+ls -lh /usr/tracefiles
+sudo systemctl status wireshark-autostart.service --no-pager
+```
+
+Expected behavior:
+
+```text
+If wireshark-autostart.service was active before log-prep, it should be restarted after ZIP creation.
+If wireshark-autostart.service was inactive before log-prep, it should remain inactive.
 ```
 
 If `br0` does not exist yet, connect to the COPILOT network and start ISI first:
