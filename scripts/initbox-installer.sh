@@ -76,7 +76,6 @@ bootstrap_repo_permissions() {
   repo_dirs+=("$REPO_ROOT/scripts")
   repo_dirs+=("$REPO_ROOT/scripts/lib")
   repo_dirs+=("$REPO_ROOT/scripts/pi-zero2w")
-  repo_dirs+=("$REPO_ROOT/scripts/pi-3-4-5")
   repo_dirs+=("$REPO_ROOT/profiles")
 
   readable_files+=("$REPO_ROOT/scripts/packages.txt")
@@ -85,7 +84,6 @@ bootstrap_repo_permissions() {
   readable_files+=("$REPO_ROOT/scripts/lib/state.sh")
   readable_files+=("$REPO_ROOT/scripts/lib/packages.sh")
   readable_files+=("$REPO_ROOT/profiles/pi-zero2w.conf")
-  readable_files+=("$REPO_ROOT/profiles/pi-3-4-5.conf")
   readable_files+=("$REPO_ROOT/profiles/README.md")
   readable_files+=("$REPO_ROOT/README.md")
 
@@ -790,7 +788,6 @@ run_sanity_checks() {
 
   sanity_check_file "profiles/README.md" || failures=$((failures + 1))
   sanity_check_file "profiles/pi-zero2w.conf" || failures=$((failures + 1))
-  sanity_check_file "profiles/pi-3-4-5.conf" || failures=$((failures + 1))
 
   sanity_check_file "scripts/packages.txt" || failures=$((failures + 1))
   sanity_check_file "scripts/initbox-installer.sh" || failures=$((failures + 1))
