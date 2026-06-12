@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# InitBox module registry helper
-#
-# This file maps logical module IDs to the existing module scripts.
+# InitBox Pi Zero W / Zero 2W module registry helper
+# This file maps logical module IDs to module scripts.
 # It does not install packages or modify the system.
 
 set -euo pipefail
@@ -24,29 +23,9 @@ initbox_module_script_path() {
     pi-zero2w:web-terminal)
       printf '%s/scripts/pi-zero2w/module-ttyd-portal.sh\n' "$repo_root"
       ;;
-
-    pi-3-4-5:isi)
-      printf '%s/scripts/pi-3-4-5/module-isi.sh\n' "$repo_root"
+    pi-zero2w:sniffer-bridge)
+      printf '%s/scripts/pi-zero2w/module-ws-br0.sh\n' "$repo_root"
       ;;
-    pi-3-4-5:fms)
-      printf '%s/scripts/pi-3-4-5/module-fms.sh\n' "$repo_root"
-      ;;
-    pi-3-4-5:hotspot)
-      printf '%s/scripts/pi-3-4-5/module-hotspot.sh\n' "$repo_root"
-      ;;
-    pi-3-4-5:web-terminal)
-      printf '%s/scripts/pi-3-4-5/module-dashboard.sh\n' "$repo_root"
-      ;;
-    pi-3-4-5:dashboard)
-      printf '%s/scripts/pi-3-4-5/module-dashboard.sh\n' "$repo_root"
-      ;;
-    pi-3-4-5:rtc)
-      printf '%s/scripts/pi-3-4-5/module-rtc.sh\n' "$repo_root"
-      ;;
-    pi-3-4-5:sniffer-bridge)
-      printf '%s/scripts/pi-3-4-5/module-ws-br0.sh\n' "$repo_root"
-      ;;
-
     *)
       return 1
       ;;
@@ -69,12 +48,6 @@ initbox_module_display_name() {
     web-terminal)
       printf 'Web Terminal\n'
       ;;
-    dashboard)
-      printf 'Dashboard\n'
-      ;;
-    rtc)
-      printf 'RTC\n'
-      ;;
     sniffer-bridge)
       printf 'Sniffer / Bridge\n'
       ;;
@@ -90,8 +63,6 @@ isi
 fms
 hotspot
 web-terminal
-dashboard
-rtc
 sniffer-bridge
 EOF
 }
@@ -100,7 +71,7 @@ initbox_module_script_exists() {
   local profile_id="$1"
   local module_id="$2"
   local repo_root="$3"
-  local module_script
+  local module_script=""
 
   if ! module_script="$(initbox_module_script_path "$profile_id" "$module_id" "$repo_root")"; then
     return 1
@@ -112,9 +83,9 @@ initbox_module_script_exists() {
 initbox_print_module_registry() {
   local profile_id="$1"
   local repo_root="$2"
-  local module_id
-  local module_name
-  local module_script
+  local module_id=""
+  local module_name=""
+  local module_script=""
 
   echo "Module registry"
   echo "---------------"
