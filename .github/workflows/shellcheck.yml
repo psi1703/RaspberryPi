@@ -2,9 +2,9 @@ name: Shell Check and Auto-Fix
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "pi-zero-W-2W" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "pi-zero-W-2W" ]
 
 jobs:
   lint-and-fix:
