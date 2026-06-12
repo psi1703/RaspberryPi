@@ -42,7 +42,7 @@ INITBOX_PACKAGE_CACHE_DIR="${INITBOX_PACKAGE_CACHE_DIR:-/opt/initbox-package-cac
 DASHBOARD_CACHE_DIR="${DASHBOARD_CACHE_DIR:-${INITBOX_PACKAGE_CACHE_DIR}/dashboard}"
 TTYD_CACHE_BIN="${TTYD_CACHE_BIN:-${DASHBOARD_CACHE_DIR}/ttyd}"
 NODE_RED_INSTALLER_CACHE="${NODE_RED_INSTALLER_CACHE:-${DASHBOARD_CACHE_DIR}/update-nodejs-and-nodered-deb.sh}"
-NODE_RED_INSTALLER_URL="${NODE_RED_INSTALLER_URL:-https://github.com/node-red/linux-installers/releases/latest/download/update-nodejs-and-nodered-deb}"
+NODE_RED_INSTALLER_URL="${NODE_RED_INSTALLER_URL:-https://raw.githubusercontent.com/node-red/linux-installers/master/deb/update-nodejs-and-nodered}"
 
 LOG_DIR="/home/${OWNER}/pi_logs"
 LOGFILE="${LOGFILE:-${LOG_DIR}/initbox-install.log}"
@@ -266,6 +266,8 @@ node_red_dashboard_is_installed() {
 }
 
 download_node_red_installer_once() {
+  local url=""
+
   prepare_dashboard_cache
 
   if [ -f "$NODE_RED_INSTALLER_CACHE" ]; then
@@ -281,13 +283,23 @@ download_node_red_installer_once() {
 
   log "Downloading Node-RED installer script once to ${NODE_RED_INSTALLER_CACHE}."
 
-  if ! curl -fsSL "$NODE_RED_INSTALLER_URL" -o "$NODE_RED_INSTALLER_CACHE"; then
-    err "Failed to download Node-RED installer."
-    return 1
-  fi
+  for url in \
+    "$NODE_RED_INSTALLER_URL" \
+    "https://raw.githubusercontent.com/node-red/linux-installers/master/deb/update-nodejs-and-nodered"; do
+    log "Trying Node-RED installer URL: ${url}"
 
-  chmod 755 "$NODE_RED_INSTALLER_CACHE"
-  ok "Cached Node-RED installer script."
+    if curl -fsSL "$url" -o "$NODE_RED_INSTALLER_CACHE"; then
+      chmod 755 "$NODE_RED_INSTALLER_CACHE"
+      ok "Cached Node-RED installer script."
+      return 0
+    fi
+
+    rm -f "$NODE_RED_INSTALLER_CACHE"
+    warn "Failed to download Node-RED installer from: ${url}"
+  done
+
+  err "Failed to download Node-RED installer from all known URLs."
+  return 1
 }
 
 run_node_red_installer() {
