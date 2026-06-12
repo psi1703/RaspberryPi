@@ -9,6 +9,14 @@
 #   - role sync helper using /etc/pi_roles.conf
 #   - Pi stats helper for dashboard use
 #
+# Package/cache model:
+#   - Uses scripts/lib/packages.sh for Debian packages.
+#   - With Internet: installs packages and keeps them cached.
+#   - Without Internet: installs Debian packages from local cache only.
+#   - ttyd is built once, installed, and cached locally for future reruns.
+#   - Node-RED installer script is downloaded once and cached locally.
+#   - If Node-RED and node-red-dashboard are already installed, offline reruns reuse them.
+#
 # Pi 3 / 4 / 5 role model:
 #   - Dashboard/Node-RED owns /etc/pi_roles.conf.
 #   - pi-servsync.sh applies roles to services.
@@ -24,7 +32,17 @@ set -euo pipefail
 ACTION="${1:-install}"
 
 : "${OWNER:=initbox}"
-: "${SCRIPT_DIR:=$(cd "$(dirname "$0")" && pwd)}"
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PACKAGES_HELPER="$REPO_ROOT/scripts/lib/packages.sh"
+
+INITBOX_PACKAGE_CACHE_DIR="${INITBOX_PACKAGE_CACHE_DIR:-/opt/initbox-package-cache}"
+DASHBOARD_CACHE_DIR="${DASHBOARD_CACHE_DIR:-${INITBOX_PACKAGE_CACHE_DIR}/dashboard}"
+TTYD_CACHE_BIN="${TTYD_CACHE_BIN:-${DASHBOARD_CACHE_DIR}/ttyd}"
+NODE_RED_INSTALLER_CACHE="${NODE_RED_INSTALLER_CACHE:-${DASHBOARD_CACHE_DIR}/update-nodejs-and-nodered-deb.sh}"
+NODE_RED_INSTALLER_URL="${NODE_RED_INSTALLER_URL:-https://github.com/node-red/linux-installers/releases/latest/download/update-nodejs-and-nodered-deb}"
 
 LOG_DIR="/home/${OWNER}/pi_logs"
 LOGFILE="${LOGFILE:-${LOG_DIR}/initbox-install.log}"
@@ -74,52 +92,96 @@ prepare_log() {
   fi
 }
 
-apt_safe() {
-  DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 "$@" 2>&1 | tee -a "$LOGFILE"
+prepare_dashboard_cache() {
+  install -d -m 0755 "$INITBOX_PACKAGE_CACHE_DIR"
+  install -d -m 0755 "$DASHBOARD_CACHE_DIR"
 }
 
 have_internet() {
   ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1
 }
 
-emit_unit() {
-  local path="$1"
-  local body="$2"
+require_package_helper() {
+  if [ ! -f "$PACKAGES_HELPER" ]; then
+    err "Package helper not found: $PACKAGES_HELPER"
+    err "Expected file: scripts/lib/packages.sh"
+    exit 1
+  fi
 
-  printf '%s\n' "$body" >"$path"
+  chmod 755 "$PACKAGES_HELPER" 2>/dev/null || true
 }
 
 install_base_packages() {
-  log "Installing base dashboard package requirements."
+  log "Installing base dashboard package requirements through InitBox package cache helper."
 
-  if ! apt_safe update; then
-    err "apt-get update failed."
-    exit 1
-  fi
+  require_package_helper
 
-  if ! apt_safe install -y curl ca-certificates build-essential git cmake libjson-c-dev libwebsockets-dev iptables; then
-    err "base package installation failed."
+  if ! bash "$PACKAGES_HELPER" install \
+    ca-certificates \
+    curl \
+    git \
+    build-essential \
+    cmake \
+    libjson-c-dev \
+    libwebsockets-dev \
+    iptables \
+    nodejs \
+    npm 2>&1 | tee -a "$LOGFILE"; then
+    err "Base dashboard package installation failed."
+    err "If this Pi is offline, prepare the package cache first with:"
+    err "  sudo ./scripts/initbox-installer.sh pi-3-4-5 p"
     exit 1
   fi
 }
 
-build_ttyd_from_git() {
-  local tmp=""
-
+restore_ttyd_from_cache() {
   if command -v ttyd >/dev/null 2>&1; then
     log "ttyd already installed at $(command -v ttyd)"
     return 0
   fi
 
-  if ! have_internet; then
-    warn "No internet; skipping ttyd build."
+  if [ -x "$TTYD_CACHE_BIN" ]; then
+    log "Restoring ttyd from local cache: ${TTYD_CACHE_BIN}"
+    install -m 0755 "$TTYD_CACHE_BIN" /usr/local/bin/ttyd
+    ok "ttyd restored to /usr/local/bin/ttyd"
+    return 0
+  fi
+
+  return 1
+}
+
+cache_installed_ttyd() {
+  local ttyd_bin=""
+
+  ttyd_bin="$(command -v ttyd || true)"
+
+  if [ -z "$ttyd_bin" ]; then
     return 1
   fi
 
-  log "Building ttyd from git."
+  prepare_dashboard_cache
+  install -m 0755 "$ttyd_bin" "$TTYD_CACHE_BIN"
+  ok "Cached ttyd binary at ${TTYD_CACHE_BIN}"
+}
+
+build_ttyd_from_git() {
+  local tmp=""
+
+  if restore_ttyd_from_cache; then
+    return 0
+  fi
+
+  if ! have_internet; then
+    warn "No Internet and no cached ttyd binary found."
+    warn "Web Terminal will be skipped until ttyd is built once in the lab."
+    return 1
+  fi
+
+  log "Building ttyd from GitHub source and caching binary."
 
   tmp="$(mktemp -d)"
-  if ! git clone https://github.com/tsl0922/ttyd.git "$tmp/ttyd"; then
+
+  if ! git clone https://github.com/tsl0922/ttyd.git "$tmp/ttyd" >>"$LOGFILE" 2>&1; then
     warn "git clone for ttyd failed; skipping web terminal."
     rm -rf "$tmp"
     return 1
@@ -129,9 +191,9 @@ build_ttyd_from_git() {
 
   if ! (
     cd "$tmp/ttyd/build"
-    cmake ..
-    make -j"$(nproc)"
-    make install
+    cmake .. >>"$LOGFILE" 2>&1
+    make -j"$(nproc)" >>"$LOGFILE" 2>&1
+    make install >>"$LOGFILE" 2>&1
   ); then
     warn "ttyd build/install failed; skipping web terminal."
     rm -rf "$tmp"
@@ -140,6 +202,7 @@ build_ttyd_from_git() {
 
   rm -rf "$tmp"
 
+  cache_installed_ttyd || true
   ok "ttyd installed at $(command -v ttyd || echo /usr/local/bin/ttyd)"
   return 0
 }
@@ -179,63 +242,96 @@ EOF
 
 install_ttyd() {
   if ! build_ttyd_from_git; then
-    warn "ttyd build failed or skipped; continuing without web terminal."
+    warn "ttyd build/restore failed or skipped; continuing without web terminal."
     return 0
   fi
 
   emit_ttyd_service
 }
 
-install_nodered() {
-  local url="https://github.com/node-red/linux-installers/releases/latest/download/update-nodejs-and-nodered-deb"
-  local tmp_script="/tmp/update-nodejs-and-nodered-deb.sh"
+node_red_is_installed() {
+  command -v node-red >/dev/null 2>&1
+}
 
-  log "Installing Node-RED via official installer."
+node_red_dashboard_is_installed() {
+  local nr_dir="/home/${OWNER}/.node-red"
 
-  if ! have_internet; then
-    err "Internet is required for first-time Node-RED installation."
+  if [ ! -d "$nr_dir" ]; then
     return 1
   fi
 
-  log "Downloading Node-RED installer script to ${tmp_script}."
-  if ! curl -fsSL "$url" -o "$tmp_script"; then
+  su - "$OWNER" -s /bin/bash -c 'cd "$HOME/.node-red" 2>/dev/null && npm list node-red-dashboard --depth=0 >/dev/null 2>&1'
+}
+
+download_node_red_installer_once() {
+  prepare_dashboard_cache
+
+  if [ -f "$NODE_RED_INSTALLER_CACHE" ]; then
+    log "Node-RED installer script already cached: ${NODE_RED_INSTALLER_CACHE}"
+    chmod 755 "$NODE_RED_INSTALLER_CACHE" || true
+    return 0
+  fi
+
+  if ! have_internet; then
+    warn "No Internet and Node-RED installer script is not cached."
+    return 1
+  fi
+
+  log "Downloading Node-RED installer script once to ${NODE_RED_INSTALLER_CACHE}."
+
+  if ! curl -fsSL "$NODE_RED_INSTALLER_URL" -o "$NODE_RED_INSTALLER_CACHE"; then
     err "Failed to download Node-RED installer."
     return 1
   fi
 
-  chmod +x "$tmp_script"
+  chmod 755 "$NODE_RED_INSTALLER_CACHE"
+  ok "Cached Node-RED installer script."
+}
+
+run_node_red_installer() {
+  if [ ! -x "$NODE_RED_INSTALLER_CACHE" ]; then
+    err "Node-RED installer cache is not executable: ${NODE_RED_INSTALLER_CACHE}"
+    return 1
+  fi
+
+  if ! have_internet && ! node_red_is_installed; then
+    err "Node-RED is not installed and Internet is unavailable."
+    err "Run this module once in the lab with Internet so Node-RED is installed and retained."
+    return 1
+  fi
+
+  log "Running cached official Node-RED installer: ${NODE_RED_INSTALLER_CACHE}"
+  log "Use target user when prompted: ${OWNER}"
 
   if [ -e /dev/tty ]; then
-    log "Launching official Node-RED installer. Use target user: ${OWNER}."
-    if ! bash "$tmp_script" </dev/tty; then
-      rm -f "$tmp_script"
+    if ! bash "$NODE_RED_INSTALLER_CACHE" </dev/tty; then
       err "Node-RED installer failed."
       return 1
     fi
   else
     warn "No /dev/tty available; running Node-RED installer non-interactively."
-    if ! bash "$tmp_script"; then
-      rm -f "$tmp_script"
+    if ! bash "$NODE_RED_INSTALLER_CACHE"; then
       err "Node-RED installer failed in non-interactive mode."
       return 1
     fi
   fi
+}
 
-  rm -f "$tmp_script"
+install_node_red_dashboard_package() {
+  install -d -m 0755 -o "$OWNER" -g "$OWNER" "/home/${OWNER}/.node-red"
 
-  if ! command -v node-red >/dev/null 2>&1; then
-    err "node-red command not found after installer."
+  if node_red_dashboard_is_installed; then
+    log "node-red-dashboard already installed for ${OWNER}; reusing existing install."
+    return 0
+  fi
+
+  if ! have_internet; then
+    err "node-red-dashboard is not installed and Internet is unavailable."
+    err "Install dashboard once in the lab with Internet so npm dependencies remain on the Pi."
     return 1
   fi
 
-  log "Node-RED installed: $(node-red --version 2>&1 | head -n 1)"
-
-  if systemctl list-unit-files | grep -q '^nodered\.service'; then
-    log "Disabling upstream nodered.service; InitBox uses pi-nodered.service."
-    systemctl disable --now nodered.service 2>/dev/null || true
-  fi
-
-  install -d -m 0755 -o "$OWNER" -g "$OWNER" "/home/${OWNER}/.node-red"
+  log "Installing node-red-dashboard npm package for ${OWNER}."
 
   su - "$OWNER" -s /bin/bash <<'EOS'
 set -euo pipefail
@@ -244,21 +340,41 @@ NR_DIR="${HOME}/.node-red"
 PUBLIC_DIR="${NR_DIR}/public"
 
 mkdir -p "${PUBLIC_DIR}"
+cd "${NR_DIR}"
 
 if [ -f "${HOME}/logo.png" ]; then
   cp -f "${HOME}/logo.png" "${PUBLIC_DIR}/logo.png"
 fi
 
-cd "${NR_DIR}"
-
 if [ ! -f package.json ]; then
   npm init -y >/dev/null 2>&1 || true
 fi
 
-if ! npm list node-red-dashboard --depth=0 >/dev/null 2>&1; then
-  npm install --unsafe-perm node-red-dashboard
-fi
+npm install --unsafe-perm node-red-dashboard
 EOS
+}
+
+install_nodered() {
+  log "Installing or reusing Node-RED."
+
+  if node_red_is_installed; then
+    log "Node-RED already installed: $(node-red --version 2>&1 | head -n 1)"
+  else
+    download_node_red_installer_once
+    run_node_red_installer
+  fi
+
+  if ! node_red_is_installed; then
+    err "node-red command not found after install/reuse step."
+    return 1
+  fi
+
+  if systemctl list-unit-files | grep -q '^nodered\.service'; then
+    log "Disabling upstream nodered.service; InitBox uses pi-nodered.service."
+    systemctl disable --now nodered.service 2>/dev/null || true
+  fi
+
+  install_node_red_dashboard_package
 }
 
 deploy_flows_settings() {
@@ -670,6 +786,7 @@ enable_and_start_services() {
 install_module() {
   require_root
   prepare_log
+  prepare_dashboard_cache
 
   log "Starting Dashboard module installation."
 
@@ -691,6 +808,7 @@ install_module() {
   ok "Node-RED dashboard: http://initbox.wlan:${DASHBOARD_PORT}/ui"
   ok "Web terminal: http://initbox.wlan:${TTYD_PORT}"
   ok "Role file: ${ROLE_FILE}"
+  ok "Dashboard cache: ${DASHBOARD_CACHE_DIR}"
 }
 
 uninstall_module() {
@@ -724,7 +842,7 @@ uninstall_module() {
   systemctl daemon-reload
 
   ok "Dashboard services and helper scripts removed."
-  warn "Node-RED, ttyd, npm packages, ${ROLE_FILE}, and ${MODS_FILE} were left in place intentionally."
+  warn "Node-RED, ttyd, npm packages, ${ROLE_FILE}, ${MODS_FILE}, and cache files were left in place intentionally."
 }
 
 usage() {
@@ -736,6 +854,20 @@ Actions:
   install    Install/update dashboard services
   uninstall  Remove dashboard services and helper scripts
   purge      Compatibility alias for uninstall; packages are not purged
+
+Package cache:
+  This module uses:
+    scripts/lib/packages.sh
+
+  To prepare Debian package cache in the lab:
+    sudo ./scripts/initbox-installer.sh pi-3-4-5 p
+
+Dashboard asset cache:
+  ${DASHBOARD_CACHE_DIR}
+
+Cached assets:
+  ${TTYD_CACHE_BIN}
+  ${NODE_RED_INSTALLER_CACHE}
 
 Role file:
   ${ROLE_FILE}
