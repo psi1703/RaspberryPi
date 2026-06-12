@@ -12,7 +12,7 @@ Field deployment should not depend on Internet access. All package downloads, ba
 
 | Profile     | Hardware                      | Dashboard | Management interface |
 | ----------- | ----------------------------- | --------: | -------------------- |
-| `pi-zero2w` | Raspberry Pi Zero W / Zero 2W |        No | Web Terminal         |
+| `pi-zero2w` | Raspberry Pi Zero W / Zero 2W |        No | Web Terminal & SSH         |
 
 The profile file is:
 
