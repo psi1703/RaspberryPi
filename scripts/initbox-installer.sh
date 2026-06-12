@@ -2,10 +2,14 @@
 
 # InitBox Raspberry Pi installer
 # Loads a hardware profile, repairs required repo permissions, shows supported
-# modules, runs sanity checks, and runs selected module scripts with explicit confirmation.
+# modules, runs sanity checks, handles offline package preseed, and runs selected
+# module scripts with explicit confirmation.
+#
 # Usage:
 #   ./scripts/initbox-installer.sh pi-zero2w
 #   ./scripts/initbox-installer.sh pi-zero2w c
+#   ./scripts/initbox-installer.sh pi-zero2w p
+#   ./scripts/initbox-installer.sh pi-zero2w v
 #   ./scripts/initbox-installer.sh pi-zero2w uninstall
 
 set -euo pipefail
@@ -21,6 +25,8 @@ if [ -z "$REQUESTED_PROFILE_ID" ]; then
   echo "  ./scripts/initbox-installer.sh pi-3-4-5"
   echo "  ./scripts/initbox-installer.sh pi-zero2w c"
   echo "  ./scripts/initbox-installer.sh pi-3-4-5 c"
+  echo "  ./scripts/initbox-installer.sh pi-zero2w p"
+  echo "  ./scripts/initbox-installer.sh pi-zero2w v"
   echo "  ./scripts/initbox-installer.sh pi-zero2w uninstall"
   exit 1
 fi
@@ -40,6 +46,10 @@ DEFAULT_MODULES=""
 PRIMARY_MANAGEMENT_INTERFACE=""
 MODULE_DASHBOARD=""
 INITBOX_STATE_FILE="/etc/initbox/install-state.env"
+
+PACKAGES_FILE="$REPO_ROOT/scripts/packages.txt"
+PACKAGES_LIB_FILE="$REPO_ROOT/scripts/lib/packages.sh"
+PACKAGE_CACHE_DIR="/opt/initbox/packages"
 
 bootstrap_repo_permissions() {
   local path
@@ -69,9 +79,11 @@ bootstrap_repo_permissions() {
   repo_dirs+=("$REPO_ROOT/scripts/pi-3-4-5")
   repo_dirs+=("$REPO_ROOT/profiles")
 
+  readable_files+=("$REPO_ROOT/scripts/packages.txt")
   readable_files+=("$REPO_ROOT/scripts/lib/profile.sh")
   readable_files+=("$REPO_ROOT/scripts/lib/modules.sh")
   readable_files+=("$REPO_ROOT/scripts/lib/state.sh")
+  readable_files+=("$REPO_ROOT/scripts/lib/packages.sh")
   readable_files+=("$REPO_ROOT/profiles/pi-zero2w.conf")
   readable_files+=("$REPO_ROOT/profiles/pi-3-4-5.conf")
   readable_files+=("$REPO_ROOT/profiles/README.md")
@@ -148,14 +160,13 @@ log_line() {
   fi
 }
 
-
 # -----------------------------------------------------------------------------
 # Early privilege and baseline package bootstrap
 # -----------------------------------------------------------------------------
 
 is_system_action() {
   case "$ACTION" in
-    menu|""|u|U|uninstall|remove)
+    menu|""|u|U|uninstall|remove|p|P|preseed|packages|v|V|verify|verify-packages|baseline|upgrade)
       return 0
       ;;
     *)
@@ -260,7 +271,7 @@ run_baseline_apt_update_upgrade() {
   echo
   echo "Baseline package update"
   echo "-----------------------"
-  echo "Running apt-get update before module installation."
+  echo "Running apt-get update."
   log_line "BASELINE_APT_UPDATE_START profile=$PROFILE_ID"
 
   if ! apt-get -o Dpkg::Use-Pty=0 -o Acquire::Retries=5 update 2>&1 | tee -a "$LOG_FILE"; then
@@ -270,7 +281,7 @@ run_baseline_apt_update_upgrade() {
   fi
 
   echo
-  echo "Running apt-get upgrade before module installation."
+  echo "Running apt-get upgrade."
   log_line "BASELINE_APT_UPGRADE_START profile=$PROFILE_ID"
 
   export DEBIAN_FRONTEND=noninteractive
@@ -282,6 +293,106 @@ run_baseline_apt_update_upgrade() {
   fi
 
   log_line "BASELINE_APT_DONE profile=$PROFILE_ID"
+}
+
+load_package_helper() {
+  if [ ! -f "$PACKAGES_LIB_FILE" ]; then
+    echo "ERROR: package helper is missing:"
+    echo "  $PACKAGES_LIB_FILE"
+    echo
+    echo "Create scripts/lib/packages.sh before using package preseed or verification."
+    return 1
+  fi
+
+  # shellcheck disable=SC1090
+  . "$PACKAGES_LIB_FILE"
+}
+
+run_package_preseed() {
+  echo
+  echo "Offline package preseed"
+  echo "-----------------------"
+  echo "Packages file: $PACKAGES_FILE"
+  echo "Cache dir:     $PACKAGE_CACHE_DIR"
+  echo
+
+  if [ "$PROFILE_ID" != "pi-zero2w" ]; then
+    echo "ERROR: package preseed is currently intended for the Pi Zero W / Zero 2W profile."
+    return 1
+  fi
+
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: package preseed must run as root."
+    return 1
+  fi
+
+  if [ ! -f "$PACKAGES_FILE" ]; then
+    echo "ERROR: packages file is missing:"
+    echo "  $PACKAGES_FILE"
+    return 1
+  fi
+
+  load_package_helper
+
+  if ! declare -F initbox_packages_preseed >/dev/null 2>&1; then
+    echo "ERROR: scripts/lib/packages.sh must define initbox_packages_preseed."
+    return 1
+  fi
+
+  log_line "PACKAGE_PRESEED_START profile=$PROFILE_ID packages_file=$PACKAGES_FILE cache_dir=$PACKAGE_CACHE_DIR"
+
+  if initbox_packages_preseed "$PACKAGES_FILE" "$PACKAGE_CACHE_DIR" 2>&1 | tee -a "$LOG_FILE"; then
+    log_line "PACKAGE_PRESEED_DONE profile=$PROFILE_ID packages_file=$PACKAGES_FILE cache_dir=$PACKAGE_CACHE_DIR"
+    echo
+    echo "Package preseed completed."
+    return 0
+  fi
+
+  log_line "PACKAGE_PRESEED_FAILED profile=$PROFILE_ID packages_file=$PACKAGES_FILE cache_dir=$PACKAGE_CACHE_DIR"
+  echo
+  echo "ERROR: package preseed failed. Check log: $LOG_FILE"
+  return 1
+}
+
+run_package_verify() {
+  echo
+  echo "Offline package cache verification"
+  echo "----------------------------------"
+  echo "Packages file: $PACKAGES_FILE"
+  echo "Cache dir:     $PACKAGE_CACHE_DIR"
+  echo
+
+  if [ "$PROFILE_ID" != "pi-zero2w" ]; then
+    echo "ERROR: package cache verification is currently intended for the Pi Zero W / Zero 2W profile."
+    return 1
+  fi
+
+  if [ ! -f "$PACKAGES_FILE" ]; then
+    echo "ERROR: packages file is missing:"
+    echo "  $PACKAGES_FILE"
+    return 1
+  fi
+
+  load_package_helper
+
+  if ! declare -F initbox_packages_verify >/dev/null 2>&1; then
+    echo "ERROR: scripts/lib/packages.sh must define initbox_packages_verify."
+    return 1
+  fi
+
+  log_line "PACKAGE_VERIFY_START profile=$PROFILE_ID packages_file=$PACKAGES_FILE cache_dir=$PACKAGE_CACHE_DIR"
+
+  if initbox_packages_verify "$PACKAGES_FILE" "$PACKAGE_CACHE_DIR" 2>&1 | tee -a "$LOG_FILE"; then
+    log_line "PACKAGE_VERIFY_DONE profile=$PROFILE_ID packages_file=$PACKAGES_FILE cache_dir=$PACKAGE_CACHE_DIR"
+    echo
+    echo "Offline package cache verification passed."
+    return 0
+  fi
+
+  log_line "PACKAGE_VERIFY_FAILED profile=$PROFILE_ID packages_file=$PACKAGES_FILE cache_dir=$PACKAGE_CACHE_DIR"
+  echo
+  echo "ERROR: offline package cache verification failed. Check log: $LOG_FILE"
+  return 1
 }
 
 record_profile_state() {
@@ -377,22 +488,25 @@ print_header() {
   initbox_print_profile_summary
   echo
 
-  echo "Lab setup reminder:"
-  echo "  This installer is intended to run in the lab with Internet access."
-  echo "  Field deployment should happen only after setup and verification."
+  echo "Lab / field package model:"
+  echo "  Lab mode: run package preseed while Internet is available."
+  echo "  Field mode: install modules from the local package cache."
+  echo "  Package list: $PACKAGES_FILE"
+  echo "  Package cache: $PACKAGE_CACHE_DIR"
   echo
 
   if [ "$(id -u)" -ne 0 ]; then
     echo "Root warning:"
     echo "  You are not running as root."
-    echo "  Some module scripts may fail unless you run this installer with sudo."
+    echo "  Package preseed and module scripts may fail unless you run this installer with sudo."
     echo
   fi
 
   if [ "$PROFILE_ID" = "pi-zero2w" ]; then
-    echo "Pi Zero 2W policy:"
+    echo "Pi Zero W / Zero 2W policy:"
     echo "  Dashboard is intentionally disabled for this profile."
     echo "  Use Web Terminal instead."
+    echo "  Module uninstall does not purge shared packages."
     echo
   fi
 }
@@ -435,6 +549,9 @@ print_menu() {
   echo
   echo "Available actions"
   echo "-----------------"
+  echo "  p) Preseed/download package cache"
+  echo "  v) Verify offline package cache"
+  echo "  b) Run baseline apt-get update/upgrade"
 
   if [ "$uninstall_available" = "yes" ]; then
     echo "  u) Uninstall/remove module"
@@ -513,7 +630,7 @@ sanity_check_no_markdown_fences() {
     return 1
   fi
 
-  sanity_pass "file has no error: $path"
+  sanity_pass "file has no Markdown fence error: $path"
   return 0
 }
 
@@ -528,6 +645,60 @@ sanity_check_profile_value() {
 
   sanity_fail "$label is missing"
   return 1
+}
+
+sanity_check_package_file() {
+  local package_count
+
+  if [ ! -f "$PACKAGES_FILE" ]; then
+    sanity_fail "missing package list: scripts/packages.txt"
+    return 1
+  fi
+
+  if [ ! -s "$PACKAGES_FILE" ]; then
+    sanity_fail "package list is empty: scripts/packages.txt"
+    return 1
+  fi
+
+  package_count="$(
+    grep -Ev '^[[:space:]]*($|#)' "$PACKAGES_FILE" | wc -l | tr -d '[:space:]'
+  )"
+
+  if [ "$package_count" -gt 0 ]; then
+    sanity_pass "package list has packages: scripts/packages.txt ($package_count)"
+    return 0
+  fi
+
+  sanity_fail "package list has no active package names: scripts/packages.txt"
+  return 1
+}
+
+sanity_check_package_helper() {
+  if [ ! -f "$PACKAGES_LIB_FILE" ]; then
+    sanity_fail "missing package helper: scripts/lib/packages.sh"
+    return 1
+  fi
+
+  # shellcheck disable=SC1090
+  . "$PACKAGES_LIB_FILE"
+
+  if ! declare -F initbox_packages_preseed >/dev/null 2>&1; then
+    sanity_fail "package helper missing function: initbox_packages_preseed"
+    return 1
+  fi
+
+  if ! declare -F initbox_packages_verify >/dev/null 2>&1; then
+    sanity_fail "package helper missing function: initbox_packages_verify"
+    return 1
+  fi
+
+  if ! declare -F initbox_packages_install >/dev/null 2>&1; then
+    sanity_fail "package helper missing function: initbox_packages_install"
+    return 1
+  fi
+
+  sanity_pass "package helper functions exist: scripts/lib/packages.sh"
+  return 0
 }
 
 sanity_check_module_script() {
@@ -576,6 +747,7 @@ run_shellcheck_if_available() {
   shellcheck_files+=("$REPO_ROOT/scripts/lib/profile.sh")
   shellcheck_files+=("$REPO_ROOT/scripts/lib/modules.sh")
   shellcheck_files+=("$REPO_ROOT/scripts/lib/state.sh")
+  shellcheck_files+=("$REPO_ROOT/scripts/lib/packages.sh")
 
   echo
   echo "ShellCheck"
@@ -620,17 +792,24 @@ run_sanity_checks() {
   sanity_check_file "profiles/pi-zero2w.conf" || failures=$((failures + 1))
   sanity_check_file "profiles/pi-3-4-5.conf" || failures=$((failures + 1))
 
+  sanity_check_file "scripts/packages.txt" || failures=$((failures + 1))
   sanity_check_file "scripts/initbox-installer.sh" || failures=$((failures + 1))
   sanity_check_file "scripts/initbox-status.sh" || failures=$((failures + 1))
   sanity_check_file "scripts/lib/profile.sh" || failures=$((failures + 1))
   sanity_check_file "scripts/lib/modules.sh" || failures=$((failures + 1))
   sanity_check_file "scripts/lib/state.sh" || failures=$((failures + 1))
+  sanity_check_file "scripts/lib/packages.sh" || failures=$((failures + 1))
 
+  sanity_check_no_markdown_fences "scripts/packages.txt" || failures=$((failures + 1))
   sanity_check_no_markdown_fences "scripts/initbox-installer.sh" || failures=$((failures + 1))
   sanity_check_no_markdown_fences "scripts/initbox-status.sh" || failures=$((failures + 1))
   sanity_check_no_markdown_fences "scripts/lib/profile.sh" || failures=$((failures + 1))
   sanity_check_no_markdown_fences "scripts/lib/modules.sh" || failures=$((failures + 1))
   sanity_check_no_markdown_fences "scripts/lib/state.sh" || failures=$((failures + 1))
+  sanity_check_no_markdown_fences "scripts/lib/packages.sh" || failures=$((failures + 1))
+
+  sanity_check_package_file || failures=$((failures + 1))
+  sanity_check_package_helper || failures=$((failures + 1))
 
   echo
   echo "Loaded profile checks"
@@ -643,23 +822,23 @@ run_sanity_checks() {
 
   if [ "$PROFILE_ID" = "pi-zero2w" ]; then
     if [ "${SUPPORTS_DASHBOARD:-}" = "no" ] && [ "${MODULE_DASHBOARD:-}" = "no" ]; then
-      sanity_pass "Pi Zero 2W dashboard is blocked"
+      sanity_pass "Pi Zero W / Zero 2W dashboard is blocked"
     else
-      sanity_fail "Pi Zero 2W dashboard must be blocked"
+      sanity_fail "Pi Zero W / Zero 2W dashboard must be blocked"
       failures=$((failures + 1))
     fi
 
     if initbox_profile_supports_module "dashboard"; then
-      sanity_fail "Pi Zero 2W profile incorrectly supports dashboard"
+      sanity_fail "Pi Zero W / Zero 2W profile incorrectly supports dashboard"
       failures=$((failures + 1))
     else
-      sanity_pass "Pi Zero 2W dashboard does not appear as supported module"
+      sanity_pass "Pi Zero W / Zero 2W dashboard does not appear as supported module"
     fi
 
     if initbox_profile_supports_module "web-terminal"; then
-      sanity_pass "Pi Zero 2W supports Web Terminal"
+      sanity_pass "Pi Zero W / Zero 2W supports Web Terminal"
     else
-      sanity_fail "Pi Zero 2W must support Web Terminal"
+      sanity_fail "Pi Zero W / Zero 2W must support Web Terminal"
       failures=$((failures + 1))
     fi
   fi
@@ -711,16 +890,12 @@ confirm_module_action() {
 
   case "$action" in
     install)
-      echo "This may install packages, modify system configuration, enable services, or require reboot."
-      echo "Only continue if this Pi is in the lab with Internet access."
+      echo "This may install packages from the local package cache, modify system configuration, enable services, or require reboot."
+      echo "Run package preseed first while Internet is available."
       ;;
     uninstall)
-      echo "This will remove services and files created by this module."
-      echo "It will not remove shared packages."
-      ;;
-    purge)
-      echo "This will remove services and files created by this module."
-      echo "It may also remove module-owned binaries or files."
+      echo "This will remove services and configuration created by this module."
+      echo "It will not purge shared packages or the offline package cache."
       ;;
     *)
       echo "This will run module action: $action"
@@ -751,6 +926,9 @@ confirm_run() {
 run_module_install() {
   local module_script="$1"
 
+  INITBOX_REPO_ROOT="$REPO_ROOT" \
+  INITBOX_PACKAGES_FILE="$PACKAGES_FILE" \
+  INITBOX_PACKAGE_CACHE_DIR="$PACKAGE_CACHE_DIR" \
   bash "$module_script"
 }
 
@@ -762,10 +940,16 @@ run_module_action() {
     install)
       run_module_install "$module_script"
       ;;
-    uninstall|remove|purge)
+    uninstall|remove)
+      INITBOX_REPO_ROOT="$REPO_ROOT" \
+      INITBOX_PACKAGES_FILE="$PACKAGES_FILE" \
+      INITBOX_PACKAGE_CACHE_DIR="$PACKAGE_CACHE_DIR" \
       bash "$module_script" "$module_action"
       ;;
     *)
+      INITBOX_REPO_ROOT="$REPO_ROOT" \
+      INITBOX_PACKAGES_FILE="$PACKAGES_FILE" \
+      INITBOX_PACKAGE_CACHE_DIR="$PACKAGE_CACHE_DIR" \
       bash "$module_script" "$module_action"
       ;;
   esac
@@ -794,7 +978,7 @@ run_module_script() {
         install)
           record_module_success_state "$module_id" "$module_name"
           ;;
-        uninstall|remove|purge)
+        uninstall|remove)
           record_module_uninstalled_state "$module_id" "$module_name"
           ;;
       esac
@@ -816,7 +1000,7 @@ run_module_script() {
         install)
           record_module_success_state "$module_id" "$module_name"
           ;;
-        uninstall|remove|purge)
+        uninstall|remove)
           record_module_uninstalled_state "$module_id" "$module_name"
           ;;
       esac
@@ -948,7 +1132,6 @@ handle_uninstall_selection() {
   local module_id
   local module_name
   local module_script
-  local uninstall_action
 
   if ! module_id="$(get_uninstall_module_by_index "$selected_index")"; then
     echo
@@ -988,38 +1171,9 @@ handle_uninstall_selection() {
     return 1
   fi
 
-  echo
-  echo "Uninstall mode"
-  echo "--------------"
-  echo "  1) Uninstall services/config created by this module"
-  echo "  2) Purge module-owned binary/files too"
-  echo "  b) Back"
-  echo
-  printf 'Select uninstall mode [1-2] or b: '
-  read -r uninstall_action
-
-  uninstall_action="${uninstall_action//$'\r'/}"
-
-  case "$uninstall_action" in
-    1)
-      if confirm_module_action "uninstall" "$module_name" "$module_script" "REMOVE"; then
-        run_module_script "$module_id" "$module_name" "$module_script" "uninstall"
-      fi
-      ;;
-    2)
-      if confirm_module_action "purge" "$module_name" "$module_script" "PURGE"; then
-        run_module_script "$module_id" "$module_name" "$module_script" "purge"
-      fi
-      ;;
-    b|B)
-      return 0
-      ;;
-    *)
-      echo
-      echo "Invalid uninstall mode: $uninstall_action"
-      return 1
-      ;;
-  esac
+  if confirm_module_action "uninstall" "$module_name" "$module_script" "REMOVE"; then
+    run_module_script "$module_id" "$module_name" "$module_script" "uninstall"
+  fi
 }
 
 handle_uninstall_menu() {
@@ -1072,7 +1226,7 @@ interactive_menu() {
 
     max_choice="${#SUPPORTED_MODULES[@]}"
 
-    printf 'Select install module [1-%s], u to uninstall, c for checks, l for log, s for state, or q: ' "$max_choice"
+    printf 'Select install module [1-%s], p preseed, v verify, b baseline, u uninstall, c checks, l log, s state, or q: ' "$max_choice"
     read -r choice
 
     choice="${choice//$'\r'/}"
@@ -1082,6 +1236,18 @@ interactive_menu() {
         echo "Quit."
         log_line "INSTALLER_CLOSED profile=$PROFILE_ID"
         exit 0
+        ;;
+      p|P)
+        run_package_preseed || true
+        pause
+        ;;
+      v|V)
+        run_package_verify || true
+        pause
+        ;;
+      b|B)
+        run_baseline_apt_update_upgrade || true
+        pause
         ;;
       u|U)
         handle_uninstall_menu || true
@@ -1123,16 +1289,10 @@ main() {
   require_root_for_system_action
   ensure_passwordless_sudo
 
-  case "$ACTION" in
-    menu|"")
-      run_baseline_apt_update_upgrade
-      ;;
-  esac
-
   build_supported_module_list
   record_profile_state
 
-  log_line "INSTALLER_OPENED profile=$PROFILE_ID"
+  log_line "INSTALLER_OPENED profile=$PROFILE_ID action=$ACTION"
 
   if [ "${#SUPPORTED_MODULES[@]}" -eq 0 ]; then
     echo "ERROR: no supported modules found for profile '$PROFILE_ID'."
@@ -1143,6 +1303,15 @@ main() {
   case "$ACTION" in
     menu|"")
       interactive_menu
+      ;;
+    p|P|preseed|packages)
+      run_package_preseed
+      ;;
+    v|V|verify|verify-packages)
+      run_package_verify
+      ;;
+    baseline|upgrade)
+      run_baseline_apt_update_upgrade
       ;;
     u|U|uninstall|remove)
       handle_uninstall_menu
@@ -1164,6 +1333,8 @@ main() {
       echo "  ./scripts/initbox-installer.sh pi-3-4-5"
       echo "  ./scripts/initbox-installer.sh pi-zero2w c"
       echo "  ./scripts/initbox-installer.sh pi-3-4-5 c"
+      echo "  ./scripts/initbox-installer.sh pi-zero2w p"
+      echo "  ./scripts/initbox-installer.sh pi-zero2w v"
       echo "  ./scripts/initbox-installer.sh pi-zero2w uninstall"
       exit 1
       ;;
