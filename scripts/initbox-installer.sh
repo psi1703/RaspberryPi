@@ -12,7 +12,7 @@
 #     module scripts are wired to scripts/lib/packages.sh.
 #
 # Menu:
-#   - install supported modules
+#   - install or uninstall supported modules
 #   - run sanity checks
 #   - prepare package cache
 #   - show package cache status
@@ -175,6 +175,17 @@ record_module_success_state() {
 
   if declare -F initbox_state_record_module_success >/dev/null 2>&1; then
     initbox_state_record_module_success "$module_id" "$module_name" || true
+  fi
+}
+
+record_module_uninstalled_state() {
+  local module_id="$1"
+  local module_name="$2"
+
+  record_module_state "$module_id" "uninstalled"
+
+  if declare -F initbox_state_record_module_uninstalled >/dev/null 2>&1; then
+    initbox_state_record_module_uninstalled "$module_id" "$module_name" || true
   fi
 }
 
@@ -675,6 +686,8 @@ print_module_menu() {
 
   echo "Supported modules"
   echo "-----------------"
+  echo "Select a module, then choose install or uninstall."
+  echo
 
   while IFS= read -r module_id; do
     [ -z "$module_id" ] && continue
@@ -725,7 +738,7 @@ module_by_index() {
   return 1
 }
 
-confirm_run() {
+select_module_action() {
   local module_id="$1"
   local module_name="$2"
   local reply=""
@@ -734,7 +747,45 @@ confirm_run() {
   echo "Selected module:"
   echo "  ${module_id} (${module_name})"
   echo
-  echo "Type RUN to execute this module."
+  echo "Choose action:"
+  echo "  1) Install / update"
+  echo "  2) Uninstall"
+  echo "  3) Cancel"
+  echo
+
+  if [ -e /dev/tty ]; then
+    read -r -p "Action: " reply </dev/tty || reply=""
+  else
+    read -r -p "Action: " reply || reply=""
+  fi
+
+  case "$reply" in
+    1|i|I|install|INSTALL)
+      echo "install"
+      ;;
+    2|u|U|uninstall|UNINSTALL|remove|REMOVE)
+      echo "uninstall"
+      ;;
+    *)
+      echo "cancel"
+      ;;
+  esac
+}
+
+confirm_run() {
+  local module_id="$1"
+  local module_name="$2"
+  local module_action="$3"
+  local reply=""
+
+  echo
+  echo "Selected module:"
+  echo "  ${module_id} (${module_name})"
+  echo
+  echo "Selected action:"
+  echo "  ${module_action}"
+  echo
+  echo "Type RUN to execute this action."
   echo "Anything else cancels."
   echo
 
@@ -751,6 +802,7 @@ run_module() {
   local module_id="$1"
   local module_name=""
   local script_path=""
+  local module_action=""
 
   module_name="$(module_display_name "$module_id")"
 
@@ -764,21 +816,41 @@ run_module() {
     return 1
   fi
 
-  if ! confirm_run "$module_id" "$module_name"; then
-    warn "Cancelled module: $module_id"
+  module_action="$(select_module_action "$module_id" "$module_name")"
+
+  case "$module_action" in
+    install|uninstall)
+      ;;
+    *)
+      warn "Cancelled module: $module_id"
+      return 0
+      ;;
+  esac
+
+  if ! confirm_run "$module_id" "$module_name" "$module_action"; then
+    warn "Cancelled ${module_action}: $module_id"
     return 0
   fi
 
-  log "Starting module: ${module_id} (${module_name})"
-  record_module_state "$module_id" "started"
+  log "Starting module action: ${module_id} (${module_name}) -> ${module_action}"
+  record_module_state "$module_id" "${module_action}_started"
 
-  if bash "$script_path" install; then
-    ok "Module completed: ${module_id}"
-    record_module_success_state "$module_id" "$module_name"
+  if bash "$script_path" "$module_action"; then
+    ok "Module action completed: ${module_id} -> ${module_action}"
+
+    case "$module_action" in
+      install)
+        record_module_success_state "$module_id" "$module_name"
+        ;;
+      uninstall)
+        record_module_uninstalled_state "$module_id" "$module_name"
+        ;;
+    esac
+
     return 0
   fi
 
-  err "Module failed: ${module_id}"
+  err "Module action failed: ${module_id} -> ${module_action}"
   record_module_failure_state "$module_id" "$module_name"
   return 1
 }
@@ -893,6 +965,12 @@ Usage:
 
 Profile:
   pi-3-4-5 only
+
+Menu:
+  Select a module number, then choose:
+    1   Install / update
+    2   Uninstall
+    3   Cancel
 
 Actions:
   c   Run sanity checks
