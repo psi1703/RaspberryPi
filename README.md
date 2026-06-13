@@ -167,17 +167,6 @@ Raspberry Pi 4
 Raspberry Pi 5
 ```
 
-This branch is not intended for:
-
-```text
-Raspberry Pi Zero W
-Raspberry Pi Zero 2W
-```
-
-Pi Zero work belongs in the separate `pi-zero-W-2W` branch.
-
----
-
 ## Feature Summary
 
 The Pi 3 / 4 / 5 branch supports:
@@ -231,13 +220,6 @@ scripts/
     module-isi.sh
     module-rtc.sh
     module-ws-br0.sh
-```
-
-This branch should not contain:
-
-```text
-profiles/pi-zero2w.conf
-scripts/pi-zero2w/
 ```
 
 ---
