@@ -71,6 +71,10 @@ MODS_FILE="${MODS_FILE:-/etc/initbox-mods.conf}"
 TTYD_PORT="${TTYD_PORT:-7681}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-1880}"
 HOTSPOT_IFACE="${HOTSPOT_IFACE:-wlan0}"
+HOTSPOT_IP="${HOTSPOT_IP:-192.168.20.1}"
+CAPTIVE_DNSMASQ_FILE="${CAPTIVE_DNSMASQ_FILE:-/etc/dnsmasq.d/initbox-hotspot.conf}"
+PORTAL_SCRIPT="/usr/local/bin/initbox-dashboard-portal.py"
+PORTAL_SERVICE="/etc/systemd/system/portal.service"
 
 NODE_RED_USER_DIR="/home/${OWNER}/.node-red"
 NODE_RED_LOCAL_BIN="${NODE_RED_USER_DIR}/node_modules/.bin/node-red"
@@ -779,24 +783,148 @@ EOF
 }
 
 install_portal() {
-  log "Writing /usr/local/bin/portal.sh."
+  log "Installing dashboard captive portal landing service."
 
-  cat >/usr/local/bin/portal.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
+  if [ -f "$CAPTIVE_DNSMASQ_FILE" ]; then
+    log "Updating captive portal DNS entries in ${CAPTIVE_DNSMASQ_FILE}."
 
-IFACE="${1:-wlan0}"
-DASHBOARD_PORT="${DASHBOARD_PORT:-1880}"
+    if grep -q '### START INITBOX DASHBOARD CAPTIVE DNS ###' "$CAPTIVE_DNSMASQ_FILE"; then
+      tmp_file="$(mktemp)"
+      awk '
+        /### START INITBOX DASHBOARD CAPTIVE DNS ###/ { skip = 1; next }
+        /### END INITBOX DASHBOARD CAPTIVE DNS ###/ { skip = 0; next }
+        skip == 0 { print }
+      ' "$CAPTIVE_DNSMASQ_FILE" >"$tmp_file"
+      install -m 0644 "$tmp_file" "$CAPTIVE_DNSMASQ_FILE"
+      rm -f "$tmp_file"
+    fi
 
-if ! iptables -t nat -C PREROUTING -i "$IFACE" -p tcp --dport 80 \
-  -j REDIRECT --to-ports "$DASHBOARD_PORT" 2>/dev/null; then
-  iptables -t nat -A PREROUTING -i "$IFACE" -p tcp --dport 80 \
-    -j REDIRECT --to-ports "$DASHBOARD_PORT"
-fi
+    cat >>"$CAPTIVE_DNSMASQ_FILE" <<EOF
+
+### START INITBOX DASHBOARD CAPTIVE DNS ###
+# InitBox dashboard captive portal names.
+# These names are used by Windows, Android, Apple, and generic browsers
+# to detect captive portals. They intentionally resolve to the InitBox
+# hotspot IP so the user lands on the local dashboard instead of MSN,
+# Google, Apple, or an external Internet check page.
+address=/initbox.wlan/${HOTSPOT_IP}
+address=/msftconnecttest.com/${HOTSPOT_IP}
+address=/www.msftconnecttest.com/${HOTSPOT_IP}
+address=/msftncsi.com/${HOTSPOT_IP}
+address=/www.msftncsi.com/${HOTSPOT_IP}
+address=/connectivitycheck.gstatic.com/${HOTSPOT_IP}
+address=/clients3.google.com/${HOTSPOT_IP}
+address=/captive.apple.com/${HOTSPOT_IP}
+address=/neverssl.com/${HOTSPOT_IP}
+address=/www.neverssl.com/${HOTSPOT_IP}
+### END INITBOX DASHBOARD CAPTIVE DNS ###
 EOF
 
-  chmod 755 /usr/local/bin/portal.sh
-  chown root:root /usr/local/bin/portal.sh || true
+    if command -v dnsmasq >/dev/null 2>&1; then
+      if dnsmasq --test >>"$LOGFILE" 2>&1; then
+        systemctl restart dnsmasq 2>/dev/null || warn "dnsmasq restart failed."
+      else
+        warn "dnsmasq config test failed after captive DNS update. Leaving dnsmasq unchanged."
+      fi
+    fi
+  else
+    warn "dnsmasq hotspot config not found: ${CAPTIVE_DNSMASQ_FILE}"
+    warn "Captive DNS entries were not written. Install hotspot module first if DNS redirection is required."
+  fi
+
+  log "Writing ${PORTAL_SCRIPT}."
+
+  cat >"$PORTAL_SCRIPT" <<EOF
+#!/usr/bin/env python3
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+HOTSPOT_IP = "${HOTSPOT_IP}"
+DASHBOARD_PORT = "${DASHBOARD_PORT}"
+DASHBOARD_URL = f"http://{HOTSPOT_IP}:{DASHBOARD_PORT}/ui"
+
+
+class InitBoxPortalHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        return
+
+    def _send_landing(self):
+        body = f"""<!doctype html>
+<html>
+  <head>
+    <meta charset=\"utf-8\">
+    <meta http-equiv=\"refresh\" content=\"0; url={DASHBOARD_URL}\">
+    <title>InitBox Dashboard</title>
+    <style>
+      body {{
+        font-family: Arial, sans-serif;
+        margin: 2rem;
+        background: #111827;
+        color: #f9fafb;
+      }}
+      a {{
+        color: #93c5fd;
+        font-size: 1.1rem;
+      }}
+      .card {{
+        max-width: 520px;
+        padding: 1.5rem;
+        border-radius: 12px;
+        background: #1f2937;
+      }}
+    </style>
+  </head>
+  <body>
+    <div class=\"card\">
+      <h1>InitBox Dashboard</h1>
+      <p>Opening the dashboard UI...</p>
+      <p><a href=\"{DASHBOARD_URL}\">Open InitBox Dashboard</a></p>
+    </div>
+  </body>
+</html>
+"""
+        encoded = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _redirect_to_dashboard(self):
+        self.send_response(302)
+        self.send_header("Location", DASHBOARD_URL)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def do_GET(self):
+        self._send_landing()
+
+    def do_HEAD(self):
+        self._redirect_to_dashboard()
+
+    def do_POST(self):
+        self._redirect_to_dashboard()
+
+
+def main():
+    server = ThreadingHTTPServer(("0.0.0.0", 80), InitBoxPortalHandler)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
+EOF
+
+  chmod 755 "$PORTAL_SCRIPT"
+  chown root:root "$PORTAL_SCRIPT" 2>/dev/null || true
+
+  log "Removing old iptables captive redirect rule if present."
+
+  while iptables -t nat -C PREROUTING -i "$HOTSPOT_IFACE" -p tcp --dport 80 \
+    -j REDIRECT --to-ports "$DASHBOARD_PORT" 2>/dev/null; do
+    iptables -t nat -D PREROUTING -i "$HOTSPOT_IFACE" -p tcp --dport 80 \
+      -j REDIRECT --to-ports "$DASHBOARD_PORT" 2>/dev/null || break
+  done
 }
 
 install_pi_stats() {
@@ -907,18 +1035,17 @@ EOF
 
   log "Installing portal.service."
 
-  cat >/etc/systemd/system/portal.service <<EOF
+  cat >"$PORTAL_SERVICE" <<EOF
 [Unit]
-Description=InitBox captive portal redirect (${HOTSPOT_IFACE}:80 -> ${DASHBOARD_PORT})
-After=network-online.target
-Wants=network-online.target
+Description=InitBox dashboard captive portal landing page
+After=network-online.target pi-nodered.service
+Wants=network-online.target pi-nodered.service
 
 [Service]
-Type=oneshot
-ExecStart=/usr/local/bin/portal.sh ${HOTSPOT_IFACE}
-RemainAfterExit=yes
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+Type=simple
+ExecStart=${PORTAL_SCRIPT}
+Restart=on-failure
+RestartSec=3
 StandardOutput=journal
 StandardError=journal
 
@@ -975,6 +1102,7 @@ install_module() {
   enable_and_start_services
 
   ok "Dashboard module installed."
+  ok "Dashboard landing page: http://initbox.wlan/"
   ok "Node-RED dashboard: http://initbox.wlan:${DASHBOARD_PORT}/ui"
   ok "Web terminal: http://initbox.wlan:${TTYD_PORT}"
   ok "Role file: ${ROLE_FILE}"
@@ -1012,6 +1140,7 @@ uninstall_module() {
   rm -f /etc/systemd/system/nodered.service
 
   rm -f /usr/local/bin/portal.sh
+  rm -f "$PORTAL_SCRIPT"
   rm -f /usr/local/bin/pi-servsync.sh
   rm -f /usr/local/bin/pi-rolectl.sh
   rm -f /usr/local/bin/pi-stats.sh
