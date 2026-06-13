@@ -17,6 +17,12 @@
 #   - Dashboard/Node-RED owns /etc/pi_roles.conf.
 #   - fms.py sends CAN frames only when the role file contains: fms
 #
+# Dashboard module availability model:
+#   - This module sets FMS=1 after install.
+#   - This module sets FMS=0 after uninstall/purge.
+#   - If pi-nodered.service exists, it is restarted after the flag update
+#     so the dashboard UI reloads module availability immediately.
+#
 # Actions:
 #   install    Install/update FMS service and helper files
 #   uninstall  Disable/remove FMS service and helper files created by this module
@@ -40,6 +46,9 @@ ROLE_FILE="${ROLE_FILE:-/etc/pi_roles.conf}"
 FMS_SCRIPT="/usr/local/bin/fms.py"
 FMS_SERVICE="/etc/systemd/system/fms.service"
 TRC_FILE="/usr/local/bin/CAN.trc"
+
+DASHBOARD_FLAGS_FILE="${DASHBOARD_FLAGS_FILE:-}"
+NODERED_SERVICE="${NODERED_SERVICE:-pi-nodered.service}"
 
 ts() {
   date +"%Y-%m-%d %H:%M:%S"
@@ -134,6 +143,126 @@ EOF
     chmod 664 "$ROLE_FILE" || true
     chown root:"$OWNER" "$ROLE_FILE" 2>/dev/null || true
   fi
+}
+
+dashboard_flags_file_path() {
+  local candidate=""
+
+  if [ -n "$DASHBOARD_FLAGS_FILE" ]; then
+    printf '%s\n' "$DASHBOARD_FLAGS_FILE"
+    return 0
+  fi
+
+  for candidate in \
+    /etc/initbox/dashboard-modules.env \
+    /etc/initbox/dashboard-flags.env \
+    /etc/pi-dashboard-modules.env \
+    /etc/pi_dashboard_modules.conf; do
+    if [ -f "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  printf '%s\n' "/etc/initbox/dashboard-modules.env"
+}
+
+ensure_dashboard_flags_file() {
+  local flags_file=""
+  local flags_dir=""
+
+  flags_file="$(dashboard_flags_file_path)"
+  flags_dir="$(dirname "$flags_file")"
+
+  mkdir -p "$flags_dir"
+
+  if [ ! -f "$flags_file" ]; then
+    log "Creating dashboard module flags file: ${flags_file}"
+
+    cat >"$flags_file" <<'EOF'
+# InitBox dashboard module availability flags
+# 1 means the module/control is available in the dashboard.
+# 0 means hide or disable the related dashboard control.
+FMS=0
+WSBR0=0
+RTC=0
+HOTSPOT=1
+DASHBOARD=1
+ISI=0
+EOF
+  fi
+
+  chmod 664 "$flags_file" || true
+  chown root:"$OWNER" "$flags_file" 2>/dev/null || true
+}
+
+write_dashboard_module_flag() {
+  local key="$1"
+  local value="$2"
+  local flags_file=""
+  local tmp_file=""
+
+  ensure_dashboard_flags_file
+  flags_file="$(dashboard_flags_file_path)"
+  tmp_file="$(mktemp)"
+
+  awk -v key="$key" -v value="$value" '
+    BEGIN {
+      found = 0
+    }
+
+    $0 ~ "^" key "=" {
+      print key "=" value
+      found = 1
+      next
+    }
+
+    {
+      print
+    }
+
+    END {
+      if (found == 0) {
+        print key "=" value
+      }
+    }
+  ' "$flags_file" >"$tmp_file"
+
+  install -m 0664 "$tmp_file" "$flags_file"
+  rm -f "$tmp_file"
+
+  chown root:"$OWNER" "$flags_file" 2>/dev/null || true
+
+  log "Dashboard module flag updated: ${key}=${value} in ${flags_file}"
+}
+
+restart_dashboard_if_present() {
+  if ! systemctl cat "$NODERED_SERVICE" >/dev/null 2>&1; then
+    log "Dashboard Node-RED service not installed; no restart needed."
+    return 0
+  fi
+
+  if systemctl is-active "$NODERED_SERVICE" >/dev/null 2>&1; then
+    log "Restarting ${NODERED_SERVICE} so dashboard UI reloads module flags."
+    if systemctl restart "$NODERED_SERVICE"; then
+      ok "${NODERED_SERVICE} restarted."
+    else
+      warn "Failed to restart ${NODERED_SERVICE}."
+    fi
+    return 0
+  fi
+
+  if systemctl is-enabled "$NODERED_SERVICE" >/dev/null 2>&1; then
+    log "${NODERED_SERVICE} exists but is not active; starting it so dashboard UI reloads module flags."
+    if systemctl restart "$NODERED_SERVICE"; then
+      ok "${NODERED_SERVICE} started."
+    else
+      warn "Failed to start ${NODERED_SERVICE}."
+    fi
+    return 0
+  fi
+
+  log "${NODERED_SERVICE} exists but is disabled/inactive; no dashboard restart needed."
 }
 
 patch_mcp2515_overlay() {
@@ -481,7 +610,11 @@ install_module() {
   write_service
   enable_service
 
+  write_dashboard_module_flag "FMS" "1"
+  restart_dashboard_if_present
+
   ok "FMS module installed."
+  ok "Dashboard availability flag set: FMS=1"
   ok "Dashboard role file controls startup: ${ROLE_FILE}"
   ok "Enable role with dashboard or set: ROLES=\"fms\""
   warn "If MCP2515 overlay was just added, reboot once so can0 exists."
@@ -501,7 +634,11 @@ uninstall_module() {
 
   systemctl daemon-reload
 
+  write_dashboard_module_flag "FMS" "0"
+  restart_dashboard_if_present
+
   ok "FMS service and helper script removed."
+  ok "Dashboard availability flag set: FMS=0"
   warn "Installed packages were left in place intentionally."
   warn "CAN overlay configuration was left in place intentionally."
   warn "CAN trace file was left in place intentionally: ${TRC_FILE}"
@@ -531,6 +668,13 @@ Role control:
 
   FMS sends frames only when the role file includes:
     fms
+
+Dashboard availability:
+  This module sets:
+    FMS=1 on install
+    FMS=0 on uninstall/purge
+
+  If ${NODERED_SERVICE} exists, it is restarted after the flag update.
 
 CAN trace:
   ${TRC_FILE}
