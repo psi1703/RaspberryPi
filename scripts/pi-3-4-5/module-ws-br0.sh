@@ -17,6 +17,12 @@
 #   - Capture starts only when /etc/pi_roles.conf contains a sniffing role.
 #   - Accepted sniff roles: sniff, wireshark, sniffer, sniffer-bridge.
 #
+# Dashboard module availability model:
+#   - This module sets WSBR0=1 after install.
+#   - This module sets WSBR0=0 after uninstall/purge.
+#   - If pi-nodered.service exists, it is restarted after the flag update
+#     so the dashboard UI reloads module availability immediately.
+#
 # Actions:
 #   install    Install/update services and helper scripts
 #   uninstall  Disable/remove services and helper scripts created by this module
@@ -45,6 +51,9 @@ BRIDGE_SCRIPT="/usr/local/bin/bridge-check.sh"
 
 WIRESHARK_SERVICE="/etc/systemd/system/wireshark-autostart.service"
 BRIDGE_SERVICE="/etc/systemd/system/bridge-check.service"
+
+DASHBOARD_FLAGS_FILE="${DASHBOARD_FLAGS_FILE:-}"
+NODERED_SERVICE="${NODERED_SERVICE:-pi-nodered.service}"
 
 ts() {
   date +"%Y-%m-%d %H:%M:%S"
@@ -122,6 +131,126 @@ install_packages() {
     log "Reconfiguring wireshark-common non-interactively."
     DEBIAN_FRONTEND=noninteractive dpkg-reconfigure wireshark-common >>"$LOGFILE" 2>&1 || true
   fi
+}
+
+dashboard_flags_file_path() {
+  local candidate=""
+
+  if [ -n "$DASHBOARD_FLAGS_FILE" ]; then
+    printf '%s\n' "$DASHBOARD_FLAGS_FILE"
+    return 0
+  fi
+
+  for candidate in \
+    /etc/initbox/dashboard-modules.env \
+    /etc/initbox/dashboard-flags.env \
+    /etc/pi-dashboard-modules.env \
+    /etc/pi_dashboard_modules.conf; do
+    if [ -f "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  printf '%s\n' "/etc/initbox/dashboard-modules.env"
+}
+
+ensure_dashboard_flags_file() {
+  local flags_file=""
+  local flags_dir=""
+
+  flags_file="$(dashboard_flags_file_path)"
+  flags_dir="$(dirname "$flags_file")"
+
+  mkdir -p "$flags_dir"
+
+  if [ ! -f "$flags_file" ]; then
+    log "Creating dashboard module flags file: ${flags_file}"
+
+    cat >"$flags_file" <<'EOF'
+# InitBox dashboard module availability flags
+# 1 means the module/control is available in the dashboard.
+# 0 means hide or disable the related dashboard control.
+FMS=0
+WSBR0=0
+RTC=0
+HOTSPOT=1
+DASHBOARD=1
+ISI=0
+EOF
+  fi
+
+  chmod 664 "$flags_file" || true
+  chown root:"$OWNER" "$flags_file" 2>/dev/null || true
+}
+
+write_dashboard_module_flag() {
+  local key="$1"
+  local value="$2"
+  local flags_file=""
+  local tmp_file=""
+
+  ensure_dashboard_flags_file
+  flags_file="$(dashboard_flags_file_path)"
+  tmp_file="$(mktemp)"
+
+  awk -v key="$key" -v value="$value" '
+    BEGIN {
+      found = 0
+    }
+
+    $0 ~ "^" key "=" {
+      print key "=" value
+      found = 1
+      next
+    }
+
+    {
+      print
+    }
+
+    END {
+      if (found == 0) {
+        print key "=" value
+      }
+    }
+  ' "$flags_file" >"$tmp_file"
+
+  install -m 0664 "$tmp_file" "$flags_file"
+  rm -f "$tmp_file"
+
+  chown root:"$OWNER" "$flags_file" 2>/dev/null || true
+
+  log "Dashboard module flag updated: ${key}=${value} in ${flags_file}"
+}
+
+restart_dashboard_if_present() {
+  if ! systemctl cat "$NODERED_SERVICE" >/dev/null 2>&1; then
+    log "Dashboard Node-RED service not installed; no restart needed."
+    return 0
+  fi
+
+  if systemctl is-active "$NODERED_SERVICE" >/dev/null 2>&1; then
+    log "Restarting ${NODERED_SERVICE} so dashboard UI reloads module flags."
+    if systemctl restart "$NODERED_SERVICE"; then
+      ok "${NODERED_SERVICE} restarted."
+    else
+      warn "Failed to restart ${NODERED_SERVICE}."
+    fi
+    return 0
+  fi
+
+  if systemctl is-enabled "$NODERED_SERVICE" >/dev/null 2>&1; then
+    log "${NODERED_SERVICE} exists but is not active; starting it so dashboard UI reloads module flags."
+    if systemctl restart "$NODERED_SERVICE"; then
+      ok "${NODERED_SERVICE} started."
+    else
+      warn "Failed to start ${NODERED_SERVICE}."
+    fi
+    return 0
+  fi
+
+  log "${NODERED_SERVICE} exists but is disabled/inactive; no dashboard restart needed."
 }
 
 ensure_groups_and_permissions() {
@@ -592,7 +721,11 @@ install_module() {
   write_services
   enable_and_start_services
 
+  write_dashboard_module_flag "WSBR0" "1"
+  restart_dashboard_if_present
+
   ok "Sniffer bridge module installed. Captures go to ${TRACE_DIR}."
+  ok "Dashboard availability flag set: WSBR0=1"
   ok "Dashboard role file controls capture startup: /etc/pi_roles.conf"
   ok "Use sudo ${LOG_PREP_SCRIPT} to zip and clear capture files."
 }
@@ -621,7 +754,11 @@ uninstall_module() {
     ip link del br0 type bridge 2>/dev/null || true
   fi
 
+  write_dashboard_module_flag "WSBR0" "0"
+  restart_dashboard_if_present
+
   ok "Sniffer bridge services and helper scripts removed."
+  ok "Dashboard availability flag set: WSBR0=0"
   warn "Installed packages were left in place intentionally."
   warn "Capture files in ${TRACE_DIR} were left in place intentionally."
 }
@@ -655,6 +792,13 @@ Role control:
   Bridge starts when roles include:
     isi
     or one of the sniff roles above
+
+Dashboard availability:
+  This module sets:
+    WSBR0=1 on install
+    WSBR0=0 on uninstall/purge
+
+  If ${NODERED_SERVICE} exists, it is restarted after the flag update.
 EOF
 }
 
