@@ -15,7 +15,9 @@
 #   - Without Internet: installs Debian packages from local cache only.
 #   - ttyd is built once, installed, and cached locally for future reruns.
 #   - Node-RED installer script is downloaded once and cached locally.
-#   - If Node-RED and node-red-dashboard are already installed, offline reruns reuse them.
+#   - Node.js and npm are owned by the official Node-RED installer, not by Debian apt cache.
+#   - If Node-RED and node-red-dashboard are already installed with a supported Node.js,
+#     offline reruns reuse them.
 #
 # Pi 3 / 4 / 5 role model:
 #   - Dashboard/Node-RED owns /etc/pi_roles.conf.
@@ -41,8 +43,11 @@ PACKAGES_HELPER="$REPO_ROOT/scripts/lib/packages.sh"
 INITBOX_PACKAGE_CACHE_DIR="${INITBOX_PACKAGE_CACHE_DIR:-/opt/initbox-package-cache}"
 DASHBOARD_CACHE_DIR="${DASHBOARD_CACHE_DIR:-${INITBOX_PACKAGE_CACHE_DIR}/dashboard}"
 TTYD_CACHE_BIN="${TTYD_CACHE_BIN:-${DASHBOARD_CACHE_DIR}/ttyd}"
-NODE_RED_INSTALLER_CACHE="${NODE_RED_INSTALLER_CACHE:-${DASHBOARD_CACHE_DIR}/update-nodejs-and-nodered-deb.sh}"
-NODE_RED_INSTALLER_URL="${NODE_RED_INSTALLER_URL:-https://raw.githubusercontent.com/node-red/linux-installers/master/deb/update-nodejs-and-nodered}"
+NODE_RED_INSTALLER_CACHE="${NODE_RED_INSTALLER_CACHE:-${DASHBOARD_CACHE_DIR}/install-update-nodered-deb.sh}"
+NODE_RED_INSTALLER_URL="${NODE_RED_INSTALLER_URL:-https://github.com/node-red/linux-installers/releases/latest/download/install-update-nodered-deb}"
+NODE_RED_INSTALLER_FALLBACK_URL="${NODE_RED_INSTALLER_FALLBACK_URL:-https://raw.githubusercontent.com/node-red/linux-installers/master/deb/update-nodejs-and-nodered}"
+
+MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-22}"
 
 LOG_DIR="/home/${OWNER}/pi_logs"
 LOGFILE="${LOGFILE:-${LOG_DIR}/initbox-install.log}"
@@ -124,9 +129,7 @@ install_base_packages() {
     cmake \
     libjson-c-dev \
     libwebsockets-dev \
-    iptables \
-    nodejs \
-    npm 2>&1 | tee -a "$LOGFILE"; then
+    iptables 2>&1 | tee -a "$LOGFILE"; then
     err "Base dashboard package installation failed."
     err "If this Pi is offline, prepare the package cache first with:"
     err "  sudo ./scripts/initbox-installer.sh pi-3-4-5 p"
@@ -255,6 +258,47 @@ node_red_is_installed() {
   command -v node-red >/dev/null 2>&1
 }
 
+node_major_version() {
+  local version=""
+
+  if ! command -v node >/dev/null 2>&1; then
+    echo 0
+    return 0
+  fi
+
+  version="$(node -v 2>/dev/null || true)"
+  version="${version#v}"
+  version="${version%%.*}"
+
+  if [[ "$version" =~ ^[0-9]+$ ]]; then
+    echo "$version"
+  else
+    echo 0
+  fi
+}
+
+node_version_is_supported() {
+  local major=""
+
+  major="$(node_major_version)"
+
+  [ "$major" -ge "$MIN_NODE_MAJOR" ]
+}
+
+node_red_needs_installer() {
+  if ! node_red_is_installed; then
+    return 0
+  fi
+
+  if ! node_version_is_supported; then
+    warn "Installed Node.js is too old for current Node-RED: $(node -v 2>/dev/null || echo missing)"
+    warn "Node.js must be major version ${MIN_NODE_MAJOR} or newer."
+    return 0
+  fi
+
+  return 1
+}
+
 node_red_dashboard_is_installed() {
   local nr_dir="/home/${OWNER}/.node-red"
 
@@ -285,7 +329,7 @@ download_node_red_installer_once() {
 
   for url in \
     "$NODE_RED_INSTALLER_URL" \
-    "https://raw.githubusercontent.com/node-red/linux-installers/master/deb/update-nodejs-and-nodered"; do
+    "$NODE_RED_INSTALLER_FALLBACK_URL"; do
     log "Trying Node-RED installer URL: ${url}"
 
     if curl -fsSL "$url" -o "$NODE_RED_INSTALLER_CACHE"; then
@@ -311,6 +355,12 @@ run_node_red_installer() {
   if ! have_internet && ! node_red_is_installed; then
     err "Node-RED is not installed and Internet is unavailable."
     err "Run this module once in the lab with Internet so Node-RED is installed and retained."
+    return 1
+  fi
+
+  if ! have_internet && ! node_version_is_supported; then
+    err "Node.js is too old and Internet is unavailable."
+    err "Reconnect in the lab and rerun dashboard so the official Node-RED installer can upgrade Node.js."
     return 1
   fi
 
@@ -371,17 +421,28 @@ EOS
 install_nodered() {
   log "Installing or reusing Node-RED."
 
-  if node_red_is_installed; then
-    log "Node-RED already installed: $(node-red --version 2>&1 | head -n 1)"
-  else
+  if node_red_needs_installer; then
     download_node_red_installer_once
     run_node_red_installer
+  else
+    log "Node-RED already installed with supported Node.js."
+    log "Node.js: $(node -v 2>/dev/null || echo unknown)"
+    log "Node-RED: $(node-red --version 2>&1 | head -n 1)"
   fi
 
   if ! node_red_is_installed; then
     err "node-red command not found after install/reuse step."
     return 1
   fi
+
+  if ! node_version_is_supported; then
+    err "Node.js is still too old after Node-RED installer: $(node -v 2>/dev/null || echo missing)"
+    err "Expected Node.js major version ${MIN_NODE_MAJOR} or newer."
+    return 1
+  fi
+
+  log "Node.js after install/reuse: $(node -v 2>/dev/null || echo unknown)"
+  log "Node-RED after install/reuse: $(node-red --version 2>&1 | head -n 1)"
 
   if systemctl list-unit-files | grep -q '^nodered\.service'; then
     log "Disabling upstream nodered.service; InitBox uses pi-nodered.service."
@@ -487,7 +548,8 @@ Type=simple
 User=${OWNER}
 Group=${OWNER}
 WorkingDirectory=/home/${OWNER}
-ExecStart=/usr/bin/env node-red --max-old-space-size=128
+Environment=NODE_OPTIONS=--max-old-space-size=128
+ExecStart=/bin/bash -lc 'exec node-red'
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -882,6 +944,9 @@ Dashboard asset cache:
 Cached assets:
   ${TTYD_CACHE_BIN}
   ${NODE_RED_INSTALLER_CACHE}
+
+Node-RED note:
+  Node.js and npm are managed by the official Node-RED installer.
 
 Role file:
   ${ROLE_FILE}
