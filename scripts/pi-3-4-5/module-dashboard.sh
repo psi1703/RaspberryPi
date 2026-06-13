@@ -19,6 +19,12 @@
 #   - If Node-RED and node-red-dashboard are already installed with a supported Node.js,
 #     offline reruns reuse them.
 #
+# Node-RED model:
+#   - The module itself is run as root because it writes systemd units and helper scripts.
+#   - The official Node-RED installer is executed as OWNER, normally initbox.
+#   - The Node-RED installer uses sudo internally to upgrade system Node.js.
+#   - This avoids installing Node-RED under /root.
+#
 # Pi 3 / 4 / 5 role model:
 #   - Dashboard/Node-RED owns /etc/pi_roles.conf.
 #   - pi-servsync.sh applies roles to services.
@@ -43,9 +49,9 @@ PACKAGES_HELPER="$REPO_ROOT/scripts/lib/packages.sh"
 INITBOX_PACKAGE_CACHE_DIR="${INITBOX_PACKAGE_CACHE_DIR:-/opt/initbox-package-cache}"
 DASHBOARD_CACHE_DIR="${DASHBOARD_CACHE_DIR:-${INITBOX_PACKAGE_CACHE_DIR}/dashboard}"
 TTYD_CACHE_BIN="${TTYD_CACHE_BIN:-${DASHBOARD_CACHE_DIR}/ttyd}"
-NODE_RED_INSTALLER_CACHE="${NODE_RED_INSTALLER_CACHE:-${DASHBOARD_CACHE_DIR}/install-update-nodered-deb.sh}"
-NODE_RED_INSTALLER_URL="${NODE_RED_INSTALLER_URL:-https://github.com/node-red/linux-installers/releases/latest/download/install-update-nodered-deb}"
-NODE_RED_INSTALLER_FALLBACK_URL="${NODE_RED_INSTALLER_FALLBACK_URL:-https://raw.githubusercontent.com/node-red/linux-installers/master/deb/update-nodejs-and-nodered}"
+
+NODE_RED_INSTALLER_CACHE="${NODE_RED_INSTALLER_CACHE:-${DASHBOARD_CACHE_DIR}/update-nodejs-and-nodered}"
+NODE_RED_INSTALLER_URL="${NODE_RED_INSTALLER_URL:-https://raw.githubusercontent.com/node-red/linux-installers/master/deb/update-nodejs-and-nodered}"
 
 MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-22}"
 
@@ -100,10 +106,35 @@ prepare_log() {
 prepare_dashboard_cache() {
   install -d -m 0755 "$INITBOX_PACKAGE_CACHE_DIR"
   install -d -m 0755 "$DASHBOARD_CACHE_DIR"
+
+  if id "$OWNER" >/dev/null 2>&1; then
+    chown "$OWNER:$OWNER" "$DASHBOARD_CACHE_DIR" 2>/dev/null || true
+  fi
 }
 
 have_internet() {
   ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1
+}
+
+require_owner_user() {
+  if ! id "$OWNER" >/dev/null 2>&1; then
+    err "Owner user does not exist: ${OWNER}"
+    exit 1
+  fi
+}
+
+require_owner_passwordless_sudo() {
+  require_owner_user
+
+  if sudo -H -u "$OWNER" sudo -n true >/dev/null 2>&1; then
+    return 0
+  fi
+
+  err "User ${OWNER} cannot run passwordless sudo."
+  err "The Node-RED installer must run as ${OWNER} and use sudo internally to upgrade Node.js."
+  err "Run the main installer first so it grants passwordless sudo:"
+  err "  sudo ./scripts/initbox-installer.sh pi-3-4-5"
+  exit 1
 }
 
 require_package_helper() {
@@ -255,7 +286,7 @@ install_ttyd() {
 }
 
 node_red_is_installed() {
-  command -v node-red >/dev/null 2>&1
+  command -v node-red >/dev/null 2>&1 || sudo -H -u "$OWNER" bash -lc 'command -v node-red >/dev/null 2>&1'
 }
 
 node_major_version() {
@@ -306,17 +337,42 @@ node_red_dashboard_is_installed() {
     return 1
   fi
 
-  su - "$OWNER" -s /bin/bash -c "cd \"\$HOME/.node-red\" 2>/dev/null && npm list node-red-dashboard --depth=0 >/dev/null 2>&1"
+  sudo -H -u "$OWNER" bash -lc 'cd "$HOME/.node-red" 2>/dev/null && npm list node-red-dashboard --depth=0 >/dev/null 2>&1'
+}
+
+remove_bad_node_red_installer_cache() {
+  local stale_file
+
+  for stale_file in \
+    "${DASHBOARD_CACHE_DIR}/install-update-nodered-deb.sh" \
+    "${DASHBOARD_CACHE_DIR}/update-nodejs-and-nodered-deb.sh"; do
+    if [ -f "$stale_file" ]; then
+      warn "Removing stale Node-RED installer cache: ${stale_file}"
+      rm -f "$stale_file"
+    fi
+  done
+}
+
+remove_root_node_red_artifacts() {
+  if [ -d /root/.node-red ]; then
+    warn "Detected stale root Node-RED user directory from failed install: /root/.node-red"
+    warn "Leaving /root/.node-red in place; InitBox will not use it."
+  fi
+
+  if systemctl list-unit-files | grep -q '^nodered\.service'; then
+    log "Disabling upstream nodered.service; InitBox uses pi-nodered.service."
+    systemctl disable --now nodered.service 2>/dev/null || true
+  fi
 }
 
 download_node_red_installer_once() {
-  local url=""
-
   prepare_dashboard_cache
+  remove_bad_node_red_installer_cache
 
   if [ -f "$NODE_RED_INSTALLER_CACHE" ]; then
     log "Node-RED installer script already cached: ${NODE_RED_INSTALLER_CACHE}"
     chmod 755 "$NODE_RED_INSTALLER_CACHE" || true
+    chown "$OWNER:$OWNER" "$NODE_RED_INSTALLER_CACHE" 2>/dev/null || true
     return 0
   fi
 
@@ -326,24 +382,17 @@ download_node_red_installer_once() {
   fi
 
   log "Downloading Node-RED installer script once to ${NODE_RED_INSTALLER_CACHE}."
+  log "Node-RED installer URL: ${NODE_RED_INSTALLER_URL}"
 
-  for url in \
-    "$NODE_RED_INSTALLER_URL" \
-    "$NODE_RED_INSTALLER_FALLBACK_URL"; do
-    log "Trying Node-RED installer URL: ${url}"
-
-    if curl -fsSL "$url" -o "$NODE_RED_INSTALLER_CACHE"; then
-      chmod 755 "$NODE_RED_INSTALLER_CACHE"
-      ok "Cached Node-RED installer script."
-      return 0
-    fi
-
+  if ! curl -fsSL "$NODE_RED_INSTALLER_URL" -o "$NODE_RED_INSTALLER_CACHE"; then
     rm -f "$NODE_RED_INSTALLER_CACHE"
-    warn "Failed to download Node-RED installer from: ${url}"
-  done
+    err "Failed to download Node-RED installer."
+    return 1
+  fi
 
-  err "Failed to download Node-RED installer from all known URLs."
-  return 1
+  chmod 755 "$NODE_RED_INSTALLER_CACHE"
+  chown "$OWNER:$OWNER" "$NODE_RED_INSTALLER_CACHE" 2>/dev/null || true
+  ok "Cached Node-RED installer script."
 }
 
 run_node_red_installer() {
@@ -364,21 +413,19 @@ run_node_red_installer() {
     return 1
   fi
 
-  if ! id "$OWNER" >/dev/null 2>&1; then
-    err "Owner user does not exist: ${OWNER}"
-    return 1
-  fi
+  require_owner_passwordless_sudo
 
-  log "Running cached official Node-RED installer with root privileges."
-  log "Node-RED target user: ${OWNER}"
+  log "Running official Node-RED installer as user: ${OWNER}"
+  log "Installer will use sudo internally for system Node.js upgrade."
   log "Installer: ${NODE_RED_INSTALLER_CACHE}"
 
   chmod 755 "$NODE_RED_INSTALLER_CACHE" || true
+  chown "$OWNER:$OWNER" "$NODE_RED_INSTALLER_CACHE" 2>/dev/null || true
 
-  if ! NODERED_USER="$OWNER" \
-    CONFIRM_ROOT=y \
-    CONFIRM_INSTALL=y \
-    bash "$NODE_RED_INSTALLER_CACHE"; then
+  if ! sudo -H -u "$OWNER" bash "$NODE_RED_INSTALLER_CACHE" \
+    --confirm-install \
+    --skip-pi \
+    --node22 2>&1 | tee -a "$LOGFILE"; then
     err "Node-RED installer failed."
     return 1
   fi
@@ -400,7 +447,7 @@ install_node_red_dashboard_package() {
 
   log "Installing node-red-dashboard npm package for ${OWNER}."
 
-  su - "$OWNER" -s /bin/bash <<'EOS'
+  sudo -H -u "$OWNER" bash <<'EOS'
 set -euo pipefail
 
 NR_DIR="${HOME}/.node-red"
@@ -424,13 +471,15 @@ EOS
 install_nodered() {
   log "Installing or reusing Node-RED."
 
+  remove_root_node_red_artifacts
+
   if node_red_needs_installer; then
     download_node_red_installer_once
     run_node_red_installer
   else
     log "Node-RED already installed with supported Node.js."
     log "Node.js: $(node -v 2>/dev/null || echo unknown)"
-    log "Node-RED: $(node-red --version 2>&1 | head -n 1)"
+    log "Node-RED: $(sudo -H -u "$OWNER" bash -lc 'node-red --version 2>&1 | head -n 1' || true)"
   fi
 
   if ! node_red_is_installed; then
@@ -445,12 +494,7 @@ install_nodered() {
   fi
 
   log "Node.js after install/reuse: $(node -v 2>/dev/null || echo unknown)"
-  log "Node-RED after install/reuse: $(node-red --version 2>&1 | head -n 1)"
-
-  if systemctl list-unit-files | grep -q '^nodered\.service'; then
-    log "Disabling upstream nodered.service; InitBox uses pi-nodered.service."
-    systemctl disable --now nodered.service 2>/dev/null || true
-  fi
+  log "Node-RED after install/reuse: $(sudo -H -u "$OWNER" bash -lc 'node-red --version 2>&1 | head -n 1' || true)"
 
   install_node_red_dashboard_package
 }
@@ -950,6 +994,8 @@ Cached assets:
 
 Node-RED note:
   Node.js and npm are managed by the official Node-RED installer.
+  The installer is run as ${OWNER}, not root.
+  It uses sudo internally to upgrade system Node.js.
 
 Role file:
   ${ROLE_FILE}
