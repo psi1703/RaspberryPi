@@ -370,23 +370,18 @@ run_node_red_installer() {
   fi
 
   log "Running cached official Node-RED installer with root privileges."
-  log "Node-RED target user should be: ${OWNER}"
+  log "Node-RED target user: ${OWNER}"
   log "Installer: ${NODE_RED_INSTALLER_CACHE}"
 
   chmod 755 "$NODE_RED_INSTALLER_CACHE" || true
 
-  if [ -e /dev/tty ]; then
-    if ! bash "$NODE_RED_INSTALLER_CACHE" </dev/tty; then
-      err "Node-RED installer failed."
-      return 1
-    fi
-  else
-    warn "No /dev/tty available; running Node-RED installer with prepared answers."
-
-    if ! printf 'N\n%s\ny\n' "$OWNER" | bash "$NODE_RED_INSTALLER_CACHE"; then
-      err "Node-RED installer failed in non-interactive mode."
-      return 1
-    fi
+  if ! bash "$NODE_RED_INSTALLER_CACHE" \
+    --confirm-root \
+    --confirm-install \
+    --node22 \
+    --nodered-user "$OWNER"; then
+    err "Node-RED installer failed."
+    return 1
   fi
 }
 
