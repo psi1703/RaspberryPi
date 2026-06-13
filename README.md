@@ -4,8 +4,6 @@ This branch contains setup scripts and documentation for preparing Raspberry Pi 
 
 This branch is dedicated to the full Pi 3 / 4 / 5 InitBox stack.
 
-The lightweight Raspberry Pi Zero W / Zero 2W build is maintained separately in the `pi-zero-W-2W` branch.
-
 ---
 
 ## Operating Model
@@ -21,16 +19,19 @@ The intended workflow is:
 1. Prepare the Raspberry Pi in the lab.
 2. Make sure the Pi has Internet access.
 3. Clone or update the `pi-3-4-5` branch.
-4. Run the installer for the `pi-3-4-5` profile.
-5. Run installer sanity checks.
-6. Prepare the Debian package cache.
-7. Install the required modules.
-8. Allow dashboard assets to be downloaded or built once during lab setup.
-9. Reboot if required.
-10. Verify all required services.
-11. Test role-based startup.
-12. Run field diagnostics.
-13. Deploy the prepared device in the field.
+4. Confirm required dashboard source files exist in the repo.
+5. Run the installer for the `pi-3-4-5` profile.
+6. Run installer sanity checks.
+7. Prepare the Debian package cache.
+8. Install the required modules.
+9. Allow dashboard assets and npm dependencies to be downloaded or built once during lab setup.
+10. Reboot if required.
+11. Verify all required services.
+12. Test role-based startup.
+13. Test uninstall behavior for at least one module.
+14. Test offline or field rerun behavior if required.
+15. Run field diagnostics.
+16. Deploy the prepared device in the field.
 
 All required packages and first-time dashboard assets should be installed or cached during lab preparation.
 
@@ -45,15 +46,19 @@ During lab setup with Internet:
 * Debian packages are downloaded and kept on the Pi.
 * Module installs use the package helper.
 * `ttyd` is built once and cached on the Pi.
-* The Node-RED installer script is downloaded once and cached on the Pi.
-* Node-RED and `node-red-dashboard` are installed once and then reused on later reruns.
+* Node.js 22 is installed or upgraded when required.
+* Node-RED is installed locally under `/home/initbox/.node-red`.
+* `node-red-dashboard` is installed locally under `/home/initbox/.node-red`.
+* Repository-owned dashboard assets are copied into the Node-RED runtime directory.
 
 During field or offline reruns:
 
 * Debian packages install from the local cache.
-* Existing Node-RED installation is reused.
+* Existing Node.js is reused.
+* Existing local Node-RED installation is reused.
 * Existing `node-red-dashboard` installation is reused.
 * Cached `ttyd` binary is reused if `ttyd` is missing from the PATH.
+* Repository-owned dashboard assets are copied again from the repo.
 * The field rerun does not depend on Internet access once the lab cache has been prepared and dashboard has been installed once.
 
 Package cache helper:
@@ -90,7 +95,22 @@ Dashboard cached assets include:
 
 ```text
 /opt/initbox-package-cache/dashboard/ttyd
-/opt/initbox-package-cache/dashboard/update-nodejs-and-nodered-deb.sh
+```
+
+Dashboard source-of-truth assets are stored in the repo:
+
+```text
+scripts/pi-3-4-5/flows.json
+scripts/pi-3-4-5/settings.js
+scripts/pi-3-4-5/logo.png
+```
+
+At install time, these are copied to:
+
+```text
+/home/initbox/.node-red/flows.json
+/home/initbox/.node-red/settings.js
+/home/initbox/.node-red/public/logo.png
 ```
 
 Important limitation:
@@ -99,7 +119,7 @@ Important limitation:
 A fully offline dashboard install is possible only after dashboard was installed once in the lab with Internet.
 ```
 
-This is because Node-RED and npm dependencies must exist locally before a field/offline rerun can reuse them.
+This is because Node.js, Node-RED, and npm dependencies must exist locally before a field/offline rerun can reuse them.
 
 ---
 
@@ -166,6 +186,7 @@ The Pi 3 / 4 / 5 branch supports:
 * Debian package cache
 * Dashboard asset cache
 * Role-based service startup
+* Module install and uninstall from the installer menu
 * ISI simulator
 * FMS/CAN replay
 * RTC sync
@@ -199,6 +220,9 @@ scripts/
     packages.sh
 
   pi-3-4-5/
+    flows.json
+    settings.js
+    logo.png
     module-dashboard.sh
     module-fms.sh
     module-hotspot.sh
@@ -237,10 +261,11 @@ During setup, the installer may:
 * Run `apt-get upgrade`
 * Download Debian packages into the local package cache
 * Install Debian packages from cache or Internet
-* Download the Node-RED installer script once
+* Install or upgrade Node.js 22 when required
 * Build and cache `ttyd`
-* Install Node-RED
+* Install local Node-RED under `/home/initbox/.node-red`
 * Install `node-red-dashboard`
+* Copy repo-owned `flows.json`, `settings.js`, and `logo.png`
 * Configure networking
 * Configure systemd services
 * Modify boot or hardware settings
@@ -293,7 +318,7 @@ sudo ./scripts/initbox-installer.sh pi-3-4-5
 The installer will:
 
 * Load the Pi 3 / 4 / 5 hardware profile.
-* Show supported modules.
+* Show a clear numeric main menu.
 * Repair required repository permissions.
 * Create install logs.
 * Create the legacy module log path.
@@ -302,8 +327,10 @@ The installer will:
 * Run baseline `apt-get upgrade` when Internet is available.
 * Prepare the package cache when requested.
 * Show package cache status when requested.
-* Require explicit `RUN` confirmation before executing a module script.
+* Install supported modules when selected.
+* Uninstall supported modules when selected.
 * Record install state.
+* Record module availability flags for dashboard visibility.
 
 Installer log:
 
@@ -323,6 +350,12 @@ Install state:
 /etc/initbox/install-state.env
 ```
 
+Dashboard module flags:
+
+```text
+/etc/initbox-mods.conf
+```
+
 ---
 
 ## Installer Menu Options
@@ -330,13 +363,26 @@ Install state:
 The installer menu includes:
 
 ```text
-1-N) Install/select supported module
-c) Run sanity checks
-p) Prepare/download package cache
-k) Show package cache status
-l) Show install log path
-s) Show install state
-q) Quit
+Main menu
+---------
+ 1) Install module
+ 2) Uninstall module
+ 3) Run sanity checks
+ 4) Prepare/download package cache
+ 5) Show package cache status
+ 6) Show install log
+ 7) Show install state
+ 8) Quit
+```
+
+Choosing `1` shows the supported modules to install.
+
+Choosing `2` shows the supported modules to uninstall.
+
+The module list is based on the `DEFAULT_MODULES` value in:
+
+```text
+profiles/pi-3-4-5.conf
 ```
 
 Run sanity checks before installing modules:
@@ -355,6 +401,18 @@ Show package cache status:
 
 ```bash
 sudo ./scripts/initbox-installer.sh pi-3-4-5 k
+```
+
+Show install log:
+
+```bash
+sudo ./scripts/initbox-installer.sh pi-3-4-5 l
+```
+
+Show install state:
+
+```bash
+sudo ./scripts/initbox-installer.sh pi-3-4-5 s
 ```
 
 The sanity check verifies:
@@ -447,25 +505,42 @@ Cached `ttyd` binary:
 /opt/initbox-package-cache/dashboard/ttyd
 ```
 
-Cached Node-RED installer script:
+Repository-owned dashboard assets:
 
 ```text
-/opt/initbox-package-cache/dashboard/update-nodejs-and-nodered-deb.sh
+scripts/pi-3-4-5/flows.json
+scripts/pi-3-4-5/settings.js
+scripts/pi-3-4-5/logo.png
+```
+
+Runtime dashboard assets:
+
+```text
+/home/initbox/.node-red/flows.json
+/home/initbox/.node-red/settings.js
+/home/initbox/.node-red/public/logo.png
 ```
 
 During the first lab install with Internet:
 
+* Node.js 22 is installed or upgraded when required.
 * `ttyd` is built from GitHub source.
 * The installed `ttyd` binary is copied into the dashboard cache.
-* The official Node-RED installer script is downloaded into the dashboard cache.
-* Node-RED is installed.
-* `node-red-dashboard` is installed in `/home/initbox/.node-red`.
+* Node-RED is installed locally under `/home/initbox/.node-red`.
+* `node-red-dashboard` is installed locally under `/home/initbox/.node-red`.
+* Repo-owned `flows.json` is copied to `/home/initbox/.node-red/flows.json`.
+* Repo-owned `settings.js` is copied to `/home/initbox/.node-red/settings.js`.
+* Repo-owned `logo.png` is copied to `/home/initbox/.node-red/public/logo.png`.
+* Generated or hostname-specific Node-RED flow files are discarded.
+* `pi-nodered.service` is installed as the only InitBox Node-RED service.
+* `nodered.service` is stopped, disabled, masked, and not used.
 
 During later offline reruns:
 
 * `ttyd` is restored from the cached binary if missing.
-* Node-RED is reused if already installed.
-* `node-red-dashboard` is reused if already installed.
+* Local Node-RED is reused if already installed.
+* Local `node-red-dashboard` is reused if already installed.
+* Repo-owned `flows.json`, `settings.js`, and `logo.png` are copied again.
 * If Node-RED was never installed before going offline, dashboard install cannot complete fully offline.
 
 Verify dashboard cache:
@@ -473,8 +548,16 @@ Verify dashboard cache:
 ```bash
 ls -lah /opt/initbox-package-cache/dashboard
 command -v ttyd || true
-command -v node-red || true
+sudo -u initbox bash -lc 'test -x ~/.node-red/node_modules/.bin/node-red && echo node-red-local-ok'
 sudo -u initbox bash -lc 'cd ~/.node-red && npm list node-red-dashboard --depth=0'
+```
+
+Verify runtime dashboard files:
+
+```bash
+ls -l /home/initbox/.node-red/flows.json
+ls -l /home/initbox/.node-red/settings.js
+ls -l /home/initbox/.node-red/public/logo.png
 ```
 
 ---
@@ -503,13 +586,23 @@ Reasoning:
 * ISI depends on `br0` for namespace traffic.
 * FMS depends on CAN hardware and `can0`.
 
-When prompted by the installer, type:
+Use the installer menu:
 
 ```text
-RUN
+1) Install module
 ```
 
-only when you are ready to execute the selected module.
+Then select the module number.
+
+To remove a module, use:
+
+```text
+2) Uninstall module
+```
+
+Then select the module number.
+
+Module uninstall actions remove services and helper files created by that module, but do not purge Debian packages. The `purge` action is treated as an uninstall compatibility alias.
 
 ---
 
@@ -670,9 +763,22 @@ Script:
 scripts/pi-3-4-5/module-dashboard.sh
 ```
 
+Required repo-owned dashboard files:
+
+```text
+scripts/pi-3-4-5/flows.json
+scripts/pi-3-4-5/settings.js
+scripts/pi-3-4-5/logo.png
+```
+
 The dashboard module installs and configures:
 
-* Node-RED dashboard
+* Node.js 22 when required
+* local Node-RED under `/home/initbox/.node-red`
+* `node-red-dashboard`
+* repo-owned `flows.json`
+* repo-owned `settings.js`
+* repo-owned `logo.png`
 * `pi-nodered.service`
 * ttyd Web Terminal
 * `ttyd.service`
@@ -713,10 +819,19 @@ http://initbox.wlan:7681
 
 The dashboard is the primary management interface for this branch.
 
+Node-RED service model:
+
+```text
+pi-nodered.service is the only InitBox Node-RED service.
+nodered.service must not be used.
+Node-RED must not run from /root/.node-red.
+```
+
 Dashboard service checks:
 
 ```bash
 systemctl status pi-nodered --no-pager
+systemctl status nodered --no-pager || true
 systemctl status ttyd --no-pager
 systemctl status portal --no-pager
 systemctl status pi-servsync --no-pager
@@ -724,6 +839,24 @@ journalctl -u pi-nodered -n 100 --no-pager
 journalctl -u ttyd -n 100 --no-pager
 journalctl -u portal -n 100 --no-pager
 journalctl -u pi-servsync -n 100 --no-pager
+```
+
+Expected Node-RED checks:
+
+```bash
+ps -ef | grep -E 'node-red|red.js' | grep -v grep || true
+sudo ss -lntp | grep ':1880' || true
+sudo journalctl -u pi-nodered -n 80 --no-pager
+```
+
+Expected result:
+
+```text
+Node-RED runs as initbox.
+Node-RED uses /home/initbox/.node-red.
+Node-RED loads /home/initbox/.node-red/settings.js.
+Node-RED loads /home/initbox/.node-red/flows.json.
+nodered.service is inactive or masked.
 ```
 
 Check listening ports:
@@ -1047,6 +1180,45 @@ systemctl status fms --no-pager
 
 ---
 
+## Module Install and Uninstall Behavior
+
+All supported modules should support:
+
+```text
+install
+uninstall
+purge
+```
+
+The `purge` action is treated as an uninstall compatibility alias.
+
+Uninstall actions should:
+
+* Stop and disable services created by the module.
+* Remove systemd unit files created by the module.
+* Remove helper scripts created by the module.
+* Reset the related dashboard module flag in `/etc/initbox-mods.conf`.
+* Leave Debian packages installed.
+* Leave package cache files in place.
+* Avoid deleting unrelated user data.
+
+Use the installer menu:
+
+```text
+1) Install module
+2) Uninstall module
+```
+
+After uninstalling, verify:
+
+```bash
+cat /etc/initbox-mods.conf
+cat /etc/initbox/install-state.env
+systemctl --failed
+```
+
+---
+
 ## Role Verification
 
 Check the current role file:
@@ -1140,6 +1312,7 @@ systemctl status dhcpcd --no-pager
 systemctl status hostapd --no-pager
 systemctl status dnsmasq --no-pager
 systemctl status pi-nodered --no-pager
+systemctl status nodered --no-pager || true
 systemctl status ttyd --no-pager
 systemctl status portal --no-pager
 systemctl status pi-servsync --no-pager
@@ -1328,9 +1501,13 @@ ls -lah /opt/initbox-package-cache/dashboard
 Confirm dashboard runtime exists:
 
 ```bash
-command -v node-red
-command -v ttyd
+command -v node || true
+command -v ttyd || true
+sudo -u initbox bash -lc 'test -x ~/.node-red/node_modules/.bin/node-red && echo node-red-local-ok'
 sudo -u initbox bash -lc 'cd ~/.node-red && npm list node-red-dashboard --depth=0'
+ls -l /home/initbox/.node-red/flows.json
+ls -l /home/initbox/.node-red/settings.js
+ls -l /home/initbox/.node-red/public/logo.png
 ```
 
 Then disconnect Internet and rerun one or more modules from the installer.
@@ -1343,7 +1520,76 @@ Expected behavior:
 * Sniffer/bridge reruns without Internet.
 * ISI reruns without Internet.
 * FMS reruns without Internet.
-* Dashboard reruns without Internet only if Node-RED and `node-red-dashboard` were already installed once during lab setup.
+* Dashboard reruns without Internet only if Node.js, Node-RED, and `node-red-dashboard` were already installed once during lab setup.
+
+---
+
+## Fresh Bake Validation
+
+A fresh Raspberry Pi OS install is the best final validation before field deployment.
+
+Use this flow:
+
+1. Flash fresh Raspberry Pi OS.
+2. Boot the Pi with Internet available.
+3. Clone the `pi-3-4-5` branch.
+4. Confirm required repo files exist.
+5. Run installer sanity checks.
+6. Prepare package cache.
+7. Install hotspot.
+8. Install dashboard.
+9. Install RTC if required.
+10. Install sniffer-bridge if required.
+11. Install ISI if required.
+12. Install FMS if required.
+13. Reboot.
+14. Verify services.
+15. Test dashboard UI.
+16. Test role-based startup.
+17. Test uninstall for at least one module.
+18. Reinstall the module.
+19. Run diagnostics.
+20. Perform offline rerun test if required.
+
+Fresh bake checks:
+
+```bash
+cd /home/initbox/RaspberryPi
+
+sudo ./scripts/initbox-installer.sh pi-3-4-5 c
+
+ls -l scripts/pi-3-4-5/flows.json
+ls -l scripts/pi-3-4-5/settings.js
+ls -l scripts/pi-3-4-5/logo.png
+
+systemctl status pi-nodered --no-pager
+systemctl status nodered --no-pager || true
+journalctl -u pi-nodered -n 80 --no-pager
+
+ls -l /home/initbox/.node-red/flows.json
+ls -l /home/initbox/.node-red/settings.js
+ls -l /home/initbox/.node-red/public/logo.png
+
+cat /etc/initbox-mods.conf
+cat /etc/initbox/install-state.env
+
+ps -ef | grep -E 'node-red|red.js' | grep -v grep || true
+sudo ss -lntp | grep ':1880' || true
+```
+
+Expected results:
+
+```text
+pi-nodered.service is active.
+nodered.service is inactive or masked.
+Node-RED runs as initbox.
+Node-RED uses /home/initbox/.node-red.
+flows.json exists under /home/initbox/.node-red.
+settings.js exists under /home/initbox/.node-red.
+logo.png exists under /home/initbox/.node-red/public.
+Module flags reflect installed modules.
+Installer state records the latest action.
+```
 
 ---
 
@@ -1357,10 +1603,20 @@ Before the device leaves the lab:
 * [ ] Internet was available during lab setup.
 * [ ] Package cache was prepared.
 * [ ] Package cache status was checked.
+* [ ] `scripts/pi-3-4-5/flows.json` exists in the repo.
+* [ ] `scripts/pi-3-4-5/settings.js` exists in the repo.
+* [ ] `scripts/pi-3-4-5/logo.png` exists in the repo.
 * [ ] Dashboard asset cache was created.
 * [ ] `ttyd` was installed or cached.
-* [ ] Node-RED was installed.
+* [ ] Node.js 22 was installed or confirmed.
+* [ ] Node-RED was installed locally under `/home/initbox/.node-red`.
 * [ ] `node-red-dashboard` was installed.
+* [ ] Runtime `/home/initbox/.node-red/flows.json` was copied from the repo.
+* [ ] Runtime `/home/initbox/.node-red/settings.js` was copied from the repo.
+* [ ] Runtime `/home/initbox/.node-red/public/logo.png` was copied from the repo.
+* [ ] `pi-nodered.service` is active.
+* [ ] `nodered.service` is inactive or masked.
+* [ ] Node-RED is running as `initbox`, not root.
 * [ ] Required modules were installed.
 * [ ] Device was reboot-tested.
 * [ ] Required services are active.
@@ -1369,6 +1625,7 @@ Before the device leaves the lab:
 * [ ] Web Terminal is reachable.
 * [ ] `/etc/pi_roles.conf` was tested.
 * [ ] Role-based startup was tested.
+* [ ] Installer uninstall menu was tested for at least one module.
 * [ ] RTC was checked if installed.
 * [ ] CAN/FMS was checked if required.
 * [ ] Sniffer capture was checked if required.
@@ -1452,19 +1709,20 @@ sudo ./scripts/initbox-installer.sh pi-3-4-5 p
 Check:
 
 ```bash
-command -v node-red || true
+command -v node || true
 command -v ttyd || true
 ls -lah /opt/initbox-package-cache/dashboard
+sudo -u initbox bash -lc 'test -x ~/.node-red/node_modules/.bin/node-red && echo node-red-local-ok'
 sudo -u initbox bash -lc 'cd ~/.node-red && npm list node-red-dashboard --depth=0'
 ```
 
 Expected for offline dashboard rerun:
 
 ```text
-node-red installed
+Node.js installed
+local Node-RED installed under /home/initbox/.node-red
 node-red-dashboard installed
 ttyd installed or cached
-Node-RED installer cached if first-time rerun is needed in lab
 ```
 
 If Node-RED or `node-red-dashboard` was never installed before going offline, reconnect Internet in the lab and run the dashboard module once.
@@ -1477,6 +1735,7 @@ Check:
 
 ```bash
 systemctl status pi-nodered --no-pager
+systemctl status nodered --no-pager || true
 systemctl status portal --no-pager
 ss -tulpn | grep -E ':80|:1880'
 journalctl -u pi-nodered -n 100 --no-pager
@@ -1486,9 +1745,58 @@ Expected:
 
 ```text
 pi-nodered.service active
+nodered.service inactive or masked
 portal.service active
 port 80 available for captive portal redirect
 port 1880 available for Node-RED
+```
+
+Check runtime assets:
+
+```bash
+ls -l /home/initbox/.node-red/flows.json
+ls -l /home/initbox/.node-red/settings.js
+ls -l /home/initbox/.node-red/public/logo.png
+```
+
+---
+
+### Node-RED starts from root
+
+This is not allowed for InitBox.
+
+Check:
+
+```bash
+ps -ef | grep -E 'node-red|red.js' | grep -v grep || true
+systemctl status nodered --no-pager || true
+systemctl status pi-nodered --no-pager
+```
+
+Expected:
+
+```text
+Node-RED runs as initbox.
+pi-nodered.service owns the Node-RED process.
+nodered.service is inactive or masked.
+```
+
+Repair by rerunning the dashboard module:
+
+```bash
+sudo ./scripts/initbox-installer.sh pi-3-4-5
+```
+
+Choose:
+
+```text
+1) Install module
+```
+
+Then choose:
+
+```text
+dashboard
 ```
 
 ---
@@ -1690,9 +1998,18 @@ shellcheck scripts/initbox-installer.sh scripts/initbox-status.sh scripts/update
 * Lab setup requires Internet access.
 * Field deployment assumes the Pi is already configured.
 * Debian packages must be cached during lab preparation.
-* Dashboard should be installed once in the lab so Node-RED and npm dependencies exist locally.
+* Dashboard should be installed once in the lab so Node.js, Node-RED, and npm dependencies exist locally.
 * Dashboard is the primary management interface.
 * Web Terminal is bundled with the dashboard module.
+* The installer main menu must use clear numeric choices for install, uninstall, checks, cache, logs, state, and quit.
+* Module execution must not require typing `RUN`.
+* Every supported module should support `install` and `uninstall`.
+* Module uninstall must not purge Debian packages.
+* Dashboard assets are repo-owned and must be copied from `scripts/pi-3-4-5/`.
+* Generated or hostname-specific Node-RED flow files must not be the source of truth.
+* `pi-nodered.service` is the only supported InitBox Node-RED service.
+* `nodered.service` must be stopped, disabled, masked, and not used by InitBox.
+* Node-RED must run as `initbox`, not root.
 * `/etc/pi_roles.conf` is the runtime source of truth for role-based startup.
 * Role-managed services must stop or exit cleanly when their role is disabled.
 * `pi-servsync.service` applies role changes to systemd services.
