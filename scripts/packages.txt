@@ -1,6 +1,5 @@
 ca-certificates
 curl
-git
 build-essential
 cmake
 libjson-c-dev
@@ -16,7 +15,6 @@ netcat-openbsd
 bridge-utils
 can-utils
 ifupdown
-python3
 python3-smbus
 i2c-tools
 util-linux-extra
