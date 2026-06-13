@@ -19,9 +19,9 @@
 #
 # Important flow/settings/logo model:
 #   - Repository source files must exist here:
-#       scripts/pi-3-4-5/flows.json
-#       scripts/pi-3-4-5/settings.js
-#       scripts/pi-3-4-5/logo.png
+#       scripts/flows.json
+#       scripts/settings.js
+#       scripts/logo.png
 #   - Runtime files are always replaced with the repository versions:
 #       /home/initbox/.node-red/flows.json
 #       /home/initbox/.node-red/settings.js
@@ -74,9 +74,9 @@ HOTSPOT_IFACE="${HOTSPOT_IFACE:-wlan0}"
 
 NODE_RED_USER_DIR="/home/${OWNER}/.node-red"
 NODE_RED_LOCAL_BIN="${NODE_RED_USER_DIR}/node_modules/.bin/node-red"
-REPO_FLOWS_FILE="${SCRIPT_DIR}/scripts/flows.json"
-REPO_SETTINGS_FILE="${SCRIPT_DIR}/scripts/settings.js"
-REPO_LOGO_FILE="${SCRIPT_DIR}/scripts/logo.png"
+REPO_FLOWS_FILE="${REPO_ROOT}/scripts/flows.json"
+REPO_SETTINGS_FILE="${REPO_ROOT}/scripts/settings.js"
+REPO_LOGO_FILE="${REPO_ROOT}/scripts/logo.png"
 
 ts() {
   date +"%Y-%m-%d %H:%M:%S"
