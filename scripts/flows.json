@@ -1,0 +1,2043 @@
+[
+    {
+        "id": "tab1",
+        "type": "tab",
+        "label": "INITbox Dashboard",
+        "disabled": false,
+        "info": ""
+    },
+    {
+        "id": "uitab",
+        "type": "ui_tab",
+        "name": "INITbox Dashboard",
+        "icon": "dashboard",
+        "disabled": false,
+        "hidden": false
+    },
+    {
+        "id": "grpControls",
+        "type": "ui_group",
+        "name": "Roles & Controls",
+        "tab": "uitab",
+        "order": 1,
+        "disp": true,
+        "width": 24,
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "8931265179313763",
+        "type": "ui_base",
+        "theme": {
+            "name": "theme-dark",
+            "lightTheme": {
+                "default": "#0094CE",
+                "baseColor": "#0094CE",
+                "baseFont": "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen-Sans,Ubuntu,Cantarell,Helvetica Neue,sans-serif",
+                "edited": true,
+                "reset": false
+            },
+            "darkTheme": {
+                "default": "#097479",
+                "baseColor": "#207e2b",
+                "baseFont": "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen-Sans,Ubuntu,Cantarell,Helvetica Neue,sans-serif",
+                "edited": true,
+                "reset": false
+            },
+            "customTheme": {
+                "name": "Untitled Theme 1",
+                "default": "#4B7930",
+                "baseColor": "#4B7930",
+                "baseFont": "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen-Sans,Ubuntu,Cantarell,Helvetica Neue,sans-serif",
+                "reset": false
+            },
+            "themeState": {
+                "base-color": {
+                    "default": "#097479",
+                    "value": "#207e2b",
+                    "edited": true
+                },
+                "page-titlebar-backgroundColor": {
+                    "value": "#207e2b",
+                    "edited": true
+                },
+                "page-backgroundColor": {
+                    "value": "#111111",
+                    "edited": false
+                },
+                "page-sidebar-backgroundColor": {
+                    "value": "#333333",
+                    "edited": false
+                },
+                "group-textColor": {
+                    "value": "#2fbb40",
+                    "edited": true
+                },
+                "group-borderColor": {
+                    "value": "#555555",
+                    "edited": false
+                },
+                "group-backgroundColor": {
+                    "value": "#333333",
+                    "edited": false
+                },
+                "widget-textColor": {
+                    "value": "#eeeeee",
+                    "edited": false
+                },
+                "widget-backgroundColor": {
+                    "value": "#207e2b",
+                    "edited": true
+                },
+                "widget-borderColor": {
+                    "value": "#333333",
+                    "edited": false
+                },
+                "base-font": {
+                    "value": "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen-Sans,Ubuntu,Cantarell,Helvetica Neue,sans-serif"
+                }
+            },
+            "angularTheme": {
+                "primary": "indigo",
+                "accents": "blue",
+                "warn": "red",
+                "background": "grey",
+                "palette": "light"
+            }
+        },
+        "site": {
+            "name": "INITbox Dashboard",
+            "hideToolbar": "false",
+            "allowSwipe": "false",
+            "lockMenu": "false",
+            "allowTempTheme": "true",
+            "dateFormat": "DD/MM/YYYY",
+            "sizes": {
+                "sx": 50,
+                "sy": 48,
+                "gx": 6,
+                "gy": 6,
+                "cx": 6,
+                "cy": 6,
+                "px": 0,
+                "py": 0
+            }
+        }
+    },
+    {
+        "id": "68ede1df46174caf",
+        "type": "ui_spacer",
+        "z": "tab1",
+        "name": "spacer",
+        "group": "",
+        "order": 2,
+        "width": 11,
+        "height": 1
+    },
+    {
+        "id": "059bcc03b183789c",
+        "type": "ui_spacer",
+        "z": "tab1",
+        "name": "spacer",
+        "group": "grpControls",
+        "order": 2,
+        "width": 1,
+        "height": 1
+    },
+    {
+        "id": "adac6a2a1e6870f4",
+        "type": "ui_spacer",
+        "z": "tab1",
+        "name": "spacer",
+        "group": "grpControls",
+        "order": 5,
+        "width": 1,
+        "height": 1
+    },
+    {
+        "id": "4fca3a1e049e17a0",
+        "type": "ui_spacer",
+        "z": "tab1",
+        "name": "spacer",
+        "group": "grpControls",
+        "order": 7,
+        "width": 3,
+        "height": 1
+    },
+    {
+        "id": "2872b853d5dba89b",
+        "type": "ui_spacer",
+        "z": "tab1",
+        "name": "spacer",
+        "group": "grpControls",
+        "order": 25,
+        "width": 2,
+        "height": 1
+    },
+    {
+        "id": "812222d14103dc2d",
+        "type": "ui_spacer",
+        "z": "tab1",
+        "name": "spacer",
+        "group": "grpControls",
+        "order": 28,
+        "width": 2,
+        "height": 1
+    },
+    {
+        "id": "b7ba1c82c7a200ae",
+        "type": "ui_spacer",
+        "z": "tab1",
+        "name": "spacer",
+        "group": "grpControls",
+        "order": 30,
+        "width": 2,
+        "height": 1
+    },
+    {
+        "id": "fc2c7e9bdf5054ec",
+        "type": "ui_spacer",
+        "z": "tab1",
+        "name": "spacer",
+        "group": "grpControls",
+        "order": 32,
+        "width": 2,
+        "height": 1
+    },
+    {
+        "id": "21daf43eea60a76e",
+        "type": "ui_spacer",
+        "z": "tab1",
+        "name": "spacer",
+        "group": "grpControls",
+        "order": 34,
+        "width": 2,
+        "height": 1
+    },
+    {
+        "id": "774b9864f1504cfb",
+        "type": "ui_spacer",
+        "z": "tab1",
+        "name": "spacer",
+        "group": "grpControls",
+        "order": 36,
+        "width": 1,
+        "height": 1
+    },
+    {
+        "id": "409330d327111564",
+        "type": "ui_spacer",
+        "z": "tab1",
+        "name": "spacer",
+        "group": "grpControls",
+        "order": 38,
+        "width": 1,
+        "height": 1
+    },
+    {
+        "id": "swISI",
+        "type": "ui_switch",
+        "z": "tab1",
+        "name": "ISI Simulator",
+        "label": "ISI Simulator",
+        "tooltip": "",
+        "group": "grpControls",
+        "order": 1,
+        "width": 4,
+        "height": 1,
+        "passthru": true,
+        "decouple": "false",
+        "topic": "t_isi",
+        "topicType": "str",
+        "style": "",
+        "onvalue": "true",
+        "onvalueType": "bool",
+        "onicon": "",
+        "oncolor": "",
+        "offvalue": "false",
+        "offvalueType": "bool",
+        "officon": "",
+        "offcolor": "",
+        "animate": true,
+        "className": "mod-toggle-ISI",
+        "x": 970,
+        "y": 660,
+        "wires": [
+            [
+                "fnStore"
+            ]
+        ]
+    },
+    {
+        "id": "swWS",
+        "type": "ui_switch",
+        "z": "tab1",
+        "name": "ETHsniffer",
+        "label": "ETHsniffer",
+        "tooltip": "",
+        "group": "grpControls",
+        "order": 11,
+        "width": 4,
+        "height": 1,
+        "passthru": true,
+        "decouple": "false",
+        "topic": "t_sniff",
+        "topicType": "str",
+        "style": "",
+        "onvalue": "true",
+        "onvalueType": "bool",
+        "onicon": "",
+        "oncolor": "",
+        "offvalue": "false",
+        "offvalueType": "bool",
+        "officon": "",
+        "offcolor": "",
+        "animate": true,
+        "className": "mod-toggle-WSBR0",
+        "x": 910,
+        "y": 720,
+        "wires": [
+            [
+                "fnStore"
+            ]
+        ]
+    },
+    {
+        "id": "btnApply",
+        "type": "ui_button",
+        "z": "tab1",
+        "name": "",
+        "group": "grpControls",
+        "order": 24,
+        "width": 4,
+        "height": 1,
+        "passthru": false,
+        "label": "APPLY / START / SAVE",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "",
+        "className": "",
+        "icon": "",
+        "payload": "",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 130,
+        "y": 160,
+        "wires": [
+            [
+                "fnBuildRoles"
+            ]
+        ]
+    },
+    {
+        "id": "btnStop",
+        "type": "ui_button",
+        "z": "tab1",
+        "name": "",
+        "group": "grpControls",
+        "order": 29,
+        "width": 4,
+        "height": 1,
+        "passthru": false,
+        "label": "STOP ALL",
+        "tooltip": "",
+        "color": "#ffffff",
+        "bgcolor": "#f9a825",
+        "className": "",
+        "icon": "",
+        "payload": "",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 90,
+        "y": 280,
+        "wires": [
+            [
+                "execStopAll",
+                "a992f14dea6e2fef"
+            ]
+        ]
+    },
+    {
+        "id": "btnPrep",
+        "type": "ui_button",
+        "z": "tab1",
+        "name": "",
+        "group": "grpControls",
+        "order": 27,
+        "width": 4,
+        "height": 1,
+        "passthru": false,
+        "label": "PREP & DOWNLOAD ZIP",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "",
+        "className": "",
+        "icon": "",
+        "payload": "",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 130,
+        "y": 220,
+        "wires": [
+            [
+                "f9c4f06ca5ca2610",
+                "execPrep"
+            ]
+        ]
+    },
+    {
+        "id": "btnReboot",
+        "type": "ui_button",
+        "z": "tab1",
+        "name": "",
+        "group": "grpControls",
+        "order": 31,
+        "width": 4,
+        "height": 1,
+        "passthru": false,
+        "label": "REBOOT PI",
+        "tooltip": "",
+        "color": "#ffffff",
+        "bgcolor": "#c62828",
+        "className": "",
+        "icon": "",
+        "payload": "",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 90,
+        "y": 340,
+        "wires": [
+            [
+                "execReboot"
+            ]
+        ]
+    },
+    {
+        "id": "btnShutdown",
+        "type": "ui_button",
+        "z": "tab1",
+        "name": "",
+        "group": "grpControls",
+        "order": 33,
+        "width": 4,
+        "height": 1,
+        "passthru": false,
+        "label": "SHUTDOWN",
+        "tooltip": "",
+        "color": "#ffffff",
+        "bgcolor": "#c62828",
+        "className": "",
+        "icon": "",
+        "payload": "",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 90,
+        "y": 400,
+        "wires": [
+            [
+                "execShutdown"
+            ]
+        ]
+    },
+    {
+        "id": "fnStore",
+        "type": "function",
+        "z": "tab1",
+        "name": "Store toggles",
+        "func": "// Expect: msg.topic in {t_isi,t_sniff, t_fms}, msg.payload boolean\nconst t = String(msg.topic || '');\nlet v = msg.payload;\nif (typeof v === 'string') v = /^(true|on|1)$/i.test(v);\n\n// Only store known keys\nif (['t_isi', 't_sniff', 't_fms'].includes(t)) {\n  flow.set(t, !!v);\n  node.status({ fill: v ? 'green' : 'grey', shape: 'dot', text: `${t}=${!!v}` });\n}\nreturn null;    // store-only; no downstream output\n",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1150,
+        "y": 720,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "fnBuildRoles",
+        "type": "function",
+        "z": "tab1",
+        "name": "Build ROLES",
+        "func": "const isi   = !!flow.get('t_isi');\nconst sniff = !!flow.get('t_sniff');\nconst fms   = !!flow.get('t_fms');\n\nlet parts = [];\nif (isi)    parts.push('isi');\nif (sniff)  parts.push('sniff');\nif (fms)    parts.push('fms');\n\nconst roles = parts.join(' ');  // e.g \"isi sniff\", \"sniff\" \"fms isi\", ...\nmsg.payload = `ROLES=\"${roles}\"\\n`;\nmsg.filename = '/tmp/pi_roles.conf';\nnode.status({\n    fill:'blue',\n    shape:'dot',\n    text: msg.payload.trim()\n    });\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 330,
+        "y": 160,
+        "wires": [
+            [
+                "3904da57d2285975"
+            ]
+        ]
+    },
+    {
+        "id": "execStopAll",
+        "type": "exec",
+        "z": "tab1",
+        "command": "sudo /usr/local/bin/pi-servsync.sh stopall",
+        "addpay": false,
+        "append": "",
+        "useSpawn": "false",
+        "timer": "",
+        "winHide": false,
+        "oldrc": false,
+        "name": "stop all",
+        "x": 240,
+        "y": 280,
+        "wires": [
+            [],
+            [],
+            []
+        ]
+    },
+    {
+        "id": "execReboot",
+        "type": "exec",
+        "z": "tab1",
+        "command": "sudo /sbin/reboot",
+        "addpay": false,
+        "useSpawn": "false",
+        "timer": "",
+        "oldrc": false,
+        "name": "reboot",
+        "x": 250,
+        "y": 340,
+        "wires": [
+            [],
+            [],
+            []
+        ]
+    },
+    {
+        "id": "execShutdown",
+        "type": "exec",
+        "z": "tab1",
+        "command": "sudo /sbin/poweroff",
+        "addpay": false,
+        "useSpawn": "false",
+        "timer": "",
+        "oldrc": false,
+        "name": "poweroff",
+        "x": 240,
+        "y": 400,
+        "wires": [
+            [],
+            [],
+            []
+        ]
+    },
+    {
+        "id": "execPrep",
+        "type": "exec",
+        "z": "tab1",
+        "command": "sudo /usr/local/bin/log-prep.sh",
+        "addpay": false,
+        "append": "",
+        "useSpawn": "false",
+        "timer": "",
+        "winHide": false,
+        "oldrc": false,
+        "name": "zip logs",
+        "x": 620,
+        "y": 220,
+        "wires": [
+            [
+                "6c542b07e09b8621"
+            ],
+            [],
+            []
+        ]
+    },
+    {
+        "id": "httpLogout",
+        "type": "http in",
+        "z": "tab1",
+        "name": "GET /logout",
+        "url": "/logout",
+        "method": "get",
+        "upload": false,
+        "skipBodyParsing": false,
+        "swaggerDoc": "",
+        "x": 90,
+        "y": 540,
+        "wires": [
+            [
+                "fnLogout"
+            ]
+        ]
+    },
+    {
+        "id": "fnLogout",
+        "type": "function",
+        "z": "tab1",
+        "name": "Logout page",
+        "func": "// Clean logout page: no 401, no WWW-Authenticate, no basic-auth popup\n// Just a nice goodbye screen and optional link back to /ui.\n\nmsg.statusCode = 200;\nmsg.headers = {\n    \"Content-Type\": \"text/html; charset=utf-8\",\n    \"Cache-Control\": \"no-store\"\n};\n\nmsg.payload = `\n<!doctype html>\n<html>\n<head>\n  <meta charset=\"utf-8\">\n  <title>Goodbye</title>\n  <style>\n    * { box-sizing: border-box; }\n    body {\n      margin: 0;\n      background: #111;\n      color: #eee;\n      font-family: system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif;\n      height: 100vh;\n      display: flex;\n      align-items: center;\n      justify-content: center;\n    }\n    .card {\n      text-align: center;\n      padding: 2rem 2.5rem;\n      border-radius: 1rem;\n      background: #222;\n      box-shadow: 0 0 30px #000a;\n      max-width: 420px;\n      width: 90%;\n    }\n    .logo {\n      font-size: 1.4rem;\n      font-weight: 700;\n      margin-bottom: 0.75rem;\n      letter-spacing: .08em;\n      text-transform: uppercase;\n      opacity: 0.9;\n    }\n    h1 {\n      margin: 0 0 0.75rem;\n      font-size: 1.4rem;\n    }\n    p {\n      margin: 0 0 1.25rem;\n      font-size: .9rem;\n      opacity: 0.8;\n    }\n    a.btn {\n      display: inline-block;\n      padding: .5rem 1.2rem;\n      border-radius: .6rem;\n      background: #1976d2;\n      color: #fff;\n      text-decoration: none;\n      font-weight: 600;\n      font-size: .9rem;\n    }\n  </style>\n</head>\n<body>\n  <div class=\"card\">\n    <div class=\"logo\">\n      <img src=\"/logo.png\" alt=\"INIT\"\n           style=\"max-width:220px;height:auto;display:block;margin:0 auto 0.5rem;\">\n    <h1>Session ended</h1>\n    <p>You can now safely close this tab or window.</p>\n    <a class=\"btn\" href=\"/ui\">Back to dashboard</a>\n  </div>\n  <script>\n    // If the login overlay is in use, clear its flag so next visit asks again\n    try {\n      localStorage.removeItem(\"initbox_ui_auth_ok\");\n    } catch (e) {}\n  </script>\n</body>\n</html>\n`;\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 250,
+        "y": 540,
+        "wires": [
+            [
+                "httpLogoutResp"
+            ]
+        ]
+    },
+    {
+        "id": "httpLogoutResp",
+        "type": "http response",
+        "z": "tab1",
+        "name": "HTTP logout response",
+        "statusCode": "",
+        "headers": {},
+        "x": 440,
+        "y": 540,
+        "wires": []
+    },
+    {
+        "id": "execFindZip",
+        "type": "exec",
+        "z": "tab1",
+        "command": "/bin/bash -lc 'ls -1t /usr/tracefiles/*.zip 2>/dev/null | head -n1'",
+        "addpay": false,
+        "append": "",
+        "useSpawn": "false",
+        "timer": "",
+        "winHide": false,
+        "oldrc": false,
+        "name": "find latest zip",
+        "x": 450,
+        "y": 600,
+        "wires": [
+            [
+                "de24b6c9554bfbbb"
+            ],
+            [],
+            []
+        ]
+    },
+    {
+        "id": "fnPrepHeaders",
+        "type": "function",
+        "z": "tab1",
+        "name": "prep headers + filename (delete-on-finish)",
+        "func": "// Prepare HTTP headers for ZIP download and hand filename to cleanup.\n// Output 1: HTTP response\n// Output 2: { payload: <full zip path> } for rm-zip exec\n\n// 1) No filename -> 404\nif (!msg.filename) {\n    msg.statusCode = 404;\n    msg.headers = {\n        'Cache-Control': 'no-store',\n        'Content-Type': 'text/plain; charset=utf-8'\n    };\n    msg.payload = 'No ZIP prepared yet.';\n    return [msg, null];\n}\n\n// 2) ZIP read failed -> 500\nif (!Buffer.isBuffer(msg.payload)) {\n    msg.statusCode = 500;\n    msg.headers = {\n        'Cache-Control': 'no-store',\n        'Content-Type': 'text/plain; charset=utf-8'\n    };\n    msg.payload = 'ZIP read failed (payload not Buffer).';\n    return [msg, null];\n}\n\n// 3) Happy path: serve ZIP and schedule cleanup\nvar full = String(msg.filename || '');\nvar base = full.split(/[\\\\/]/).pop() || 'tracefiles.zip';\n\nmsg.statusCode = 200;\nmsg.headers = {\n    'Content-Type': 'application/zip',\n    'Content-Disposition': 'attachment; filename=\"' + base + '\"',\n    'Cache-Control': 'no-store'\n};\n\n// Second output: tell rm-zip which file to delete\nvar cleanupMsg = { payload: full };\n\nreturn [msg, cleanupMsg];",
+        "outputs": 2,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1040,
+        "y": 600,
+        "wires": [
+            [
+                "httpOutZip"
+            ],
+            [
+                "execRmZip"
+            ]
+        ]
+    },
+    {
+        "id": "httpOutZip",
+        "type": "http response",
+        "z": "tab1",
+        "name": "HTTP 200/404",
+        "statusCode": "",
+        "headers": {},
+        "x": 1300,
+        "y": 580,
+        "wires": []
+    },
+    {
+        "id": "execRmZip",
+        "type": "exec",
+        "z": "tab1",
+        "command": "/bin/rm -f",
+        "addpay": "payload",
+        "append": "",
+        "useSpawn": "false",
+        "timer": "",
+        "winHide": false,
+        "oldrc": false,
+        "name": "rm zip (best-effort)",
+        "x": 1310,
+        "y": 620,
+        "wires": [
+            [],
+            [],
+            []
+        ]
+    },
+    {
+        "id": "injStats",
+        "type": "inject",
+        "z": "tab1",
+        "name": "every 5s",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "10",
+        "crontab": "",
+        "once": true,
+        "onceDelay": 0.5,
+        "topic": "",
+        "payload": "",
+        "payloadType": "str",
+        "x": 100,
+        "y": 800,
+        "wires": [
+            [
+                "execStats"
+            ]
+        ]
+    },
+    {
+        "id": "execStats",
+        "type": "exec",
+        "z": "tab1",
+        "command": "sudo /usr/local/bin/pi-stats.sh",
+        "addpay": false,
+        "append": "",
+        "useSpawn": "false",
+        "timer": "",
+        "winHide": false,
+        "oldrc": false,
+        "name": "get pi stats",
+        "x": 270,
+        "y": 800,
+        "wires": [
+            [
+                "jsonStats"
+            ],
+            [],
+            []
+        ]
+    },
+    {
+        "id": "jsonStats",
+        "type": "json",
+        "z": "tab1",
+        "name": "parse JSON",
+        "property": "payload",
+        "action": "",
+        "pretty": false,
+        "x": 430,
+        "y": 800,
+        "wires": [
+            [
+                "fnCPU",
+                "fnMem",
+                "fnTemp",
+                "96877e6e06d8350c",
+                "588f943580be7cf8",
+                "ceea9703c349f204",
+                "291e5b6c893af6a7",
+                "620e34ca710eae0f",
+                "fnDisk"
+            ]
+        ]
+    },
+    {
+        "id": "fnCPU",
+        "type": "function",
+        "z": "tab1",
+        "name": "CPU %",
+        "func": "msg.payload = Number(msg.payload.cpu_pct)||0; return msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 100,
+        "y": 940,
+        "wires": [
+            [
+                "gCPU"
+            ]
+        ]
+    },
+    {
+        "id": "fnMem",
+        "type": "function",
+        "z": "tab1",
+        "name": "RAM %",
+        "func": "msg.payload = Number(msg.payload.mem_used_pct)||0; return msg;",
+        "outputs": 1,
+        "x": 100,
+        "y": 980,
+        "wires": [
+            [
+                "gMem"
+            ]
+        ]
+    },
+    {
+        "id": "fnDisk",
+        "type": "function",
+        "z": "tab1",
+        "name": "Disk chart",
+        "func": "// Build a static 2-bar dataset for ui_chart: Used vs Free (GB)\n\nconst s = msg.payload || {};\n\nconst usedPct = Number(s.disk_used_pct || 0);   // e.g. 8\nconst freeGb  = Number(s.disk_avail_gb || 0);   // free space in GB\n\nlet totalGb = 0;\n\nif (usedPct >= 0 && usedPct < 100 && freeGb >= 0) {\n    // total = free * 100 / (100 - used%)\n    totalGb = freeGb * 100 / (100 - usedPct);\n} else {\n    totalGb = freeGb;\n}\n\nconst usedGb = totalGb - freeGb;\n\nfunction round1(n) {\n    if (!isFinite(n)) return 0;\n    return Math.round(n * 10) / 10;\n}\n\nconst used = round1(usedGb);\nconst free = round1(freeGb);\n\n// ui_chart \"static dataset\" format\nmsg.payload = [{\n    series: [\"Used\", \"Free\"],\n    data:   [[used], [free]],\n    labels: [\"Disk\"]\n}];\n\n// optional: tell chart.js to start at 0 on Y axis\nmsg.ui_control = {\n    options: {\n        tooltips: {\n            enabled: false\n        },\n        scales: {\n            yAxes: [{ ticks: { beginAtZero: true } }]\n        }\n    }\n};\n\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 100,
+        "y": 1140,
+        "wires": [
+            [
+                "b178cea4b536d7b2"
+            ]
+        ]
+    },
+    {
+        "id": "fnTemp",
+        "type": "function",
+        "z": "tab1",
+        "name": "Temp °C",
+        "func": "msg.payload = Number(msg.payload.temp_c)||0; return msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 100,
+        "y": 1020,
+        "wires": [
+            [
+                "gTemp"
+            ]
+        ]
+    },
+    {
+        "id": "gCPU",
+        "type": "ui_gauge",
+        "z": "tab1",
+        "name": "CPU",
+        "group": "grpControls",
+        "order": 18,
+        "width": 1,
+        "height": 1,
+        "gtype": "donut",
+        "title": "",
+        "label": "%",
+        "format": "{{value}}",
+        "min": 0,
+        "max": "100",
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "",
+        "seg2": "",
+        "diff": false,
+        "className": "",
+        "x": 230,
+        "y": 940,
+        "wires": []
+    },
+    {
+        "id": "gMem",
+        "type": "ui_gauge",
+        "z": "tab1",
+        "name": "RAM",
+        "group": "grpControls",
+        "order": 20,
+        "width": 1,
+        "height": 1,
+        "gtype": "donut",
+        "title": "",
+        "label": "%",
+        "format": "{{value}}",
+        "min": 0,
+        "max": "100",
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "",
+        "seg2": "",
+        "diff": false,
+        "className": "",
+        "x": 230,
+        "y": 980,
+        "wires": []
+    },
+    {
+        "id": "gTemp",
+        "type": "ui_gauge",
+        "z": "tab1",
+        "name": "Temp",
+        "group": "grpControls",
+        "order": 22,
+        "width": 1,
+        "height": 1,
+        "gtype": "donut",
+        "title": "",
+        "label": "°C",
+        "format": "{{value}}",
+        "min": 0,
+        "max": "85",
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "60",
+        "seg2": "75",
+        "diff": false,
+        "className": "",
+        "x": 230,
+        "y": 1020,
+        "wires": []
+    },
+    {
+        "id": "3904da57d2285975",
+        "type": "file",
+        "z": "tab1",
+        "name": "",
+        "filename": "filename",
+        "filenameType": "msg",
+        "appendNewline": true,
+        "createDir": false,
+        "overwriteFile": "true",
+        "encoding": "utf8",
+        "x": 480,
+        "y": 160,
+        "wires": [
+            [
+                "4c204dce96e5cf47"
+            ]
+        ]
+    },
+    {
+        "id": "4c204dce96e5cf47",
+        "type": "exec",
+        "z": "tab1",
+        "command": "/usr/bin/sudo /bin/bash -lc 'install -m 0644 -o root -g root /tmp/pi_roles.conf /etc/pi_roles.conf && /usr/local/bin/pi-servsync.sh apply && rm -f -- /tmp/pi_roles.conf'",
+        "addpay": "",
+        "append": "",
+        "useSpawn": "false",
+        "timer": "",
+        "winHide": false,
+        "oldrc": false,
+        "name": "Install file",
+        "x": 620,
+        "y": 160,
+        "wires": [
+            [],
+            [],
+            []
+        ]
+    },
+    {
+        "id": "6c542b07e09b8621",
+        "type": "function",
+        "z": "tab1",
+        "name": "set download url",
+        "func": "// Use the exact same id we armed with and provide the POST form\nconst id = flow.get('dl_cmd_id');\nif (!id) return null;\n\nmsg.socketid = flow.get('last_socket'); // same tab\nmsg.action   = 'download_zip';\nmsg.method   = 'POST';\nmsg.url      = '/dlz2';\n\nmsg._id = id;            // <-- must match the armed id\nmsg.ts  = Date.now();    // <-- must satisfy fresh(msg.ts)\nmsg.form = { token: id };// <-- what your template puts into #dl_token\n\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 420,
+        "y": 260,
+        "wires": [
+            [
+                "85e234f1823cea9a"
+            ]
+        ]
+    },
+    {
+        "id": "85e234f1823cea9a",
+        "type": "ui_template",
+        "z": "tab1",
+        "group": "grpControls",
+        "name": "Auto download",
+        "order": 8,
+        "width": 1,
+        "height": 1,
+        "format": "<div style=\"display:none\">\n  <iframe id=\"dl_iframe\" name=\"dl_iframe\" style=\"display:none\"></iframe>\n  <form id=\"dl_form\" method=\"POST\" action=\"/dlz2\" target=\"dl_iframe\">\n    <input type=\"hidden\" name=\"token\" id=\"dl_token\">\n  </form>\n</div>\n\n<script>\n  (function(scope){\n  let armed = false;\n\n  function log() {\n    if (typeof console !== \"undefined\" && console.log) {\n      var args = Array.prototype.slice.call(arguments);\n      args.unshift(\"[AutoDL]\");\n      console.log.apply(console, args);\n    }\n  }\n\n  scope.$watch(\"msg\", function(msg){\n    if (!msg) return;\n    log(\"msg\", msg);\n\n    // 1) First message: arm this tab (no id checks)\n    if (msg.arm === true) {\n      armed = true;\n      log(\"armed (simple mode)\");\n      return;\n    }\n\n    // 2) Second message: trigger download\n    if (msg.action === \"download_zip\") {\n      log(\"download_zip msg, armed=\", armed);\n\n      if (!armed) {\n        log(\"ignored: not armed\");\n        return;\n      }\n      if (msg.method !== \"POST\" || !msg.form) {\n        log(\"ignored: bad method/form\", msg.method, msg.form);\n        return;\n      }\n\n      var f = document.getElementById(\"dl_form\");\n      var tokenInput = document.getElementById(\"dl_token\");\n      if (!f || !tokenInput) {\n        log(\"no form/token elements\", f, tokenInput);\n        return;\n      }\n\n      f.action = msg.url || \"/dlz2\";\n      tokenInput.value = msg.form.token || \"\";\n\n      armed = false;\n      log(\"submitting form to\", f.action, \"token=\", tokenInput.value);\n\n      try {\n        f.submit();\n      } catch (e) {\n        log(\"submit error\", e);\n      }\n    }\n  });\n})(scope);\n</script>",
+        "storeOutMessages": false,
+        "fwdInMessages": false,
+        "resendOnRefresh": false,
+        "templateScope": "local",
+        "className": "",
+        "x": 660,
+        "y": 280,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "2cb50c51077740e7",
+        "type": "ui_ui_control",
+        "z": "tab1",
+        "name": "",
+        "events": "all",
+        "x": 400,
+        "y": 380,
+        "wires": [
+            [
+                "561ebf72ce84a143"
+            ]
+        ]
+    },
+    {
+        "id": "561ebf72ce84a143",
+        "type": "function",
+        "z": "tab1",
+        "name": "remember socket",
+        "func": "// Save socket id when the dashboard connects OR switches tabs\nif ((msg.payload === 'connected' || msg.payload === 'change') && msg.socketid) {\n  flow.set('last_socket', msg.socketid);\n  node.status({ fill: \"green\", shape: \"dot\", text: msg.socketid.slice(0,6) });\n}\nreturn null;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 570,
+        "y": 380,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "f9c4f06ca5ca2610",
+        "type": "function",
+        "z": "tab1",
+        "name": "arm download",
+        "func": "// Generate a one-time id and remember it for this tab\nconst id = Date.now().toString(36) + Math.random().toString(36).slice(2,6);\nflow.set('dl_cmd_id', id);\n\nreturn {\n  socketid: flow.get('last_socket'), // optional: target this tab only\n  arm: true,\n  _id: id,              // <-- the id the widget will remember\n  ts: Date.now()        // <-- passes your fresh() check\n};\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 220,
+        "wires": [
+            [
+                "85e234f1823cea9a"
+            ]
+        ]
+    },
+    {
+        "id": "95849cfb067726cf",
+        "type": "function",
+        "z": "tab1",
+        "name": "guard token (POST)",
+        "func": "// TEMP: accept any token; just normalize for downstream\nconst body = (msg.req && msg.req.body) || {};\nmsg.form = { token: body.token || '' };\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 260,
+        "y": 600,
+        "wires": [
+            [
+                "execFindZip"
+            ]
+        ]
+    },
+    {
+        "id": "65c52187a64deeb8",
+        "type": "http in",
+        "z": "tab1",
+        "name": "[post] /dlz2",
+        "url": "/dlz2",
+        "method": "post",
+        "upload": false,
+        "skipBodyParsing": false,
+        "swaggerDoc": "",
+        "x": 80,
+        "y": 600,
+        "wires": [
+            [
+                "95849cfb067726cf"
+            ]
+        ]
+    },
+    {
+        "id": "de24b6c9554bfbbb",
+        "type": "function",
+        "z": "tab1",
+        "name": "pick zip from exec",
+        "func": "const s = (msg.payload||'').toString().trim();\nmsg.filename = s || msg.filename;   // prefer newest from exec\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 630,
+        "y": 600,
+        "wires": [
+            [
+                "fileInZip"
+            ]
+        ]
+    },
+    {
+        "id": "fileInZip",
+        "type": "file in",
+        "z": "tab1",
+        "name": "read zip",
+        "filename": "filename",
+        "filenameType": "msg",
+        "format": "",
+        "chunk": false,
+        "sendError": false,
+        "encoding": "none",
+        "allProps": false,
+        "x": 800,
+        "y": 600,
+        "wires": [
+            [
+                "fnPrepHeaders"
+            ]
+        ]
+    },
+    {
+        "id": "98403ee3c11049c5",
+        "type": "ui_template",
+        "z": "tab1",
+        "group": "grpControls",
+        "name": "Session gaurd/Login overlay",
+        "order": 3,
+        "width": 3,
+        "height": 1,
+        "format": "<!-- Full-screen login overlay for Pi control -->\n<div ng-if=\"auth.locked\" style=\"position:fixed;inset:0;z-index:9999;\n            background:#111a;\n            display:flex;align-items:center;justify-content:center;\">\n  <div style=\"background:#222;padding:2rem 2.5rem;border-radius:1rem;\n              box-shadow:0 0 20px #0008;min-width:280px;\n              color:#eee;font-family:system-ui,sans-serif;max-width:420px;\">\n\n    <div style=\"text-align:center;margin-bottom:1.2rem;\">\n      <img src=\"/logo.png\" alt=\"INIT\"\n           style=\"max-width:200px;height:auto;display:block;margin:0 auto 0.6rem;\">\n      <div style=\"font-size:1.1rem;font-weight:600;\">\n        Welcome to INITbox\n      </div>\n    </div>\n\n    <p style=\"margin-top:0;margin-bottom:1rem;font-size:.9rem;opacity:.8;\">\n      Enter dashboard password to continue.\n    </p>\n\n    <label style=\"display:block;font-size:.85rem;margin-bottom:.35rem;\">\n      Password\n    </label>\n    <input type=\"password\"\n           ng-model=\"auth.pwd\"\n           ng-keypress=\"$event.which===13 && login()\"\n           style=\"width:100%;padding:.4rem .5rem;border-radius:.4rem;\n                  border:1px solid #555;background:#111;color:#eee;\n                  box-sizing:border-box;\">\n\n    <div ng-if=\"auth.error\" style=\"margin-top:.5rem;color:#ff8080;font-size:.8rem;\">\n      {{auth.error}}\n    </div>\n\n    <button ng-click=\"login()\"\n            style=\"margin-top:1rem;width:100%;padding:.45rem;\n                   border-radius:.5rem;border:none;\n                   background:#4caf50;color:#fff;font-weight:600;\n                   cursor:pointer;\">\n      Unlock\n    </button>\n  </div>\n</div>\n\n<script>\n  (function(scope) {\n  // >>> CHANGE ONLY THIS LINE IF YOU CHANGE THE PASSWORD <<<\n  const PASS = \"TomatoH34d\";    // must match your hotspot password exactly\n  const KEY  = \"initbox_ui_auth_ok\";\n\n  // Single source of truth for login state\n  scope.auth = {\n    locked: true,\n    pwd: \"\",\n    error: \"\"\n  };\n\n  function refreshFromStorage() {\n    try {\n      const ok = window.localStorage.getItem(KEY) === \"1\";\n      scope.auth.locked = !ok;\n      if (!ok) {\n        scope.auth.pwd = \"\";\n        scope.auth.error = \"\";\n      }\n      scope.$applyAsync();\n    } catch (e) {\n      // If localStorage is blocked, just stay locked until they log in\n      scope.auth.locked = true;\n    }\n  }\n\n  scope.login = function() {\n    const entered = (scope.auth.pwd || \"\").trim();\n\n    if (entered === PASS) {\n      try { window.localStorage.setItem(KEY, \"1\"); } catch (e) {}\n      scope.auth.locked = false;\n      scope.auth.error = \"\";\n      scope.auth.pwd = \"\";\n    } else {\n      scope.auth.error = \"Wrong password, try again.\";\n      scope.auth.pwd = \"\";\n    }\n  };\n\n  // If some other flow wants to force logout, it can clear localStorage[KEY]\n  // and this will re-lock on next refresh()\n  refreshFromStorage();\n})(scope);\n</script>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 140,
+        "y": 120,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "7e77298b3fb5d4ca",
+        "type": "function",
+        "z": "tab1",
+        "name": "redirect to /ui",
+        "func": "// Generic captive-portal redirect to dashboard\nmsg.statusCode = 302;\nmsg.headers = {\n  \"Location\": \"http://initbox.wlan:1880/ui/\",\n  \"Cache-Control\": \"no-store\"\n};\nmsg.payload = \"Redirecting to dashboard...\";\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 530,
+        "y": 40,
+        "wires": [
+            [
+                "41077da8cfb877b6"
+            ]
+        ]
+    },
+    {
+        "id": "41077da8cfb877b6",
+        "type": "http response",
+        "z": "tab1",
+        "name": "",
+        "statusCode": "",
+        "headers": {},
+        "x": 710,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "53ed5e689a3cc1ae",
+        "type": "http in",
+        "z": "tab1",
+        "name": "/generate_204",
+        "url": "/generate_204",
+        "method": "get",
+        "upload": false,
+        "skipBodyParsing": false,
+        "swaggerDoc": "",
+        "x": 550,
+        "y": 100,
+        "wires": [
+            [
+                "7e77298b3fb5d4ca"
+            ]
+        ]
+    },
+    {
+        "id": "03568c5ab3d4154b",
+        "type": "http in",
+        "z": "tab1",
+        "name": "/hotspot-detect.html",
+        "url": "/hotspot-detect.html",
+        "method": "get",
+        "upload": false,
+        "skipBodyParsing": false,
+        "swaggerDoc": "",
+        "x": 750,
+        "y": 100,
+        "wires": [
+            [
+                "7e77298b3fb5d4ca"
+            ]
+        ]
+    },
+    {
+        "id": "9e5dd87126b7d1ce",
+        "type": "http in",
+        "z": "tab1",
+        "name": "/ncsi.txt",
+        "url": "/ncsi.txt",
+        "method": "get",
+        "upload": false,
+        "skipBodyParsing": false,
+        "swaggerDoc": "",
+        "x": 270,
+        "y": 40,
+        "wires": [
+            [
+                "7e77298b3fb5d4ca"
+            ]
+        ]
+    },
+    {
+        "id": "1cce60f95617e8e0",
+        "type": "http in",
+        "z": "tab1",
+        "name": "/connecttest.txt",
+        "url": "/connecttest.txt",
+        "method": "get",
+        "upload": false,
+        "skipBodyParsing": false,
+        "swaggerDoc": "",
+        "x": 320,
+        "y": 80,
+        "wires": [
+            [
+                "7e77298b3fb5d4ca"
+            ]
+        ]
+    },
+    {
+        "id": "1d5f40fc82a6e4cc",
+        "type": "http in",
+        "z": "tab1",
+        "name": "/redirect",
+        "url": "/redirect",
+        "method": "get",
+        "upload": false,
+        "skipBodyParsing": false,
+        "swaggerDoc": "",
+        "x": 360,
+        "y": 120,
+        "wires": [
+            [
+                "7e77298b3fb5d4ca"
+            ]
+        ]
+    },
+    {
+        "id": "96877e6e06d8350c",
+        "type": "function",
+        "z": "tab1",
+        "name": "Time",
+        "func": "function pad(n) { return (n < 10 ? '0' : '') + n; }\n\nconst d = new Date();\n\nconst ts =\n  pad(d.getHours()) + ':' +\n  pad(d.getMinutes()) + ':' +\n  pad(d.getSeconds());\n\nmsg.payload = ts;\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 90,
+        "y": 1060,
+        "wires": [
+            [
+                "725a967fae9013f6"
+            ]
+        ]
+    },
+    {
+        "id": "725a967fae9013f6",
+        "type": "ui_text",
+        "z": "tab1",
+        "group": "grpControls",
+        "order": 14,
+        "width": 4,
+        "height": 1,
+        "name": "",
+        "label": "Time:",
+        "format": "{{msg.payload}}",
+        "layout": "row-left",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#000000",
+        "x": 230,
+        "y": 1060,
+        "wires": []
+    },
+    {
+        "id": "620e34ca710eae0f",
+        "type": "function",
+        "z": "tab1",
+        "name": "Up time",
+        "func": "// Convert uptime_s (seconds) into a friendly string, e.g. \"1d 2h 03m\"\nconst s = Number(msg.payload.uptime_s || 0);\n\nif (!s) {\n    msg.payload = \"\";\n    return msg;\n}\n\nconst days  = Math.floor(s / 86400);\nconst hours = Math.floor((s % 86400) / 3600);\nconst mins  = Math.floor((s % 3600) / 60);\n\nlet out = \"\";\nif (days)  out += days + \"d \";\nif (hours || days) out += hours + \"h \";\nout += (mins < 10 && (hours || days) ? \"0\" : \"\") + mins + \"m\";\n\nmsg.payload = out;\nreturn msg",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 100,
+        "y": 1100,
+        "wires": [
+            [
+                "ae86805eae7e8b48"
+            ]
+        ]
+    },
+    {
+        "id": "ae86805eae7e8b48",
+        "type": "ui_text",
+        "z": "tab1",
+        "group": "grpControls",
+        "order": 15,
+        "width": 4,
+        "height": 1,
+        "name": "",
+        "label": "Uptime:",
+        "format": "{{msg.payload}}",
+        "layout": "row-left",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#000000",
+        "x": 240,
+        "y": 1100,
+        "wires": []
+    },
+    {
+        "id": "9d0ecd74c8d46a25",
+        "type": "ui_template",
+        "z": "tab1",
+        "group": "grpControls",
+        "name": "CPU lbl",
+        "order": 19,
+        "width": 2,
+        "height": 1,
+        "format": "<div style=\"display:flex;align-items:center;height:100%;padding-left:4px;\">\n    <span>CPU %</span>\n</div>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 600,
+        "y": 780,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "518f7691aaa590e6",
+        "type": "ui_template",
+        "z": "tab1",
+        "group": "grpControls",
+        "name": "RAM lbl",
+        "order": 21,
+        "width": 2,
+        "height": 1,
+        "format": "<div style=\"display:flex;align-items:center;height:100%;padding-left:4px;\">\n  <span>RAM %</span>\n</div>\n",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 600,
+        "y": 840,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "62e1cc1d8028a770",
+        "type": "ui_template",
+        "z": "tab1",
+        "group": "grpControls",
+        "name": "Temp",
+        "order": 23,
+        "width": 2,
+        "height": 1,
+        "format": "<div style=\"display:flex;align-items:center;height:100%;padding-left:4px;\">\n    <span>TEMP °C </span>\n</div>",
+        "storeOutMessages": false,
+        "fwdInMessages": false,
+        "resendOnRefresh": false,
+        "templateScope": "local",
+        "className": "",
+        "x": 730,
+        "y": 840,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "b178cea4b536d7b2",
+        "type": "ui_chart",
+        "z": "tab1",
+        "name": "",
+        "group": "grpControls",
+        "order": 35,
+        "width": 6,
+        "height": 3,
+        "label": "Storage",
+        "chartType": "horizontalBar",
+        "legend": "true",
+        "xformat": "HH:mm:ss",
+        "interpolate": "linear",
+        "nodata": "",
+        "dot": false,
+        "ymin": "",
+        "ymax": "",
+        "removeOlder": 1,
+        "removeOlderPoints": "",
+        "removeOlderUnit": "3600",
+        "cutout": 0,
+        "useOneColor": false,
+        "useUTC": false,
+        "colors": [
+            "#df0c0c",
+            "#1bc026",
+            "#ff830f",
+            "#2ca02c",
+            "#98df8a",
+            "#d62728",
+            "#ff9896",
+            "#9467bd",
+            "#c5b0d5"
+        ],
+        "outputs": 1,
+        "useDifferentColor": false,
+        "className": "",
+        "x": 240,
+        "y": 1140,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "588f943580be7cf8",
+        "type": "function",
+        "z": "tab1",
+        "name": "Disk text",
+        "func": "const s = msg.payload || {};\n\nconst usedPct = Number(s.disk_used_pct || 0);   // percent used\nconst freeGb  = Number(s.disk_avail_gb || 0);   // free GB\n\nlet totalGb = 0;\nif (usedPct >= 0 && usedPct < 100 && freeGb >= 0) {\n    totalGb = freeGb * 100 / (100 - usedPct);\n} else {\n    totalGb = freeGb;\n}\nconst usedGb = totalGb - freeGb;\n\nfunction fmt(n) {\n    if (!isFinite(n)) return \"?\";\n    const v = Math.max(n, 0);\n    const s = v.toFixed(1);\n    return s.endsWith(\".0\") ? s.slice(0, -2) : s;\n}\n\nmsg.payload = `${fmt(usedGb)} / ${fmt(totalGb)} GB  (${usedPct.toFixed(1)}%)`;\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 100,
+        "y": 1180,
+        "wires": [
+            [
+                "0628ddb885a85241"
+            ]
+        ]
+    },
+    {
+        "id": "0628ddb885a85241",
+        "type": "ui_text",
+        "z": "tab1",
+        "group": "grpControls",
+        "order": 37,
+        "width": 4,
+        "height": 1,
+        "name": "Disk",
+        "label": "",
+        "format": "{{msg.payload}}",
+        "layout": "row-left",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#000000",
+        "x": 230,
+        "y": 1180,
+        "wires": []
+    },
+    {
+        "id": "7476985ff4327d77",
+        "type": "http in",
+        "z": "tab1",
+        "name": "GET /logo.png",
+        "url": "/logo.png",
+        "method": "get",
+        "upload": false,
+        "skipBodyParsing": false,
+        "swaggerDoc": "",
+        "x": 90,
+        "y": 480,
+        "wires": [
+            [
+                "75080d6a78268177"
+            ]
+        ]
+    },
+    {
+        "id": "75080d6a78268177",
+        "type": "file in",
+        "z": "tab1",
+        "name": "read logo.png",
+        "filename": "/home/initbox/.node-red/public/logo.png",
+        "filenameType": "str",
+        "format": "",
+        "chunk": false,
+        "sendError": false,
+        "encoding": "none",
+        "allProps": false,
+        "x": 260,
+        "y": 480,
+        "wires": [
+            [
+                "3107a6fbe3a65de7"
+            ]
+        ]
+    },
+    {
+        "id": "3107a6fbe3a65de7",
+        "type": "function",
+        "z": "tab1",
+        "name": "set png headers",
+        "func": "msg.headers = {\n  \"Content-Type\": \"image/png\"\n};\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 440,
+        "y": 480,
+        "wires": [
+            [
+                "08a12b4457492317"
+            ]
+        ]
+    },
+    {
+        "id": "08a12b4457492317",
+        "type": "http response",
+        "z": "tab1",
+        "name": "",
+        "statusCode": "",
+        "headers": {},
+        "x": 590,
+        "y": 480,
+        "wires": []
+    },
+    {
+        "id": "291e5b6c893af6a7",
+        "type": "ui_template",
+        "z": "tab1",
+        "group": "grpControls",
+        "name": "Device info",
+        "order": 12,
+        "width": 20,
+        "height": 1,
+        "format": "<div ng-init=\"info={};year=(new Date()).getFullYear()\"></div>\n\n<div style=\"\n  font-size:0.8rem;\n  opacity:0.8;\n  margin-top:0.5rem;\n  display:flex;\n  flex-wrap:wrap;\n  gap:0.75rem;\n  align-items:center;\n  \">\n    <span><strong>Device</strong> {{info.device_id || 'INITbox ?'}}</span>\n    <span><strong>IP</strong> {{info.ip || 'n/a'}}</span>\n    <span><strong>Host</strong> {{info.hostname || 'n/a'}}</span>\n    <span><strong>OS</strong> {{info.os || 'n/a'}}</span>\n    <span><strong>Model</strong> {{info.model || 'n/a'}}</span>\n    <span><strong>Serial</strong> {{info.serial || 'n/a'}}</span>\n<script>\n    (function(scope){\n  scope.$watch('msg', function(msg){\n    if (!msg || !msg.payload) return;\n    scope.info = msg.payload;\n    scope.year = (new Date()).getFullYear();\n  });\n})(scope);\n</script>",
+        "storeOutMessages": false,
+        "fwdInMessages": false,
+        "resendOnRefresh": false,
+        "templateScope": "local",
+        "className": "",
+        "x": 170,
+        "y": 1220,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "8d0b12ebc9755a97",
+        "type": "ui_text",
+        "z": "tab1",
+        "group": "grpControls",
+        "order": 6,
+        "width": 5,
+        "height": 1,
+        "name": "",
+        "label": "Stats & Status",
+        "format": "{{msg.payload}}",
+        "layout": "row-left",
+        "className": "",
+        "style": true,
+        "font": "",
+        "fontSize": "20",
+        "color": "#32ba17",
+        "x": 100,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "injInitRoles",
+        "type": "inject",
+        "z": "tab1",
+        "name": "load roles on start",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "0.5",
+        "topic": "",
+        "payload": "",
+        "payloadType": "str",
+        "x": 130,
+        "y": 720,
+        "wires": [
+            [
+                "execReadRoles"
+            ]
+        ]
+    },
+    {
+        "id": "execReadRoles",
+        "type": "exec",
+        "z": "tab1",
+        "command": "/bin/cat /etc/pi_roles.conf 2>/dev/null",
+        "addpay": false,
+        "append": "",
+        "useSpawn": "false",
+        "timer": "",
+        "winHide": false,
+        "oldrc": false,
+        "name": "read /etc/pi_roles.conf",
+        "x": 340,
+        "y": 720,
+        "wires": [
+            [
+                "fnInitToggles"
+            ],
+            [],
+            []
+        ]
+    },
+    {
+        "id": "fnInitToggles",
+        "type": "function",
+        "z": "tab1",
+        "name": "Int toggles from ROLES",
+        "func": "// msg.payload contains contents of /etc/pi_roles.conf\n// e.g. ROLES=\"isi ethsniff\"\n\nconst text = String(msg.payload || \"\");\n\n// Capture everything inside the quotes (can be multiple words)\nconst m = text.match(/ROLES\\s*=\\s*\\\"?([^\\\"]*)\\\"?/);\nconst roleStr = m ? m[1] : \"\";\n\n// Split on whitespace to get individual tokens\nconst tokens = roleStr.split(/\\s+/).filter(Boolean);\n\nconst isi = tokens.includes(\"isi\");\nconst sniff = tokens.includes(\"sniff\");\nconst fms = tokens.includes(\"fms\");\n\n// Store in flow context so fnBuildRoles sees the same truth\nflow.set(\"t_isi\", isi);\nflow.set(\"t_sniff\", sniff);\nflow.set(\"t_fms\", fms);\n\n// Drive the three switches\nreturn [\n    { topic: \"t_isi\", payload: isi },\n    { topic: \"t_sniff\", payload: sniff },\n    { topic: \"t_fms\", payload: fms }\n];",
+        "outputs": 3,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 570,
+        "y": 720,
+        "wires": [
+            [
+                "swISI"
+            ],
+            [
+                "swWS"
+            ],
+            [
+                "3024d74e9177fa51"
+            ]
+        ]
+    },
+    {
+        "id": "c69fd81f28513f7e",
+        "type": "ui_template",
+        "z": "tab1",
+        "group": "grpControls",
+        "name": "Embedded terminal",
+        "order": 26,
+        "width": 18,
+        "height": 9,
+        "format": "<!-- Top row: button + URL -->\n<div style=\"display:flex; align-items:center; margin-bottom:8px;\">\n    <button\n    style=\"padding:6px 12px; border-radius:4px; border:none; cursor:pointer;\"\n    onclick=\"window.open('http://initbox.wlan:7681/', '_blank');\">\n    Open Terminal (new tab)\n  </button>\n    <span style=\"margin-left:8px; font-size:0.8rem;\">\n    http://initbox.wlan:7681/\n  </span>\n</div>\n\n<!-- Embedded terminal -->\n<div style=\"width:100%; height:360px; overflow:hidden;\">\n    <iframe src=\"http://initbox.wlan:7681/\" style=\"width:100%; height:100%; border:none; display:block;\">\n    </iframe>\n</div>",
+        "storeOutMessages": false,
+        "fwdInMessages": false,
+        "resendOnRefresh": false,
+        "templateScope": "local",
+        "className": "",
+        "x": 110,
+        "y": 80,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "106a7821a54d1704",
+        "type": "ui_button",
+        "z": "tab1",
+        "name": "",
+        "group": "grpControls",
+        "order": 10,
+        "width": 3,
+        "height": 1,
+        "passthru": false,
+        "label": "LOG OUT",
+        "tooltip": "",
+        "color": "#ffffff",
+        "bgcolor": "#c62828",
+        "className": "",
+        "icon": "",
+        "payload": "",
+        "payloadType": "str",
+        "topic": "topic",
+        "topicType": "msg",
+        "x": 400,
+        "y": 320,
+        "wires": [
+            [
+                "9eadcbdf0768bfff"
+            ]
+        ]
+    },
+    {
+        "id": "9eadcbdf0768bfff",
+        "type": "ui_template",
+        "z": "tab1",
+        "group": "grpControls",
+        "name": "LOG OUT",
+        "order": 9,
+        "width": 1,
+        "height": 1,
+        "format": "<div style=\"display:none;\"></div>\n\n<script>\n  (function(scope){\n  scope.$watch('msg', function(msg){\n    if (!msg) return;\n    // Any message from the LOG OUT button triggers redirect\n    window.location.href = \"/logout\";\n  });\n})(scope);\n</script>",
+        "storeOutMessages": false,
+        "fwdInMessages": false,
+        "resendOnRefresh": false,
+        "templateScope": "local",
+        "className": "",
+        "x": 540,
+        "y": 320,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "3024d74e9177fa51",
+        "type": "ui_switch",
+        "z": "tab1",
+        "name": "",
+        "label": "FMS Simulator",
+        "tooltip": "",
+        "group": "grpControls",
+        "order": 13,
+        "width": 4,
+        "height": 1,
+        "passthru": true,
+        "decouple": "false",
+        "topic": "t_fms",
+        "topicType": "str",
+        "style": "",
+        "onvalue": "true",
+        "onvalueType": "bool",
+        "onicon": "",
+        "oncolor": "",
+        "offvalue": "false",
+        "offvalueType": "bool",
+        "officon": "",
+        "offcolor": "",
+        "animate": false,
+        "className": "mod-toggle-FMS",
+        "x": 980,
+        "y": 780,
+        "wires": [
+            [
+                "fnStore"
+            ]
+        ]
+    },
+    {
+        "id": "7d5a802e8aea9ca9",
+        "type": "ui_text",
+        "z": "tab1",
+        "group": "grpControls",
+        "order": 39,
+        "width": 24,
+        "height": 1,
+        "name": "footer",
+        "label": "",
+        "format": "{{msg.payload}}",
+        "layout": "row-left",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#000000",
+        "x": 370,
+        "y": 440,
+        "wires": []
+    },
+    {
+        "id": "ceea9703c349f204",
+        "type": "function",
+        "z": "tab1",
+        "name": "Load",
+        "func": "const s = msg.payload || {};\n// Use 1-minute load from pi-stats.sh\nlet v = Number(s.load1);\n\n// Fallback to 0 if not a number\nif (!isFinite(v)) v = 0;\n\nmsg.payload = v;\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 90,
+        "y": 900,
+        "wires": [
+            [
+                "a102c5e867603a3e"
+            ]
+        ]
+    },
+    {
+        "id": "a102c5e867603a3e",
+        "type": "ui_gauge",
+        "z": "tab1",
+        "name": "Load",
+        "group": "grpControls",
+        "order": 16,
+        "width": 1,
+        "height": 1,
+        "gtype": "donut",
+        "title": "",
+        "label": "%",
+        "format": "{{value}}",
+        "min": 0,
+        "max": 10,
+        "colors": [
+            "#00b500",
+            "#e6e600",
+            "#ca3838"
+        ],
+        "seg1": "",
+        "seg2": "",
+        "diff": false,
+        "className": "",
+        "x": 230,
+        "y": 900,
+        "wires": []
+    },
+    {
+        "id": "d8517d885469a603",
+        "type": "ui_template",
+        "z": "tab1",
+        "group": "grpControls",
+        "name": "Load lbl",
+        "order": 17,
+        "width": 2,
+        "height": 1,
+        "format": "<div style=\"display:flex;align-items:center;height:100%;padding-left:4px;\">\n    <span>LOAD %</span>\n</div>",
+        "storeOutMessages": false,
+        "fwdInMessages": false,
+        "resendOnRefresh": false,
+        "templateScope": "local",
+        "className": "",
+        "x": 740,
+        "y": 800,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "2e806292c7ee1521",
+        "type": "inject",
+        "z": "tab1",
+        "name": "load mods",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "1",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 110,
+        "y": 660,
+        "wires": [
+            [
+                "1e32b86fb700f45a"
+            ]
+        ]
+    },
+    {
+        "id": "1e32b86fb700f45a",
+        "type": "file in",
+        "z": "tab1",
+        "name": "read /etc/initbox-mods.conf",
+        "filename": "/etc/initbox-mods.conf",
+        "filenameType": "str",
+        "format": "utf8",
+        "chunk": false,
+        "sendError": false,
+        "encoding": "none",
+        "allProps": false,
+        "x": 320,
+        "y": 660,
+        "wires": [
+            [
+                "d04766937928251e"
+            ]
+        ]
+    },
+    {
+        "id": "d04766937928251e",
+        "type": "function",
+        "z": "tab1",
+        "name": "parse mods",
+        "func": "// msg.payload: \"ISI=1\\nFMS=0\\nWSBR0=1\\n...\"\nconst lines = (msg.payload || \"\").split(/\\r?\\n/);\nconst mods = {};\n\nfor (const line of lines) {\n  const m = line.match(/^([A-Z0-9_]+)=(0|1)\\s*$/);\n  if (!m) continue;\n  mods[m[1]] = (m[2] === \"1\");\n}\n\n// store globally if you ever want it elsewhere\nglobal.set(\"initboxModules\", mods);\n\nmsg.modules = mods;\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 530,
+        "y": 660,
+        "wires": [
+            [
+                "03321437f70e1c2a"
+            ]
+        ]
+    },
+    {
+        "id": "03321437f70e1c2a",
+        "type": "ui_template",
+        "z": "tab1",
+        "group": "grpControls",
+        "name": "toggle visibility",
+        "order": 4,
+        "width": 2,
+        "height": 1,
+        "format": "<style>\n  /* If body has mod-hide-ISI, hide the ISI switch card */\n  body.mod-hide-ISI    .mod-toggle-ISI    { display: none !important; }\n  body.mod-hide-FMS    .mod-toggle-FMS    { display: none !important; }\n  body.mod-hide-WSBR0  .mod-toggle-WSBR0  { display: none !important; }\n</style>\n\n<div></div>\n<script>\n(function(scope) {\n  scope.$watch('msg', function(msg) {\n    if (!msg || !msg.modules) return;\n    var mods = msg.modules;\n    var body = document.body;\n\n    function setFlag(flag, has) {\n      var cls = 'mod-hide-' + flag;\n      if (has) {\n        // module present: ensure hide-class is removed\n        body.classList.remove(cls);\n      } else {\n        // module absent: add hide-class\n        body.classList.add(cls);\n      }\n    }\n\n    setFlag('ISI',   !!mods.ISI);\n    setFlag('FMS',   !!mods.FMS);\n    setFlag('WSBR0', !!mods.WSBR0);\n  });\n})(scope);\n</script>\n",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 700,
+        "y": 660,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "a992f14dea6e2fef",
+        "type": "function",
+        "z": "tab1",
+        "name": "Stop: reset toggles",
+        "func": "// When STOP ALL is pressed, turn all toggles off.\n// Outputs:\n//  1 -> ISI switch (swISI)\n//  2 -> ETHsniffer switch (swWS)\n//  3 -> FMS switch\n\nconst off = (topic) => ({ topic, payload: false });\n\nreturn [\n    off(\"t_isi\"),   // ISI OFF\n    off(\"t_sniff\"), // ETHsniffer OFF\n    off(\"t_fms\")    // FMS OFF\n];\n",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1190,
+        "y": 780,
+        "wires": [
+            [
+                "swISI"
+            ],
+            [
+                "swWS"
+            ],
+            [
+                "3024d74e9177fa51"
+            ]
+        ]
+    },
+    {
+        "id": "54b84266fe66a9ac",
+        "type": "inject",
+        "z": "tab1",
+        "name": "every 1hr",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "3600",
+        "crontab": "",
+        "once": true,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 90,
+        "y": 440,
+        "wires": [
+            [
+                "17c91039e12de817"
+            ]
+        ]
+    },
+    {
+        "id": "17c91039e12de817",
+        "type": "function",
+        "z": "tab1",
+        "name": "qoutes",
+        "func": "// Rotate nerdy footer lines + keep year range correct\nconst startYear = 2025;\nconst year = new Date().getFullYear();\nconst yearText = String(new Date().getFullYear());\n\nconst lines = [\n    `Authored by Parminder; compiled with optimism, deployed with vibes.`,\n    'Authored by Parminder in a quantum superposition of “it works” and “no idea why.',\n    `Authored by Parminder; Running on imagination, hopes, and a surprisingly stable event loop.`,\n    `Authored by Parminder; Undefined behavior, but make it ✨deterministic✨.`,\n    `Authored by Parminder; Tested in production (because staging is a myth).`,\n    `Authored by Parminder; Works on my machine™ — your mileage may vary.`,\n    `Authored by Parminder; Observed once; now entangled with your uptime.`,\n    `Authored by Parminder; Garbage collected, but emotionally still leaking.`,\n    `Authored by Parminder; Latency is a feature; it builds character.`,\n    `Authored by Parminder; This dashboard is a Schrödinger service: alive until observed.`,\n    `Authored by Parminder; Powered by cron, caffeine, and mild regret.`,\n    `Authored by Parminder; All bugs are undocumented features until proven otherwise.`,\n    `Authored by Parminder; Uptime guaranteed until the next curious click.`,\n];\n\nlet last = flow.get(\"footer_last\") || \"\";\nlet pick = last;\n\n// avoid repeating the same line twice in a row\nfor (let i = 0; i < 5 && pick === last; i++) {\n    pick = lines[Math.floor(Math.random() * lines.length)];\n}\nflow.set(\"footer_last\", pick);\n\nmsg.payload = `${pick} © ${yearText} – all bugs reserved.`;\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 230,
+        "y": 440,
+        "wires": [
+            [
+                "7d5a802e8aea9ca9"
+            ]
+        ]
+    }
+]
