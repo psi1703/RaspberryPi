@@ -97,13 +97,15 @@ Dashboard cached assets include:
 /opt/initbox-package-cache/dashboard/ttyd
 ```
 
-Dashboard source-of-truth assets are stored in the repo:
+Dashboard source-of-truth assets are stored at the repository `scripts/` root:
 
 ```text
-scripts/pi-3-4-5/flows.json
-scripts/pi-3-4-5/settings.js
-scripts/pi-3-4-5/logo.png
+scripts/flows.json
+scripts/settings.js
+scripts/logo.png
 ```
+
+Do not place dashboard assets under `scripts/pi-3-4-5/`. That directory is for Pi 3 / 4 / 5 module scripts only.
 
 At install time, these are copied to:
 
@@ -212,6 +214,9 @@ scripts/
   initbox-status.sh
   update-repo.sh
   packages.txt
+  flows.json
+  settings.js
+  logo.png
 
   lib/
     profile.sh
@@ -220,9 +225,6 @@ scripts/
     packages.sh
 
   pi-3-4-5/
-    flows.json
-    settings.js
-    logo.png
     module-dashboard.sh
     module-fms.sh
     module-hotspot.sh
@@ -355,6 +357,19 @@ Dashboard module flags:
 ```text
 /etc/initbox-mods.conf
 ```
+
+The dashboard reads these flags to decide which module controls are visible. Module install and uninstall actions should update their own flag and restart `pi-nodered.service` if it exists so the UI refreshes immediately.
+
+Expected flag ownership:
+
+| Flag        | Owner module                  |
+| ----------- | ----------------------------- |
+| `DASHBOARD` | `module-dashboard.sh`         |
+| `HOTSPOT`   | `module-hotspot.sh`           |
+| `RTC`       | `module-rtc.sh`               |
+| `WSBR0`     | `module-ws-br0.sh`            |
+| `ISI`       | `module-isi.sh`               |
+| `FMS`       | `module-fms.sh`               |
 
 ---
 
@@ -508,10 +523,12 @@ Cached `ttyd` binary:
 Repository-owned dashboard assets:
 
 ```text
-scripts/pi-3-4-5/flows.json
-scripts/pi-3-4-5/settings.js
-scripts/pi-3-4-5/logo.png
+scripts/flows.json
+scripts/settings.js
+scripts/logo.png
 ```
+
+These are the source-of-truth files copied into the Node-RED runtime during dashboard install.
 
 Runtime dashboard assets:
 
@@ -735,6 +752,33 @@ The DNS configuration resolves captive-portal and general DNS requests to the ho
 http://initbox.wlan/
 ```
 
+Hotspot owns DNS. The dashboard module must not write or append managed blocks to:
+
+```text
+/etc/dnsmasq.d/initbox-hotspot.conf
+```
+
+The clean ownership model is:
+
+```text
+module-hotspot.sh
+  owns hostapd, dnsmasq, dhcpcd, wlan0 addressing, DHCP, DNS, and captive DNS names
+
+module-dashboard.sh
+  owns Node-RED, ttyd, portal.service, and the port-80 dashboard landing service
+```
+
+Recommended clean dnsmasq model:
+
+```text
+dhcp-option=3,<hotspot-ip>
+dhcp-option=6,<hotspot-ip>
+address=/initbox.wlan/<hotspot-ip>
+address=/#/<hotspot-ip>
+```
+
+The `address=/#/<hotspot-ip>` catch-all intentionally resolves captive portal checks to InitBox while the client is connected to the hotspot.
+
 Hotspot service checks:
 
 ```bash
@@ -766,9 +810,9 @@ scripts/pi-3-4-5/module-dashboard.sh
 Required repo-owned dashboard files:
 
 ```text
-scripts/pi-3-4-5/flows.json
-scripts/pi-3-4-5/settings.js
-scripts/pi-3-4-5/logo.png
+scripts/flows.json
+scripts/settings.js
+scripts/logo.png
 ```
 
 The dashboard module installs and configures:
@@ -782,7 +826,7 @@ The dashboard module installs and configures:
 * `pi-nodered.service`
 * ttyd Web Terminal
 * `ttyd.service`
-* captive portal redirect from port `80` to Node-RED port `1880`
+* captive portal landing service on port `80` that redirects users to the Node-RED dashboard UI
 * `portal.service`
 * role sync helper
 * `pi-servsync.service`
@@ -810,6 +854,22 @@ Dashboard URLs:
 http://initbox.wlan/
 http://initbox.wlan:1880/ui
 ```
+
+The preferred user-facing URL is:
+
+```text
+http://initbox.wlan/
+```
+
+The dashboard module installs `portal.service`, which listens on port `80` and redirects normal HTTP and captive-portal probe requests to the dashboard UI:
+
+```text
+http://<hotspot-ip>:1880/ui
+```
+
+The dashboard module does not manage dnsmasq. Captive DNS must already be provided by the hotspot module.
+
+Windows "Action needed" captive portal behavior is only reliable when the client has no other active Internet path. During bench testing, disconnect Ethernet, VPN, and other Internet adapters before testing the hotspot captive portal.
 
 Web Terminal URL:
 
@@ -868,7 +928,7 @@ ss -tulpn | grep -E ':80|:1880|:7681'
 Expected ports:
 
 ```text
-80     captive portal redirect to dashboard
+80     captive portal landing service to dashboard
 1880   Node-RED
 7681   ttyd Web Terminal
 ```
@@ -1198,6 +1258,7 @@ Uninstall actions should:
 * Remove systemd unit files created by the module.
 * Remove helper scripts created by the module.
 * Reset the related dashboard module flag in `/etc/initbox-mods.conf`.
+* Restart `pi-nodered.service` when present so dashboard controls refresh immediately.
 * Leave Debian packages installed.
 * Leave package cache files in place.
 * Avoid deleting unrelated user data.
@@ -1416,7 +1477,7 @@ Common expected ports:
 
 | Feature                           | Typical port |
 | --------------------------------- | -----------: |
-| Dashboard captive portal redirect |         `80` |
+| Dashboard captive portal landing service |         `80` |
 | Node-RED                          |       `1880` |
 | Web Terminal / ttyd               |       `7681` |
 
@@ -1558,9 +1619,9 @@ cd /home/initbox/RaspberryPi
 
 sudo ./scripts/initbox-installer.sh pi-3-4-5 c
 
-ls -l scripts/pi-3-4-5/flows.json
-ls -l scripts/pi-3-4-5/settings.js
-ls -l scripts/pi-3-4-5/logo.png
+ls -l scripts/flows.json
+ls -l scripts/settings.js
+ls -l scripts/logo.png
 
 systemctl status pi-nodered --no-pager
 systemctl status nodered --no-pager || true
@@ -1603,9 +1664,9 @@ Before the device leaves the lab:
 * [ ] Internet was available during lab setup.
 * [ ] Package cache was prepared.
 * [ ] Package cache status was checked.
-* [ ] `scripts/pi-3-4-5/flows.json` exists in the repo.
-* [ ] `scripts/pi-3-4-5/settings.js` exists in the repo.
-* [ ] `scripts/pi-3-4-5/logo.png` exists in the repo.
+* [ ] `scripts/flows.json` exists in the repo.
+* [ ] `scripts/settings.js` exists in the repo.
+* [ ] `scripts/logo.png` exists in the repo.
 * [ ] Dashboard asset cache was created.
 * [ ] `ttyd` was installed or cached.
 * [ ] Node.js 22 was installed or confirmed.
@@ -1747,7 +1808,7 @@ Expected:
 pi-nodered.service active
 nodered.service inactive or masked
 portal.service active
-port 80 available for captive portal redirect
+port 80 available for captive portal landing service
 port 1880 available for Node-RED
 ```
 
@@ -1758,6 +1819,63 @@ ls -l /home/initbox/.node-red/flows.json
 ls -l /home/initbox/.node-red/settings.js
 ls -l /home/initbox/.node-red/public/logo.png
 ```
+
+Check captive portal landing service:
+
+```bash
+sudo ss -ltnp | grep ':80 '
+curl -I http://initbox.wlan/
+curl -I http://$(ip -4 addr show wlan0 | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)/
+```
+
+Expected result:
+
+```text
+portal.service active
+port 80 listening
+HTTP redirects to http://<hotspot-ip>:1880/ui
+```
+
+---
+
+### Windows Action Needed opens MSN instead of InitBox
+
+This usually means the Windows laptop still has another active Internet path, such as Ethernet, VPN, another Wi-Fi adapter, or a corporate network. Windows may use that path for its captive-portal check and open the real MSN/Microsoft page instead of the InitBox portal.
+
+Check on Windows:
+
+```cmd
+ipconfig /all
+nslookup www.msftconnecttest.com
+nslookup www.msn.com
+curl.exe -v http://www.msftconnecttest.com/connecttest.txt
+```
+
+Expected while testing only the InitBox hotspot:
+
+```text
+DNS Server: <hotspot-ip>
+www.msftconnecttest.com -> <hotspot-ip>
+www.msn.com -> <hotspot-ip>
+curl connects from the hotspot client IP to the hotspot IP
+```
+
+If `nslookup` uses a corporate DNS server or `curl` connects from a corporate Ethernet IP, disconnect that network path and test again.
+
+For bench testing:
+
+```cmd
+ipconfig /flushdns
+```
+
+Also disconnect Ethernet, VPN, and other Internet adapters before reconnecting to the InitBox hotspot.
+
+The reliable manual fallback is:
+
+```text
+http://initbox.wlan/
+```
+
 
 ---
 
@@ -1994,18 +2112,20 @@ shellcheck scripts/initbox-installer.sh scripts/initbox-status.sh scripts/update
 ## Design Rules
 
 * This branch is for Raspberry Pi 3 / 4 / 5 only.
-* Pi Zero W / Zero 2W work belongs in the `pi-zero-W-2W` branch.
 * Lab setup requires Internet access.
 * Field deployment assumes the Pi is already configured.
 * Debian packages must be cached during lab preparation.
 * Dashboard should be installed once in the lab so Node.js, Node-RED, and npm dependencies exist locally.
 * Dashboard is the primary management interface.
+* Hotspot owns `/etc/dnsmasq.d/initbox-hotspot.conf`.
+* Dashboard must not write dnsmasq configuration.
+* Dashboard owns `portal.service` and `/usr/local/bin/initbox-dashboard-portal.py`.
 * Web Terminal is bundled with the dashboard module.
 * The installer main menu must use clear numeric choices for install, uninstall, checks, cache, logs, state, and quit.
 * Module execution must not require typing `RUN`.
 * Every supported module should support `install` and `uninstall`.
 * Module uninstall must not purge Debian packages.
-* Dashboard assets are repo-owned and must be copied from `scripts/pi-3-4-5/`.
+* Dashboard assets are repo-owned and must be copied from `scripts/`.
 * Generated or hostname-specific Node-RED flow files must not be the source of truth.
 * `pi-nodered.service` is the only supported InitBox Node-RED service.
 * `nodered.service` must be stopped, disabled, masked, and not used by InitBox.
