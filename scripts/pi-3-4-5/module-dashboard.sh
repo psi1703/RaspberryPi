@@ -71,7 +71,7 @@ MODS_FILE="${MODS_FILE:-/etc/initbox-mods.conf}"
 TTYD_PORT="${TTYD_PORT:-7681}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-1880}"
 HOTSPOT_IFACE="${HOTSPOT_IFACE:-wlan0}"
-HOTSPOT_IP="${HOTSPOT_IP:-192.168.20.1}"
+HOTSPOT_IP="${HOTSPOT_IP:-}"
 CAPTIVE_DNSMASQ_FILE="${CAPTIVE_DNSMASQ_FILE:-/etc/dnsmasq.d/initbox-hotspot.conf}"
 PORTAL_SCRIPT="/usr/local/bin/initbox-dashboard-portal.py"
 PORTAL_SERVICE="/etc/systemd/system/portal.service"
@@ -782,8 +782,56 @@ EOF
   chown root:root /usr/local/bin/pi-servsync.sh || true
 }
 
+detect_hotspot_ip() {
+  local detected_ip=""
+
+  if [ -n "$HOTSPOT_IP" ]; then
+    printf '%s\n' "$HOTSPOT_IP"
+    return 0
+  fi
+
+  detected_ip="$(ip -4 addr show dev "$HOTSPOT_IFACE" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n 1 || true)"
+
+  if [ -n "$detected_ip" ]; then
+    printf '%s\n' "$detected_ip"
+    return 0
+  fi
+
+  if [ -f "$CAPTIVE_DNSMASQ_FILE" ]; then
+    detected_ip="$(awk -F',' '
+      /^[[:space:]]*dhcp-option[[:space:]]*=/ {
+        for (i = 1; i <= NF; i++) {
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", $i)
+          if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
+            print $i
+            exit
+          }
+        }
+      }
+    ' "$CAPTIVE_DNSMASQ_FILE" 2>/dev/null || true)"
+
+    if [ -n "$detected_ip" ]; then
+      printf '%s\n' "$detected_ip"
+      return 0
+    fi
+  fi
+
+  err "Could not detect hotspot IP."
+  err "Checked interface: ${HOTSPOT_IFACE}"
+  err "Checked dnsmasq config: ${CAPTIVE_DNSMASQ_FILE}"
+  err "Install/start the hotspot module first, or run with HOTSPOT_IP set explicitly."
+  err "Example: sudo HOTSPOT_IP=<hotspot-gateway-ip> ./scripts/pi-3-4-5/module-dashboard.sh install"
+  exit 1
+}
+
 install_portal() {
+  local hotspot_ip=""
+  local tmp_file=""
+
+  hotspot_ip="$(detect_hotspot_ip)"
+
   log "Installing dashboard captive portal landing service."
+  log "Using hotspot captive portal IP: ${hotspot_ip}"
 
   if [ -f "$CAPTIVE_DNSMASQ_FILE" ]; then
     log "Updating captive portal DNS entries in ${CAPTIVE_DNSMASQ_FILE}."
@@ -804,19 +852,19 @@ install_portal() {
 ### START INITBOX DASHBOARD CAPTIVE DNS ###
 # InitBox dashboard captive portal names.
 # These names are used by Windows, Android, Apple, and generic browsers
-# to detect captive portals. They intentionally resolve to the InitBox
-# hotspot IP so the user lands on the local dashboard instead of MSN,
+# to detect captive portals. They intentionally resolve to the detected
+# InitBox hotspot IP so the user lands on the local dashboard instead of MSN,
 # Google, Apple, or an external Internet check page.
-address=/initbox.wlan/${HOTSPOT_IP}
-address=/msftconnecttest.com/${HOTSPOT_IP}
-address=/www.msftconnecttest.com/${HOTSPOT_IP}
-address=/msftncsi.com/${HOTSPOT_IP}
-address=/www.msftncsi.com/${HOTSPOT_IP}
-address=/connectivitycheck.gstatic.com/${HOTSPOT_IP}
-address=/clients3.google.com/${HOTSPOT_IP}
-address=/captive.apple.com/${HOTSPOT_IP}
-address=/neverssl.com/${HOTSPOT_IP}
-address=/www.neverssl.com/${HOTSPOT_IP}
+address=/initbox.wlan/${hotspot_ip}
+address=/msftconnecttest.com/${hotspot_ip}
+address=/www.msftconnecttest.com/${hotspot_ip}
+address=/msftncsi.com/${hotspot_ip}
+address=/www.msftncsi.com/${hotspot_ip}
+address=/connectivitycheck.gstatic.com/${hotspot_ip}
+address=/clients3.google.com/${hotspot_ip}
+address=/captive.apple.com/${hotspot_ip}
+address=/neverssl.com/${hotspot_ip}
+address=/www.neverssl.com/${hotspot_ip}
 ### END INITBOX DASHBOARD CAPTIVE DNS ###
 EOF
 
@@ -838,7 +886,7 @@ EOF
 #!/usr/bin/env python3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-HOTSPOT_IP = "${HOTSPOT_IP}"
+HOTSPOT_IP = "${hotspot_ip}"
 DASHBOARD_PORT = "${DASHBOARD_PORT}"
 DASHBOARD_URL = f"http://{HOTSPOT_IP}:{DASHBOARD_PORT}/ui"
 
