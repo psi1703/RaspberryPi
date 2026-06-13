@@ -152,6 +152,10 @@ record_profile_state() {
   write_state_value "PROFILE_ID" "$PROFILE_ID"
   write_state_value "PROFILE_NAME" "$PROFILE_NAME"
   write_state_value "LAST_INSTALL_TIME" "$(date -Iseconds)"
+
+  if declare -F initbox_state_record_profile >/dev/null 2>&1; then
+    initbox_state_record_profile "$PROFILE_ID" "$PROFILE_NAME" || true
+  fi
 }
 
 record_module_state() {
@@ -161,6 +165,28 @@ record_module_state() {
   write_state_value "LAST_MODULE" "$module_id"
   write_state_value "LAST_MODULE_STATUS" "$status"
   write_state_value "LAST_INSTALL_TIME" "$(date -Iseconds)"
+}
+
+record_module_success_state() {
+  local module_id="$1"
+  local module_name="$2"
+
+  record_module_state "$module_id" "success"
+
+  if declare -F initbox_state_record_module_success >/dev/null 2>&1; then
+    initbox_state_record_module_success "$module_id" "$module_name" || true
+  fi
+}
+
+record_module_failure_state() {
+  local module_id="$1"
+  local module_name="$2"
+
+  record_module_state "$module_id" "failed"
+
+  if declare -F initbox_state_record_module_failure >/dev/null 2>&1; then
+    initbox_state_record_module_failure "$module_id" "$module_name" || true
+  fi
 }
 
 source_helpers() {
@@ -268,7 +294,7 @@ run_lab_baseline_apt() {
 }
 
 repair_permissions() {
-  local file
+  local file=""
 
   log "Repairing script permissions."
 
@@ -362,7 +388,7 @@ module_script_path() {
 }
 
 supported_modules() {
-  local module_id
+  local module_id=""
   local seen=" "
 
   for module_id in $DEFAULT_MODULES; do
@@ -471,9 +497,9 @@ prepare_package_cache() {
 
 run_sanity_checks() {
   local failed=0
-  local file
-  local module_id
-  local script_path
+  local file=""
+  local module_id=""
+  local script_path=""
 
   echo
   echo "InitBox sanity checks"
@@ -643,9 +669,9 @@ run_sanity_checks() {
 
 print_module_menu() {
   local index=1
-  local module_id
-  local script_path
-  local module_name
+  local module_id=""
+  local script_path=""
+  local module_name=""
 
   echo "Supported modules"
   echo "-----------------"
@@ -683,7 +709,7 @@ print_module_menu() {
 module_by_index() {
   local wanted_index="$1"
   local index=1
-  local module_id
+  local module_id=""
 
   while IFS= read -r module_id; do
     [ -z "$module_id" ] && continue
@@ -748,12 +774,12 @@ run_module() {
 
   if bash "$script_path" install; then
     ok "Module completed: ${module_id}"
-    record_module_state "$module_id" "success"
+    record_module_success_state "$module_id" "$module_name"
     return 0
   fi
 
   err "Module failed: ${module_id}"
-  record_module_state "$module_id" "failed"
+  record_module_failure_state "$module_id" "$module_name"
   return 1
 }
 
