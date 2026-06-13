@@ -10,7 +10,7 @@
 #   - captive portal landing service on port 80 that redirects to Node-RED UI
 #   - role sync helper using /etc/pi_roles.conf
 #   - Pi stats helper for dashboard use
-  - restricted File Transfer helper for dashboard upload/download actions
+#   - restricted File Transfer helper for dashboard upload/download actions
 #
 # Important service model:
 #   - InitBox uses pi-nodered.service only.
