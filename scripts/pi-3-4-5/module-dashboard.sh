@@ -423,7 +423,15 @@ echo "[npm] working directory: $(pwd)"
 
 if [ ! -f package.json ]; then
   echo "[npm] creating package.json"
-  npm init -y
+  cat >package.json <<'JSON'
+{
+  "name": "initbox-node-red",
+  "version": "1.0.0",
+  "description": "InitBox local Node-RED runtime",
+  "private": true,
+  "dependencies": {}
+}
+JSON
 fi
 
 echo "[npm] cleaning npm cache metadata"
