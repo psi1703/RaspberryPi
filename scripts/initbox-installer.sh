@@ -12,7 +12,8 @@
 #     module scripts are wired to scripts/lib/packages.sh.
 #
 # Menu:
-#   - install or uninstall supported modules
+#   - install supported modules
+#   - uninstall supported modules
 #   - run sanity checks
 #   - prepare package cache
 #   - show package cache status
@@ -678,16 +679,30 @@ run_sanity_checks() {
   return 1
 }
 
-print_module_menu() {
+print_main_menu() {
+  echo "Main menu"
+  echo "---------"
+  echo " 1) Install module"
+  echo " 2) Uninstall module"
+  echo " 3) Run sanity checks"
+  echo " 4) Prepare/download package cache"
+  echo " 5) Show package cache status"
+  echo " 6) Show install log"
+  echo " 7) Show install state"
+  echo " 8) Quit"
+  echo
+}
+
+print_module_picker() {
+  local module_action="$1"
   local index=1
   local module_id=""
   local script_path=""
   local module_name=""
 
-  echo "Supported modules"
-  echo "-----------------"
-  echo "Select a module, then choose install or uninstall."
   echo
+  echo "Choose module to ${module_action}"
+  echo "--------------------------"
 
   while IFS= read -r module_id; do
     [ -z "$module_id" ] && continue
@@ -708,14 +723,7 @@ print_module_menu() {
   done < <(supported_modules)
 
   echo
-  echo "Other options"
-  echo "-------------"
-  echo " c) Run sanity checks"
-  echo " p) Prepare/download package cache"
-  echo " k) Show package cache status"
-  echo " l) Show install log"
-  echo " s) Show install state"
-  echo " q) Quit"
+  echo " 0) Cancel"
   echo
 }
 
@@ -738,40 +746,6 @@ module_by_index() {
   return 1
 }
 
-select_module_action() {
-  local module_id="$1"
-  local module_name="$2"
-  local reply=""
-
-  echo
-  echo "Selected module:"
-  echo "  ${module_id} (${module_name})"
-  echo
-  echo "Choose action:"
-  echo "  1) Install / update"
-  echo "  2) Uninstall"
-  echo "  3) Cancel"
-  echo
-
-  if [ -e /dev/tty ]; then
-    read -r -p "Action: " reply </dev/tty || reply=""
-  else
-    read -r -p "Action: " reply || reply=""
-  fi
-
-  case "$reply" in
-    1|i|I|install|INSTALL)
-      echo "install"
-      ;;
-    2|u|U|uninstall|UNINSTALL|remove|REMOVE)
-      echo "uninstall"
-      ;;
-    *)
-      echo "cancel"
-      ;;
-  esac
-}
-
 confirm_run() {
   local module_id="$1"
   local module_name="$2"
@@ -779,30 +753,29 @@ confirm_run() {
   local reply=""
 
   echo
-  echo "Selected module:"
-  echo "  ${module_id} (${module_name})"
+  echo "Confirm action"
+  echo "--------------"
+  echo "Module: ${module_id} (${module_name})"
+  echo "Action: ${module_action}"
   echo
-  echo "Selected action:"
-  echo "  ${module_action}"
-  echo
-  echo "Type RUN to execute this action."
-  echo "Anything else cancels."
+  echo " 1) Proceed"
+  echo " 2) Cancel"
   echo
 
   if [ -e /dev/tty ]; then
-    read -r -p "Confirmation: " reply </dev/tty || reply=""
+    read -r -p "Choose option: " reply </dev/tty || reply=""
   else
-    read -r -p "Confirmation: " reply || reply=""
+    read -r -p "Choose option: " reply || reply=""
   fi
 
-  [ "$reply" = "RUN" ]
+  [ "$reply" = "1" ]
 }
 
-run_module() {
+run_module_action() {
   local module_id="$1"
+  local module_action="$2"
   local module_name=""
   local script_path=""
-  local module_action=""
 
   module_name="$(module_display_name "$module_id")"
 
@@ -815,17 +788,6 @@ run_module() {
     err "Module script missing: $script_path"
     return 1
   fi
-
-  module_action="$(select_module_action "$module_id" "$module_name")"
-
-  case "$module_action" in
-    install|uninstall)
-      ;;
-    *)
-      warn "Cancelled module: $module_id"
-      return 0
-      ;;
-  esac
 
   if ! confirm_run "$module_id" "$module_name" "$module_action"; then
     warn "Cancelled ${module_action}: $module_id"
@@ -866,39 +828,74 @@ pause_for_user() {
   fi
 }
 
-handle_choice() {
-  local choice="$1"
+choose_module_and_run_action() {
+  local module_action="$1"
+  local choice=""
   local module_id=""
 
+  while true; do
+    show_header
+    print_module_picker "$module_action"
+
+    if [ -e /dev/tty ]; then
+      read -r -p "Choose module: " choice </dev/tty || choice=""
+    else
+      read -r -p "Choose module: " choice || choice=""
+    fi
+
+    case "$choice" in
+      0)
+        warn "Cancelled ${module_action}."
+        return 0
+        ;;
+      ''|*[!0-9]*)
+        warn "Invalid module choice: $choice"
+        pause_for_user
+        ;;
+      *)
+        if module_id="$(module_by_index "$choice")"; then
+          run_module_action "$module_id" "$module_action" || true
+          return 0
+        fi
+
+        warn "No module at menu index: $choice"
+        pause_for_user
+        ;;
+    esac
+  done
+}
+
+handle_choice() {
+  local choice="$1"
+
   case "$choice" in
-    c|C)
+    1)
+      choose_module_and_run_action "install"
+      ;;
+    2)
+      choose_module_and_run_action "uninstall"
+      ;;
+    3)
       run_sanity_checks || true
       ;;
-    p|P)
+    4)
       prepare_package_cache || true
       ;;
-    k|K)
+    5)
       show_package_cache_status || true
       ;;
-    l|L)
+    6)
       show_log_path
       ;;
-    s|S)
+    7)
       show_state
       ;;
-    q|Q)
+    8|q|Q)
       echo "Quit."
       exit 0
       ;;
-    ''|*[!0-9]*)
-      warn "Unknown menu choice: $choice"
-      ;;
     *)
-      if module_id="$(module_by_index "$choice")"; then
-        run_module "$module_id" || true
-      else
-        warn "No module at menu index: $choice"
-      fi
+      warn "Unknown menu choice: $choice"
       ;;
   esac
 }
@@ -908,12 +905,12 @@ run_menu() {
 
   while true; do
     show_header
-    print_module_menu
+    print_main_menu
 
     if [ -e /dev/tty ]; then
-      read -r -p "Select option: " choice </dev/tty || choice=""
+      read -r -p "Choose option: " choice </dev/tty || choice=""
     else
-      read -r -p "Select option: " choice || choice=""
+      read -r -p "Choose option: " choice || choice=""
     fi
 
     handle_choice "$choice"
@@ -966,11 +963,15 @@ Usage:
 Profile:
   pi-3-4-5 only
 
-Menu:
-  Select a module number, then choose:
-    1   Install / update
-    2   Uninstall
-    3   Cancel
+Main menu:
+  1   Install module
+  2   Uninstall module
+  3   Run sanity checks
+  4   Prepare/download package cache
+  5   Show package cache status
+  6   Show install log
+  7   Show install state
+  8   Quit
 
 Actions:
   c   Run sanity checks
