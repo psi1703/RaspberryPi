@@ -17,13 +17,15 @@
 #     if it exists locally.
 #   - Node-RED must never run from /root/.node-red for InitBox.
 #
-# Important flow/settings model:
+# Important flow/settings/logo model:
 #   - Repository source files must exist here:
 #       scripts/pi-3-4-5/flows.json
 #       scripts/pi-3-4-5/settings.js
+#       scripts/pi-3-4-5/logo.png
 #   - Runtime files are always replaced with the repository versions:
 #       /home/initbox/.node-red/flows.json
 #       /home/initbox/.node-red/settings.js
+#       /home/initbox/.node-red/public/logo.png
 #   - Generated/hostname flow files are removed during install.
 #
 # Package/cache model:
@@ -74,6 +76,7 @@ NODE_RED_USER_DIR="/home/${OWNER}/.node-red"
 NODE_RED_LOCAL_BIN="${NODE_RED_USER_DIR}/node_modules/.bin/node-red"
 REPO_FLOWS_FILE="${SCRIPT_DIR}/flows.json"
 REPO_SETTINGS_FILE="${SCRIPT_DIR}/settings.js"
+REPO_LOGO_FILE="${SCRIPT_DIR}/logo.png"
 
 ts() {
   date +"%Y-%m-%d %H:%M:%S"
@@ -456,6 +459,13 @@ require_repo_dashboard_files() {
     err "  scripts/pi-3-4-5/settings.js"
     exit 1
   fi
+
+  if [ ! -f "$REPO_LOGO_FILE" ]; then
+    err "Required repository logo file missing: ${REPO_LOGO_FILE}"
+    err "Place your approved dashboard logo here:"
+    err "  scripts/pi-3-4-5/logo.png"
+    exit 1
+  fi
 }
 
 deploy_flows_settings() {
@@ -477,21 +487,16 @@ deploy_flows_settings() {
   log "Deploying approved repository settings.js."
   install -m 0644 -o "$OWNER" -g "$OWNER" "$REPO_SETTINGS_FILE" "${NODE_RED_USER_DIR}/settings.js"
 
-  if [ -f "${SCRIPT_DIR}/logo.png" ]; then
-    log "Deploying dashboard logo.png."
-    install -m 0644 -o "$OWNER" -g "$OWNER" "${SCRIPT_DIR}/logo.png" "${NODE_RED_USER_DIR}/public/logo.png"
-  elif [ -f "/home/${OWNER}/logo.png" ]; then
-    log "Deploying existing owner logo.png."
-    install -m 0644 -o "$OWNER" -g "$OWNER" "/home/${OWNER}/logo.png" "${NODE_RED_USER_DIR}/public/logo.png"
-  else
-    log "No logo.png found; dashboard logo endpoint may return missing file until logo is added."
-  fi
+  log "Deploying approved repository logo.png."
+  install -d -m 0755 -o "$OWNER" -g "$OWNER" "${NODE_RED_USER_DIR}/public"
+  install -m 0644 -o "$OWNER" -g "$OWNER" "$REPO_LOGO_FILE" "${NODE_RED_USER_DIR}/public/logo.png"
 
   chown -R "${OWNER}:${OWNER}" "$NODE_RED_USER_DIR" || true
 
   log "Runtime Node-RED files:"
   log "  ${NODE_RED_USER_DIR}/flows.json"
   log "  ${NODE_RED_USER_DIR}/settings.js"
+  log "  ${NODE_RED_USER_DIR}/public/logo.png"
   log "Hostname flow files discarded for host: ${host}"
 }
 
@@ -983,6 +988,7 @@ uninstall_module() {
   rm -f "${NODE_RED_USER_DIR}/flows_initbox.json"
   rm -f "${NODE_RED_USER_DIR}/flows_dashboard.json"
   rm -f "${NODE_RED_USER_DIR}/settings.js"
+  rm -f "${NODE_RED_USER_DIR}/public/logo.png"
 
   if [ -f "$MODS_FILE" ]; then
     set_mod_flag "DASHBOARD" "0"
@@ -991,7 +997,7 @@ uninstall_module() {
   systemctl daemon-reload
 
   ok "Dashboard services and helper scripts removed."
-  ok "Runtime flows/settings deployed by this module were removed."
+  ok "Runtime flows/settings/logo deployed by this module were removed."
   ok "DASHBOARD flag set to 0 in ${MODS_FILE} when present."
   warn "Node.js, npm packages, ${ROLE_FILE}, ${MODS_FILE}, ttyd binary, and cache files were left in place intentionally."
   warn "nodered.service remains masked so InitBox cannot accidentally run Node-RED as root."
@@ -1010,10 +1016,12 @@ Actions:
 Required repository files:
   ${REPO_FLOWS_FILE}
   ${REPO_SETTINGS_FILE}
+  ${REPO_LOGO_FILE}
 
 Runtime Node-RED files:
   ${NODE_RED_USER_DIR}/flows.json
   ${NODE_RED_USER_DIR}/settings.js
+  ${NODE_RED_USER_DIR}/public/logo.png
 
 Service model:
   InitBox uses pi-nodered.service only.
