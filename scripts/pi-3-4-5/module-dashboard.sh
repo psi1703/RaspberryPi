@@ -855,11 +855,16 @@ install_portal() {
 # to detect captive portals. They intentionally resolve to the detected
 # InitBox hotspot IP so the user lands on the local dashboard instead of MSN,
 # Google, Apple, or an external Internet check page.
+# Force hotspot clients to use the InitBox as DNS for captive detection.
+# Without this, Windows may use another resolver and open MSN instead.
+dhcp-option=option:dns-server,${hotspot_ip}
+
 address=/initbox.wlan/${hotspot_ip}
 address=/msftconnecttest.com/${hotspot_ip}
 address=/www.msftconnecttest.com/${hotspot_ip}
 address=/msftncsi.com/${hotspot_ip}
 address=/www.msftncsi.com/${hotspot_ip}
+address=/dns.msftncsi.com/${hotspot_ip}
 address=/connectivitycheck.gstatic.com/${hotspot_ip}
 address=/clients3.google.com/${hotspot_ip}
 address=/captive.apple.com/${hotspot_ip}
@@ -945,7 +950,9 @@ class InitBoxPortalHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        self._send_landing()
+        # Captive-portal probes must be redirected, not served Microsoft/Google/Apple text.
+        # This makes Windows show/use the local InitBox dashboard instead of falling through to MSN.
+        self._redirect_to_dashboard()
 
     def do_HEAD(self):
         self._redirect_to_dashboard()
