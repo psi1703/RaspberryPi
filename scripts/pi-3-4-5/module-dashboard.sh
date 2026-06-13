@@ -74,9 +74,9 @@ HOTSPOT_IFACE="${HOTSPOT_IFACE:-wlan0}"
 
 NODE_RED_USER_DIR="/home/${OWNER}/.node-red"
 NODE_RED_LOCAL_BIN="${NODE_RED_USER_DIR}/node_modules/.bin/node-red"
-REPO_FLOWS_FILE="${SCRIPT_DIR}/flows.json"
-REPO_SETTINGS_FILE="${SCRIPT_DIR}/settings.js"
-REPO_LOGO_FILE="${SCRIPT_DIR}/logo.png"
+REPO_FLOWS_FILE="${SCRIPT_DIR}/scripts/flows.json"
+REPO_SETTINGS_FILE="${SCRIPT_DIR}/scripts/settings.js"
+REPO_LOGO_FILE="${SCRIPT_DIR}/scripts/logo.png"
 
 ts() {
   date +"%Y-%m-%d %H:%M:%S"
@@ -482,21 +482,21 @@ require_repo_dashboard_files() {
   if [ ! -f "$REPO_FLOWS_FILE" ]; then
     err "Required repository flow file missing: ${REPO_FLOWS_FILE}"
     err "Place your approved Node-RED dashboard flow here:"
-    err "  scripts/pi-3-4-5/flows.json"
+    err "  scripts/flows.json"
     exit 1
   fi
 
   if [ ! -f "$REPO_SETTINGS_FILE" ]; then
     err "Required repository settings file missing: ${REPO_SETTINGS_FILE}"
     err "Place your approved Node-RED settings file here:"
-    err "  scripts/pi-3-4-5/settings.js"
+    err "  scripts/settings.js"
     exit 1
   fi
 
   if [ ! -f "$REPO_LOGO_FILE" ]; then
     err "Required repository logo file missing: ${REPO_LOGO_FILE}"
     err "Place your approved dashboard logo here:"
-    err "  scripts/pi-3-4-5/logo.png"
+    err "  scripts/logo.png"
     exit 1
   fi
 }
