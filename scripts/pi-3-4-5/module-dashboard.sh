@@ -7,7 +7,7 @@
 #   - Node-RED dashboard controller under /home/initbox/.node-red
 #   - node-red-dashboard package
 #   - ttyd web terminal
-#   - captive portal redirect to Node-RED
+#   - captive portal landing service on port 80 that redirects to Node-RED UI
 #   - role sync helper using /etc/pi_roles.conf
 #   - Pi stats helper for dashboard use
 #
@@ -72,7 +72,6 @@ TTYD_PORT="${TTYD_PORT:-7681}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-1880}"
 HOTSPOT_IFACE="${HOTSPOT_IFACE:-wlan0}"
 HOTSPOT_IP="${HOTSPOT_IP:-}"
-CAPTIVE_DNSMASQ_FILE="${CAPTIVE_DNSMASQ_FILE:-/etc/dnsmasq.d/initbox-hotspot.conf}"
 PORTAL_SCRIPT="/usr/local/bin/initbox-dashboard-portal.py"
 PORTAL_SERVICE="/etc/systemd/system/portal.service"
 
@@ -786,39 +785,20 @@ detect_hotspot_ip() {
   local detected_ip=""
 
   if [ -n "$HOTSPOT_IP" ]; then
-    printf '%s\n' "$HOTSPOT_IP"
+    printf '%s
+' "$HOTSPOT_IP"
     return 0
   fi
 
   detected_ip="$(ip -4 addr show dev "$HOTSPOT_IFACE" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n 1 || true)"
 
   if [ -n "$detected_ip" ]; then
-    printf '%s\n' "$detected_ip"
+    printf '%s
+' "$detected_ip"
     return 0
   fi
 
-  if [ -f "$CAPTIVE_DNSMASQ_FILE" ]; then
-    detected_ip="$(awk -F',' '
-      /^[[:space:]]*dhcp-option[[:space:]]*=/ {
-        for (i = 1; i <= NF; i++) {
-          gsub(/^[[:space:]]+|[[:space:]]+$/, "", $i)
-          if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
-            print $i
-            exit
-          }
-        }
-      }
-    ' "$CAPTIVE_DNSMASQ_FILE" 2>/dev/null || true)"
-
-    if [ -n "$detected_ip" ]; then
-      printf '%s\n' "$detected_ip"
-      return 0
-    fi
-  fi
-
-  err "Could not detect hotspot IP."
-  err "Checked interface: ${HOTSPOT_IFACE}"
-  err "Checked dnsmasq config: ${CAPTIVE_DNSMASQ_FILE}"
+  err "Could not detect hotspot IP from interface: ${HOTSPOT_IFACE}"
   err "Install/start the hotspot module first, or run with HOTSPOT_IP set explicitly."
   err "Example: sudo HOTSPOT_IP=<hotspot-gateway-ip> ./scripts/pi-3-4-5/module-dashboard.sh install"
   exit 1
@@ -826,64 +806,12 @@ detect_hotspot_ip() {
 
 install_portal() {
   local hotspot_ip=""
-  local tmp_file=""
 
   hotspot_ip="$(detect_hotspot_ip)"
 
   log "Installing dashboard captive portal landing service."
   log "Using hotspot captive portal IP: ${hotspot_ip}"
-
-  if [ -f "$CAPTIVE_DNSMASQ_FILE" ]; then
-    log "Updating captive portal DNS entries in ${CAPTIVE_DNSMASQ_FILE}."
-
-    if grep -q '### START INITBOX DASHBOARD CAPTIVE DNS ###' "$CAPTIVE_DNSMASQ_FILE"; then
-      tmp_file="$(mktemp)"
-      awk '
-        /### START INITBOX DASHBOARD CAPTIVE DNS ###/ { skip = 1; next }
-        /### END INITBOX DASHBOARD CAPTIVE DNS ###/ { skip = 0; next }
-        skip == 0 { print }
-      ' "$CAPTIVE_DNSMASQ_FILE" >"$tmp_file"
-      install -m 0644 "$tmp_file" "$CAPTIVE_DNSMASQ_FILE"
-      rm -f "$tmp_file"
-    fi
-
-    cat >>"$CAPTIVE_DNSMASQ_FILE" <<EOF
-
-### START INITBOX DASHBOARD CAPTIVE DNS ###
-# InitBox dashboard captive portal names.
-# These names are used by Windows, Android, Apple, and generic browsers
-# to detect captive portals. They intentionally resolve to the detected
-# InitBox hotspot IP so the user lands on the local dashboard instead of MSN,
-# Google, Apple, or an external Internet check page.
-# Force hotspot clients to use the InitBox as DNS for captive detection.
-# Without this, Windows may use another resolver and open MSN instead.
-dhcp-option=option:dns-server,${hotspot_ip}
-
-address=/initbox.wlan/${hotspot_ip}
-address=/msftconnecttest.com/${hotspot_ip}
-address=/www.msftconnecttest.com/${hotspot_ip}
-address=/msftncsi.com/${hotspot_ip}
-address=/www.msftncsi.com/${hotspot_ip}
-address=/dns.msftncsi.com/${hotspot_ip}
-address=/connectivitycheck.gstatic.com/${hotspot_ip}
-address=/clients3.google.com/${hotspot_ip}
-address=/captive.apple.com/${hotspot_ip}
-address=/neverssl.com/${hotspot_ip}
-address=/www.neverssl.com/${hotspot_ip}
-### END INITBOX DASHBOARD CAPTIVE DNS ###
-EOF
-
-    if command -v dnsmasq >/dev/null 2>&1; then
-      if dnsmasq --test >>"$LOGFILE" 2>&1; then
-        systemctl restart dnsmasq 2>/dev/null || warn "dnsmasq restart failed."
-      else
-        warn "dnsmasq config test failed after captive DNS update. Leaving dnsmasq unchanged."
-      fi
-    fi
-  else
-    warn "dnsmasq hotspot config not found: ${CAPTIVE_DNSMASQ_FILE}"
-    warn "Captive DNS entries were not written. Install hotspot module first if DNS redirection is required."
-  fi
+  log "DNS is not managed by dashboard; hotspot module owns /etc/dnsmasq.d/initbox-hotspot.conf."
 
   log "Writing ${PORTAL_SCRIPT}."
 
@@ -950,8 +878,8 @@ class InitBoxPortalHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        # Captive-portal probes must be redirected, not served Microsoft/Google/Apple text.
-        # This makes Windows show/use the local InitBox dashboard instead of falling through to MSN.
+        # Captive-portal probes and normal landing requests should always
+        # open the InitBox dashboard UI.
         self._redirect_to_dashboard()
 
     def do_HEAD(self):
@@ -981,6 +909,7 @@ EOF
       -j REDIRECT --to-ports "$DASHBOARD_PORT" 2>/dev/null || break
   done
 }
+
 
 install_pi_stats() {
   log "Writing /usr/local/bin/pi-stats.sh."
@@ -1259,6 +1188,12 @@ Cached assets:
 
 Role file:
   ${ROLE_FILE}
+
+
+Captive portal model:
+  Dashboard owns portal.service and /usr/local/bin/initbox-dashboard-portal.py.
+  Hotspot owns dnsmasq and /etc/dnsmasq.d/initbox-hotspot.conf.
+  This dashboard module does not write DNS configuration.
 
 Supported role words:
   isi
