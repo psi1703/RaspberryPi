@@ -364,17 +364,25 @@ run_node_red_installer() {
     return 1
   fi
 
-  log "Running cached official Node-RED installer: ${NODE_RED_INSTALLER_CACHE}"
-  log "Use target user when prompted: ${OWNER}"
+  if ! id "$OWNER" >/dev/null 2>&1; then
+    err "Owner user does not exist: ${OWNER}"
+    return 1
+  fi
+
+  log "Running cached official Node-RED installer as user: ${OWNER}"
+  log "Installer: ${NODE_RED_INSTALLER_CACHE}"
+
+  chmod 755 "$NODE_RED_INSTALLER_CACHE" || true
+  chown "$OWNER:$OWNER" "$NODE_RED_INSTALLER_CACHE" 2>/dev/null || true
 
   if [ -e /dev/tty ]; then
-    if ! bash "$NODE_RED_INSTALLER_CACHE" </dev/tty; then
+    if ! su - "$OWNER" -s /bin/bash -c "bash '$NODE_RED_INSTALLER_CACHE'" </dev/tty; then
       err "Node-RED installer failed."
       return 1
     fi
   else
-    warn "No /dev/tty available; running Node-RED installer non-interactively."
-    if ! bash "$NODE_RED_INSTALLER_CACHE"; then
+    warn "No /dev/tty available; running Node-RED installer as ${OWNER} non-interactively."
+    if ! su - "$OWNER" -s /bin/bash -c "bash '$NODE_RED_INSTALLER_CACHE'"; then
       err "Node-RED installer failed in non-interactive mode."
       return 1
     fi
