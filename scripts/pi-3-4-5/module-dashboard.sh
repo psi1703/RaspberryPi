@@ -10,6 +10,7 @@
 #   - captive portal landing service on port 80 that redirects to Node-RED UI
 #   - role sync helper using /etc/pi_roles.conf
 #   - Pi stats helper for dashboard use
+  - restricted File Transfer helper for dashboard upload/download actions
 #
 # Important service model:
 #   - InitBox uses pi-nodered.service only.
@@ -162,7 +163,8 @@ install_base_packages() {
     cmake \
     libjson-c-dev \
     libwebsockets-dev \
-    iptables 2>&1 | tee -a "$LOGFILE"; then
+    iptables \
+    python3 2>&1 | tee -a "$LOGFILE"; then
     err "Base dashboard package installation failed."
     err "If this Pi is offline, prepare the package cache first with:"
     err "  sudo ./scripts/initbox-installer.sh pi-3-4-5 p"
@@ -911,6 +913,240 @@ EOF
 }
 
 
+install_file_transfer_helper() {
+  log "Writing /usr/local/bin/initbox-file-transfer.sh."
+
+  cat >/usr/local/bin/initbox-file-transfer.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+HOME_ROOT="/home/initbox"
+BIN_ROOT="/usr/local/bin"
+CAN_TRC="/usr/local/bin/CAN.trc"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  initbox-file-transfer.sh list home|bin
+  initbox-file-transfer.sh download-path home|bin <relative-file>
+  initbox-file-transfer.sh download-can
+  initbox-file-transfer.sh delete-home <relative-file>
+  initbox-file-transfer.sh upload-home <tmp-file> <original-name>
+  initbox-file-transfer.sh install-can-trc <tmp-file> [original-name]
+USAGE
+}
+
+die() {
+  echo "ERR: $*" >&2
+  exit 1
+}
+
+json_escape() {
+  python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
+}
+
+safe_basename() {
+  local name="$1"
+  name="${name##*/}"
+  name="${name//$'\r'/}"
+  name="${name//$'\n'/}"
+
+  if [ -z "$name" ]; then
+    die "empty filename"
+  fi
+
+  case "$name" in
+    .*|*/*|*'..'*)
+      die "unsafe filename: $name"
+      ;;
+  esac
+
+  if ! printf '%s' "$name" | grep -Eq '^[A-Za-z0-9._@+=,-]+$'; then
+    die "filename contains unsupported characters: $name"
+  fi
+
+  printf '%s\n' "$name"
+}
+
+area_root() {
+  case "${1:-}" in
+    home) printf '%s\n' "$HOME_ROOT" ;;
+    bin) printf '%s\n' "$BIN_ROOT" ;;
+    *) die "unknown area: ${1:-}" ;;
+  esac
+}
+
+resolve_existing_file() {
+  local area="$1"
+  local rel="$2"
+  local root=""
+  local target=""
+  local resolved=""
+
+  root="$(area_root "$area")"
+
+  if [ -z "$rel" ]; then
+    die "missing relative path"
+  fi
+
+  case "$rel" in
+    /*|*'..'*) die "unsafe relative path" ;;
+  esac
+
+  target="${root}/${rel}"
+
+  if [ ! -e "$target" ]; then
+    die "file does not exist"
+  fi
+
+  resolved="$(realpath -e "$target")"
+
+  case "$resolved" in
+    "$root"|"$root"/*) ;;
+    *) die "path escapes allowed root" ;;
+  esac
+
+  if [ ! -f "$resolved" ]; then
+    die "not a regular file"
+  fi
+
+  printf '%s\n' "$resolved"
+}
+
+list_area() {
+  local area="$1"
+  local root=""
+
+  root="$(area_root "$area")"
+
+  if [ ! -d "$root" ]; then
+    printf '[]\n'
+    return 0
+  fi
+
+  python3 - "$root" <<'PYJSON'
+import json
+import os
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+items = []
+
+for path in sorted(root.rglob("*")):
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        continue
+    if root != resolved and root not in resolved.parents:
+        continue
+    try:
+        st = path.lstat()
+    except OSError:
+        continue
+    rel = str(path.relative_to(root))
+    if rel.startswith("."):
+        continue
+    is_file = path.is_file()
+    is_dir = path.is_dir()
+    if not is_file and not is_dir:
+        continue
+    if rel.count(os.sep) > 3:
+        continue
+    items.append({
+        "name": path.name,
+        "rel": rel,
+        "type": "dir" if is_dir else "file",
+        "size": st.st_size if is_file else 0,
+        "mtime": int(st.st_mtime),
+    })
+
+print(json.dumps(items, separators=(",", ":")))
+PYJSON
+}
+
+download_path() {
+  local area="$1"
+  local rel="$2"
+  resolve_existing_file "$area" "$rel"
+}
+
+download_can() {
+  if [ ! -f "$CAN_TRC" ]; then
+    die "CAN trace file not found: $CAN_TRC"
+  fi
+  printf '%s\n' "$CAN_TRC"
+}
+
+delete_home() {
+  local rel="$1"
+  local target=""
+  target="$(resolve_existing_file home "$rel")"
+  rm -f -- "$target"
+  printf '{"ok":true,"deleted":'
+  printf '%s' "$rel" | json_escape
+  printf '}\n'
+}
+
+upload_home() {
+  local tmp_file="$1"
+  local original_name="$2"
+  local safe_name=""
+  local dest=""
+
+  [ -f "$tmp_file" ] || die "temporary upload file not found"
+  safe_name="$(safe_basename "$original_name")"
+  dest="${HOME_ROOT}/${safe_name}"
+
+  install -m 0644 -o initbox -g initbox "$tmp_file" "$dest"
+  rm -f -- "$tmp_file" 2>/dev/null || true
+
+  printf '{"ok":true,"path":'
+  printf '%s' "$dest" | json_escape
+  printf '}\n'
+}
+
+install_can_trc() {
+  local tmp_file="$1"
+  local original_name="${2:-CAN.trc}"
+
+  [ -f "$tmp_file" ] || die "temporary upload file not found"
+
+  case "$original_name" in
+    *.trc|*.TRC|CAN.trc|CAN.TRC) ;;
+    *) die "CAN upload must be a .trc file" ;;
+  esac
+
+  install -m 0644 -o root -g root "$tmp_file" "$CAN_TRC"
+  rm -f -- "$tmp_file" 2>/dev/null || true
+
+  if systemctl cat fms.service >/dev/null 2>&1; then
+    systemctl restart fms.service >/dev/null 2>&1 || true
+  fi
+
+  printf '{"ok":true,"path":"%s","service":"fms.service"}\n' "$CAN_TRC"
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  list) list_area "${1:-}" ;;
+  download-path) download_path "${1:-}" "${2:-}" ;;
+  download-can) download_can ;;
+  delete-home) delete_home "${1:-}" ;;
+  upload-home) upload_home "${1:-}" "${2:-}" ;;
+  install-can-trc) install_can_trc "${1:-}" "${2:-CAN.trc}" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $cmd" ;;
+esac
+EOF
+
+  chmod 755 /usr/local/bin/initbox-file-transfer.sh
+  chown root:root /usr/local/bin/initbox-file-transfer.sh 2>/dev/null || true
+}
+
+
 install_pi_stats() {
   log "Writing /usr/local/bin/pi-stats.sh."
 
@@ -1081,6 +1317,7 @@ install_module() {
   install_pi_rolectl
   install_pi_servsync
   install_portal
+  install_file_transfer_helper
   install_pi_stats
   install_services
   enable_and_start_services
@@ -1088,7 +1325,7 @@ install_module() {
   ok "Dashboard module installed."
   ok "Dashboard landing page: http://initbox.wlan/"
   ok "Node-RED dashboard: http://initbox.wlan:${DASHBOARD_PORT}/ui"
-  ok "Web terminal: http://initbox.wlan:${TTYD_PORT}"
+  ok "Web terminal: embedded in dashboard UI; ttyd backend port ${TTYD_PORT}"
   ok "Role file: ${ROLE_FILE}"
   ok "Dashboard cache: ${DASHBOARD_CACHE_DIR}"
   ok "Node-RED runtime: ${NODE_RED_USER_DIR}"
@@ -1128,6 +1365,7 @@ uninstall_module() {
   rm -f /usr/local/bin/pi-servsync.sh
   rm -f /usr/local/bin/pi-rolectl.sh
   rm -f /usr/local/bin/pi-stats.sh
+  rm -f /usr/local/bin/initbox-file-transfer.sh
 
   rm -f "${NODE_RED_USER_DIR}/flows.json"
   rm -f "${NODE_RED_USER_DIR}/flows_"*.json
@@ -1188,6 +1426,9 @@ Cached assets:
 
 Role file:
   ${ROLE_FILE}
+
+File transfer helper:
+  /usr/local/bin/initbox-file-transfer.sh
 
 
 Captive portal model:
