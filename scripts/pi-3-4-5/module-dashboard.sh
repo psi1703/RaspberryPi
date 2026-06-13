@@ -402,8 +402,11 @@ install_node_red_local() {
   fi
 
   log "Installing Node-RED and node-red-dashboard locally under ${NODE_RED_USER_DIR}."
+  log "This can take several minutes on a Raspberry Pi."
 
-  sudo -H -u "$OWNER" bash <<'EOS'
+  chown -R "${OWNER}:${OWNER}" "$NODE_RED_USER_DIR" || true
+
+  if ! sudo -H -u "$OWNER" bash <<'EOS' 2>&1 | tee -a "$LOGFILE"
 set -euo pipefail
 
 NR_DIR="${HOME}/.node-red"
@@ -412,12 +415,34 @@ PUBLIC_DIR="${NR_DIR}/public"
 mkdir -p "${PUBLIC_DIR}"
 cd "${NR_DIR}"
 
+echo "[npm] user: $(id)"
+echo "[npm] home: ${HOME}"
+echo "[npm] node: $(node -v 2>/dev/null || echo missing)"
+echo "[npm] npm: $(npm -v 2>/dev/null || echo missing)"
+echo "[npm] working directory: $(pwd)"
+
 if [ ! -f package.json ]; then
-  npm init -y >/dev/null 2>&1
+  echo "[npm] creating package.json"
+  npm init -y
 fi
 
-npm install --unsafe-perm node-red node-red-dashboard
+echo "[npm] cleaning npm cache metadata"
+npm cache verify || true
+
+echo "[npm] installing local Node-RED packages"
+npm install --omit=dev --no-audit --no-fund --legacy-peer-deps node-red node-red-dashboard
+
+echo "[npm] installed packages:"
+npm list --depth=0 || true
 EOS
+  then
+    err "npm install failed for local Node-RED/dashboard packages."
+    err "Check the detailed npm output above or in:"
+    err "  ${LOGFILE}"
+    exit 1
+  fi
+
+  chown -R "${OWNER}:${OWNER}" "$NODE_RED_USER_DIR" || true
 
   if ! node_red_local_is_installed; then
     err "Local Node-RED binary not found after npm install: ${NODE_RED_LOCAL_BIN}"
@@ -519,7 +544,7 @@ EOF
   tmp_file="$(mktemp)"
 
   if grep -q "^${key}=" "$MODS_FILE"; then
-    grep -v "^${key}=" "$MODS_FILE" >"$tmp_file"
+    grep -v "^${key}=" "$MODS_FILE" >"$tmp_file" || true
   else
     cat "$MODS_FILE" >"$tmp_file"
   fi
