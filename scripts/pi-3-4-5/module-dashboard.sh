@@ -375,11 +375,10 @@ run_node_red_installer() {
 
   chmod 755 "$NODE_RED_INSTALLER_CACHE" || true
 
-  if ! bash "$NODE_RED_INSTALLER_CACHE" \
-    --confirm-root \
-    --confirm-install \
-    --node22 \
-    --nodered-user "$OWNER"; then
+  if ! NODERED_USER="$OWNER" \
+    CONFIRM_ROOT=y \
+    CONFIRM_INSTALL=y \
+    bash "$NODE_RED_INSTALLER_CACHE"; then
     err "Node-RED installer failed."
     return 1
   fi
