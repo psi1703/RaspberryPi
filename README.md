@@ -153,7 +153,7 @@ Default recommended modules:
 isi fms hotspot dashboard rtc sniffer-bridge
 ```
 
-The `web-terminal` module name may remain supported as a compatibility alias, but on this branch Web Terminal is bundled into the dashboard module.
+Web Terminal is bundled into the dashboard module and exposed from inside the dashboard UI. It is not installed or documented as a separate user-facing module.
 
 ---
 
@@ -167,13 +167,16 @@ Raspberry Pi 4
 Raspberry Pi 5
 ```
 
+
+---
+
 ## Feature Summary
 
 The Pi 3 / 4 / 5 branch supports:
 
 * Hotspot
 * Dashboard
-* Web Terminal
+* Embedded Web Terminal inside the dashboard
 * Debian package cache
 * Dashboard asset cache
 * Role-based service startup
@@ -221,6 +224,7 @@ scripts/
     module-rtc.sh
     module-ws-br0.sh
 ```
+
 
 ---
 
@@ -579,7 +583,7 @@ Reasoning:
 
 * Package cache makes later field/offline reruns safer.
 * Hotspot provides Wi-Fi access and local DNS.
-* Dashboard provides Node-RED, Web Terminal, portal redirect, and role control.
+* Dashboard provides Node-RED, the embedded Web Terminal, portal landing, and role control.
 * RTC provides time sync helpers used by ZEITNEHMER.
 * Sniffer / Bridge provides `br0` and capture support.
 * ISI depends on `br0` for namespace traffic.
@@ -806,8 +810,8 @@ The dashboard module installs and configures:
 * repo-owned `settings.js`
 * repo-owned `logo.png`
 * `pi-nodered.service`
-* ttyd Web Terminal
-* `ttyd.service`
+* embedded ttyd Web Terminal backend
+* `ttyd.service` used by the embedded dashboard terminal
 * captive portal landing service on port `80` that redirects users to the Node-RED dashboard UI
 * `portal.service`
 * role sync helper
@@ -853,11 +857,13 @@ The dashboard module does not manage dnsmasq. Captive DNS must already be provid
 
 Windows "Action needed" captive portal behavior is only reliable when the client has no other active Internet path. During bench testing, disconnect Ethernet, VPN, and other Internet adapters before testing the hotspot captive portal.
 
-Web Terminal URL:
+Embedded Web Terminal access:
 
 ```text
-http://initbox.wlan:7681
+Open the terminal from inside the dashboard UI.
 ```
+
+The dashboard module still manages `ttyd.service` on port `7681` as the backend for the embedded terminal, but users should access it through the dashboard instead of treating it as a separate entry point.
 
 The dashboard is the primary management interface for this branch.
 
@@ -912,7 +918,7 @@ Expected ports:
 ```text
 80     captive portal landing service to dashboard
 1880   Node-RED
-7681   ttyd Web Terminal
+7681   ttyd backend for embedded dashboard terminal
 ```
 
 ---
@@ -1461,7 +1467,7 @@ Common expected ports:
 | --------------------------------- | -----------: |
 | Dashboard captive portal landing service |         `80` |
 | Node-RED                          |       `1880` |
-| Web Terminal / ttyd               |       `7681` |
+| Embedded terminal backend / ttyd   |       `7681` |
 
 ---
 
@@ -1521,7 +1527,7 @@ Confirm:
 * Required interfaces return.
 * Required ports are listening.
 * Dashboard works.
-* Web Terminal works.
+* Embedded Web Terminal works from inside the dashboard.
 * Role-based startup behaves correctly.
 * Package cache exists.
 * Dashboard cache exists after dashboard install.
@@ -1665,7 +1671,7 @@ Before the device leaves the lab:
 * [ ] Required services are active.
 * [ ] Required interfaces are present.
 * [ ] Dashboard is reachable.
-* [ ] Web Terminal is reachable.
+* [ ] Embedded Web Terminal opens from inside the dashboard.
 * [ ] `/etc/pi_roles.conf` was tested.
 * [ ] Role-based startup was tested.
 * [ ] Installer uninstall menu was tested for at least one module.
@@ -1901,7 +1907,7 @@ dashboard
 
 ---
 
-### Web Terminal not reachable
+### Embedded Web Terminal not working
 
 Check:
 
@@ -1917,9 +1923,11 @@ Expected:
 
 ```text
 ttyd.service active
-port 7681 listening
+port 7681 listening as the dashboard terminal backend
 ttyd installed or restorable from dashboard cache
 ```
+
+Access the terminal from inside the dashboard UI rather than using it as the primary standalone page.
 
 ---
 
@@ -2093,7 +2101,7 @@ shellcheck scripts/initbox-installer.sh scripts/initbox-status.sh scripts/update
 
 ## Design Rules
 
-* This branch is for Raspberry Pi 3 / 4 / 5 only.
+* This branch is for Raspberry Pi 3 / 4 / 5.
 * Lab setup requires Internet access.
 * Field deployment assumes the Pi is already configured.
 * Debian packages must be cached during lab preparation.
@@ -2102,7 +2110,7 @@ shellcheck scripts/initbox-installer.sh scripts/initbox-status.sh scripts/update
 * Hotspot owns `/etc/dnsmasq.d/initbox-hotspot.conf`.
 * Dashboard must not write dnsmasq configuration.
 * Dashboard owns `portal.service` and `/usr/local/bin/initbox-dashboard-portal.py`.
-* Web Terminal is bundled with the dashboard module.
+* Web Terminal is embedded in the dashboard and bundled with the dashboard module.
 * The installer main menu must use clear numeric choices for install, uninstall, checks, cache, logs, state, and quit.
 * Module execution must not require typing `RUN`.
 * Every supported module should support `install` and `uninstall`.
@@ -2117,7 +2125,7 @@ shellcheck scripts/initbox-installer.sh scripts/initbox-status.sh scripts/update
 * `pi-servsync.service` applies role changes to systemd services.
 * `br0` is managed by `bridge-check.service`.
 * ISI uses `br0`.
-* ISI should not create Pi Zero-style bridges on this branch.
+* ISI should not create non-profile bridge behavior on this branch.
 * Sniffer capture uses `br0`.
 * `log-prep.sh` must only restart capture when a sniff role is enabled.
 * FMS must only send CAN frames when the `fms` role is enabled.
