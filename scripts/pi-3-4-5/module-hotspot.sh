@@ -41,6 +41,7 @@ HOSTAPD_DEFAULT="/etc/default/hostapd"
 DNSMASQ_DROPIN_DIR="/etc/dnsmasq.d"
 DNSMASQ_CONF="${DNSMASQ_DROPIN_DIR}/initbox-hotspot.conf"
 DHCPCD_CONF="/etc/dhcpcd.conf"
+HOTSPOT_STATE_FILE="/etc/initbox/hotspot-state.env"
 
 ts() {
   date +"%Y-%m-%d %H:%M:%S"
@@ -78,6 +79,28 @@ prepare_log() {
   if id "$OWNER" >/dev/null 2>&1; then
     chown -R "$OWNER:$OWNER" "$LOG_DIR" || true
   fi
+}
+
+prepare_state_dir() {
+  install -d -m 0755 /etc/initbox
+}
+
+write_hotspot_state() {
+  local status="$1"
+  local message="$2"
+  local iface_present="$3"
+
+  prepare_state_dir
+
+  cat >"$HOTSPOT_STATE_FILE" <<EOF
+HOTSPOT_STATUS=${status}
+HOTSPOT_MESSAGE=${message}
+HOTSPOT_INTERFACE=${WLAN_IFACE}
+HOTSPOT_INTERFACE_PRESENT=${iface_present}
+EOF
+
+  chmod 644 "$HOTSPOT_STATE_FILE"
+  chown root:root "$HOTSPOT_STATE_FILE" || true
 }
 
 require_package_helper() {
@@ -187,6 +210,30 @@ get_boxno() {
   printf '%s\n' "$selected_boxno"
 }
 
+wait_for_wlan_iface() {
+  local attempt=0
+  local max_attempts=20
+
+  log "Checking for wireless interface: ${WLAN_IFACE}"
+
+  while [ "$attempt" -lt "$max_attempts" ]; do
+    if ip link show "$WLAN_IFACE" >/dev/null 2>&1; then
+      ok "Wireless interface found: ${WLAN_IFACE}"
+      write_hotspot_state "ok" "Wireless interface found" "1"
+      return 0
+    fi
+
+    attempt=$((attempt + 1))
+    log "Waiting for ${WLAN_IFACE} to appear (${attempt}/${max_attempts})."
+    sleep 1
+  done
+
+  warn "Wireless interface not found: ${WLAN_IFACE}"
+  warn "Hotspot configuration was not started because the Wi-Fi interface is missing."
+  write_hotspot_state "action_needed" "Wireless interface not found" "0"
+  return 1
+}
+
 write_hostapd_conf() {
   local ssid="$1"
 
@@ -233,11 +280,14 @@ write_dnsmasq_conf() {
   cat >"$DNSMASQ_CONF" <<EOF
 # initbox-hotspot
 interface=${WLAN_IFACE}
-bind-interfaces
+bind-dynamic
 dhcp-range=${dhcp_range}
+dhcp-option=3,${hotspot_ip}
+dhcp-option=6,${hotspot_ip}
 domain=${WLAN_IFACE}
 
 # Local dashboard name and captive portal fallback
+address=/initbox.wlan/${hotspot_ip}
 address=/#/${hotspot_ip}
 
 # Android captive portal checks
@@ -283,7 +333,7 @@ remove_managed_dhcpcd_block() {
 write_dhcpcd_conf() {
   local hotspot_ip="$1"
 
-  log "Updating ${DHCPCD_CONF} with managed wlan0 block."
+  log "Updating ${DHCPCD_CONF} with managed ${WLAN_IFACE} block."
 
   touch "$DHCPCD_CONF"
   remove_managed_dhcpcd_block
@@ -298,7 +348,30 @@ interface ${WLAN_IFACE}
 EOF
 }
 
+restart_service_checked() {
+  local service_name="$1"
+
+  log "Restarting ${service_name}."
+
+  if systemctl restart "$service_name"; then
+    ok "${service_name} restarted."
+    return 0
+  fi
+
+  warn "${service_name} restart failed. Trying start."
+  if systemctl start "$service_name"; then
+    ok "${service_name} started."
+    return 0
+  fi
+
+  err "${service_name} failed to start."
+  systemctl status "$service_name" --no-pager 2>&1 | tee -a "$LOGFILE" || true
+  return 1
+}
+
 start_hotspot_stack() {
+  local failed=0
+
   log "Unmasking and enabling hotspot stack."
 
   systemctl unmask hostapd 2>/dev/null || true
@@ -307,9 +380,23 @@ start_hotspot_stack() {
   systemctl daemon-reload
   systemctl enable dhcpcd dnsmasq hostapd 2>/dev/null || true
 
-  systemctl restart dhcpcd 2>/dev/null || systemctl start dhcpcd 2>/dev/null || true
-  systemctl restart dnsmasq 2>/dev/null || systemctl start dnsmasq 2>/dev/null || true
-  systemctl restart hostapd 2>/dev/null || systemctl start hostapd 2>/dev/null || true
+  restart_service_checked dhcpcd || failed=1
+
+  log "Allowing ${WLAN_IFACE} address assignment to settle."
+  sleep 2
+
+  restart_service_checked dnsmasq || failed=1
+  restart_service_checked hostapd || failed=1
+
+  if [ "$failed" -ne 0 ]; then
+    write_hotspot_state "action_needed" "One or more hotspot services failed" "1"
+    err "Hotspot stack did not start cleanly."
+    err "Check:"
+    err "  sudo systemctl status dnsmasq hostapd dhcpcd --no-pager"
+    exit 1
+  fi
+
+  write_hotspot_state "ok" "Hotspot services active" "1"
 }
 
 install_module() {
@@ -321,6 +408,7 @@ install_module() {
 
   require_root
   prepare_log
+  prepare_state_dir
 
   log "Starting hotspot module installation."
 
@@ -341,6 +429,13 @@ install_module() {
   write_hostapd_conf "$ssid"
   write_dnsmasq_conf "$hotspot_ip" "$dhcp_range"
   write_dhcpcd_conf "$hotspot_ip"
+
+  if ! wait_for_wlan_iface; then
+    warn "Configuration was written, but services were not started because ${WLAN_IFACE} is missing."
+    warn "The dashboard should show Action needed for the Wi-Fi panel."
+    exit 0
+  fi
+
   start_hotspot_stack
 
   ok "Hotspot module installed."
@@ -351,6 +446,7 @@ install_module() {
 uninstall_module() {
   require_root
   prepare_log
+  prepare_state_dir
 
   log "Uninstalling hotspot module."
 
@@ -365,8 +461,9 @@ uninstall_module() {
 
   remove_managed_dhcpcd_block
 
-  systemctl daemon-reload
+  write_hotspot_state "removed" "Hotspot configuration removed" "0"
 
+  systemctl daemon-reload
   systemctl restart dhcpcd 2>/dev/null || true
 
   ok "Hotspot configuration removed."
