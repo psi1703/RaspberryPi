@@ -7,7 +7,8 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 STATE_HELPER="$REPO_ROOT/scripts/lib/state.sh"
 
@@ -17,6 +18,13 @@ MODS_FILE="${MODS_FILE:-/etc/initbox-mods.conf}"
 TRACE_DIR="${TRACE_DIR:-/usr/tracefiles}"
 LOG_FILE="${LOG_FILE:-/var/log/initbox/install.log}"
 LEGACY_LOG_FILE="${LEGACY_LOG_FILE:-/home/initbox/pi_logs/initbox-install.log}"
+
+HOTSPOT_STATE_FILE="${HOTSPOT_STATE_FILE:-/etc/initbox/hotspot-state.env}"
+DNSMASQ_HOTSPOT_CONF="${DNSMASQ_HOTSPOT_CONF:-/etc/dnsmasq.d/initbox-hotspot.conf}"
+HOSTAPD_CONF="${HOSTAPD_CONF:-/etc/hostapd/hostapd.conf}"
+WLAN_IFACE="${WLAN_IFACE:-wlan0}"
+TTYD_PORT="${TTYD_PORT:-7681}"
+NODERED_PORT="${NODERED_PORT:-1880}"
 
 if [ -f "$STATE_HELPER" ]; then
   # shellcheck disable=SC1090
@@ -43,6 +51,28 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+service_exists() {
+  local service_name="$1"
+
+  systemctl list-unit-files "$service_name" >/dev/null 2>&1
+}
+
+service_active() {
+  local service_name="$1"
+
+  command_exists systemctl && systemctl is-active --quiet "$service_name"
+}
+
+port_listening() {
+  local port="$1"
+
+  if ! command_exists ss; then
+    return 1
+  fi
+
+  ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
+}
+
 print_command_output() {
   local description="$1"
   shift
@@ -56,10 +86,26 @@ print_command_output() {
   fi
 }
 
-service_exists() {
-  local service_name="$1"
+print_file_if_exists() {
+  local label="$1"
+  local path="$2"
 
-  systemctl list-unit-files "$service_name" >/dev/null 2>&1
+  print_subsection "$label"
+
+  if [ -f "$path" ]; then
+    echo "Path: $path"
+    echo
+    sed -n '1,160p' "$path" || true
+  else
+    echo "Missing: $path"
+  fi
+}
+
+print_action() {
+  local severity="$1"
+  local message="$2"
+
+  printf '[%s] %s\n' "$severity" "$message"
 }
 
 print_service_status() {
@@ -92,70 +138,6 @@ print_recent_service_log() {
   journalctl -u "$service_name" -n 40 --no-pager || true
 }
 
-print_known_services() {
-  local service_name
-  local services
-
-  services="
-dhcpcd
-hostapd
-dnsmasq
-ttyd
-nodered
-pi-nodered
-portal
-pi-servsync
-isirunall
-fms
-bridge-check
-wireshark-autostart
-rtc-sync
-rtc-sync.timer
-"
-
-  print_section "Known Service Status"
-
-  while IFS= read -r service_name; do
-    [ -z "$service_name" ] && continue
-    print_service_status "$service_name"
-  done <<EOF
-$services
-EOF
-}
-
-print_known_logs() {
-  local service_name
-  local services
-
-  services="
-dhcpcd
-hostapd
-dnsmasq
-ttyd
-nodered
-pi-nodered
-portal
-pi-servsync
-isirunall
-fms
-bridge-check
-wireshark-autostart
-rtc-sync
-"
-
-  print_section "Recent Known Service Logs"
-
-  while IFS= read -r service_name; do
-    [ -z "$service_name" ] && continue
-
-    if command_exists systemctl && service_exists "$service_name"; then
-      print_recent_service_log "$service_name"
-    fi
-  done <<EOF
-$services
-EOF
-}
-
 print_initbox_state() {
   print_section "Install State"
 
@@ -167,18 +149,126 @@ print_initbox_state() {
   fi
 }
 
-print_file_if_exists() {
-  local label="$1"
-  local path="$2"
+print_hotspot_action_summary() {
+  local action_needed=0
+  local wlan_ip=""
 
-  print_subsection "$label"
+  print_section "Hotspot / Wi-Fi Action Summary"
 
-  if [ -f "$path" ]; then
-    echo "Path: $path"
-    echo
-    sed -n '1,120p' "$path" || true
+  if ! command_exists ip; then
+    print_action "ACTION NEEDED" "ip command not found; cannot inspect Wi-Fi interface."
+    return 0
+  fi
+
+  if ! ip link show "$WLAN_IFACE" >/dev/null 2>&1; then
+    print_action "ACTION NEEDED" "${WLAN_IFACE} interface not found."
+    print_action "DETAIL" "Hotspot cannot start until the wireless interface exists."
+    return 0
+  fi
+
+  print_action "OK" "${WLAN_IFACE} interface exists."
+
+  wlan_ip="$(ip -4 -o addr show "$WLAN_IFACE" 2>/dev/null | awk '{print $4}' | head -n 1 || true)"
+  if [ -n "$wlan_ip" ]; then
+    print_action "OK" "${WLAN_IFACE} IPv4 address: ${wlan_ip}"
   else
-    echo "Missing: $path"
+    print_action "ACTION NEEDED" "${WLAN_IFACE} has no IPv4 address."
+    action_needed=1
+  fi
+
+  if [ ! -f "$DNSMASQ_HOTSPOT_CONF" ]; then
+    print_action "ACTION NEEDED" "Missing dnsmasq hotspot config: ${DNSMASQ_HOTSPOT_CONF}"
+    action_needed=1
+  else
+    print_action "OK" "dnsmasq hotspot config exists."
+
+    if grep -q '^bind-interfaces$' "$DNSMASQ_HOTSPOT_CONF"; then
+      print_action "ACTION NEEDED" "dnsmasq config uses bind-interfaces; replace with bind-dynamic."
+      action_needed=1
+    fi
+
+    if grep -q '^bind-dynamic$' "$DNSMASQ_HOTSPOT_CONF"; then
+      print_action "OK" "dnsmasq config uses bind-dynamic."
+    else
+      print_action "ACTION NEEDED" "dnsmasq config does not contain bind-dynamic."
+      action_needed=1
+    fi
+
+    if grep -q "^interface=${WLAN_IFACE}$" "$DNSMASQ_HOTSPOT_CONF"; then
+      print_action "OK" "dnsmasq is configured for ${WLAN_IFACE}."
+    else
+      print_action "ACTION NEEDED" "dnsmasq config is not bound to ${WLAN_IFACE}."
+      action_needed=1
+    fi
+  fi
+
+  if service_active dnsmasq; then
+    print_action "OK" "dnsmasq.service is active."
+  else
+    print_action "ACTION NEEDED" "dnsmasq.service is not active."
+    action_needed=1
+  fi
+
+  if service_active hostapd; then
+    print_action "OK" "hostapd.service is active."
+  else
+    print_action "ACTION NEEDED" "hostapd.service is not active."
+    action_needed=1
+  fi
+
+  if [ -f "$HOTSPOT_STATE_FILE" ]; then
+    print_action "OK" "Hotspot state file exists: ${HOTSPOT_STATE_FILE}"
+  else
+    print_action "DETAIL" "Hotspot state file missing: ${HOTSPOT_STATE_FILE}"
+  fi
+
+  if [ "$action_needed" -eq 0 ]; then
+    print_action "OK" "No hotspot action needed detected by this script."
+  fi
+}
+
+print_dashboard_action_summary() {
+  local action_needed=0
+
+  print_section "Dashboard / Web Terminal Action Summary"
+
+  if service_active ttyd; then
+    print_action "OK" "ttyd.service is active."
+  else
+    print_action "ACTION NEEDED" "ttyd.service is not active."
+    action_needed=1
+  fi
+
+  if command_exists ttyd; then
+    print_action "OK" "ttyd binary found: $(command -v ttyd)"
+  else
+    print_action "ACTION NEEDED" "ttyd binary not found."
+    action_needed=1
+  fi
+
+  if port_listening "$TTYD_PORT"; then
+    print_action "OK" "Web terminal port ${TTYD_PORT} is listening."
+  else
+    print_action "ACTION NEEDED" "Web terminal port ${TTYD_PORT} is not listening."
+    action_needed=1
+  fi
+
+  if service_active nodered || service_active pi-nodered; then
+    print_action "OK" "Node-RED service is active."
+  else
+    print_action "ACTION NEEDED" "Node-RED service is not active."
+    action_needed=1
+  fi
+
+  if port_listening "$NODERED_PORT"; then
+    print_action "OK" "Node-RED port ${NODERED_PORT} is listening."
+  else
+    print_action "ACTION NEEDED" "Node-RED port ${NODERED_PORT} is not listening."
+    action_needed=1
+  fi
+
+  if [ "$action_needed" -eq 0 ]; then
+    print_action "OK" "No dashboard/web-terminal action needed detected by this script."
   fi
 }
 
@@ -217,11 +307,17 @@ print_config_files() {
   print_file_if_exists "Role file" "$ROLE_FILE"
   print_file_if_exists "Box number" "$BOXNO_FILE"
   print_file_if_exists "Module flags" "$MODS_FILE"
-  print_file_if_exists "hostapd config" "/etc/hostapd/hostapd.conf"
-  print_file_if_exists "dnsmasq InitBox drop-in" "/etc/dnsmasq.d/initbox-hotspot.conf"
+  print_file_if_exists "Hotspot state" "$HOTSPOT_STATE_FILE"
+  print_file_if_exists "hostapd config" "$HOSTAPD_CONF"
+  print_file_if_exists "dnsmasq InitBox drop-in" "$DNSMASQ_HOTSPOT_CONF"
 }
 
 print_network_info() {
+  local iface_path=""
+  local iface=""
+  local carrier=""
+  local operstate=""
+
   print_section "Network Information"
 
   if command_exists ip; then
@@ -230,7 +326,7 @@ print_network_info() {
     print_command_output "Links" ip link show
 
     print_subsection "Common interface checks"
-    ip addr show wlan0 2>/dev/null || echo "wlan0 not found."
+    ip addr show "$WLAN_IFACE" 2>/dev/null || echo "${WLAN_IFACE} not found."
     echo
     ip addr show br0 2>/dev/null || echo "br0 not found."
     echo
@@ -256,6 +352,10 @@ print_network_info() {
     done
   else
     echo "ip command not available."
+  fi
+
+  if command_exists rfkill; then
+    print_command_output "rfkill" rfkill list
   fi
 }
 
@@ -327,6 +427,18 @@ print_rtc_info() {
 print_dashboard_info() {
   print_section "Dashboard / Web Terminal Information"
 
+  if command_exists node; then
+    print_command_output "Node.js version" node --version
+  else
+    echo "node not found."
+  fi
+
+  if command_exists npm; then
+    print_command_output "npm version" npm --version
+  else
+    echo "npm not found."
+  fi
+
   if command_exists node-red; then
     print_command_output "Node-RED version" node-red --version
   else
@@ -390,6 +502,70 @@ print_ports() {
   fi
 }
 
+print_known_services() {
+  local service_name=""
+  local services=""
+
+  services="
+dhcpcd
+hostapd
+dnsmasq
+ttyd
+nodered
+pi-nodered
+portal
+pi-servsync
+isirunall
+fms
+bridge-check
+wireshark-autostart
+rtc-sync
+rtc-sync.timer
+"
+
+  print_section "Known Service Status"
+
+  while IFS= read -r service_name; do
+    [ -z "$service_name" ] && continue
+    print_service_status "$service_name"
+  done <<EOF
+$services
+EOF
+}
+
+print_known_logs() {
+  local service_name=""
+  local services=""
+
+  services="
+dhcpcd
+hostapd
+dnsmasq
+ttyd
+nodered
+pi-nodered
+portal
+pi-servsync
+isirunall
+fms
+bridge-check
+wireshark-autostart
+rtc-sync
+"
+
+  print_section "Recent Known Service Logs"
+
+  while IFS= read -r service_name; do
+    [ -z "$service_name" ] && continue
+
+    if command_exists systemctl && service_exists "$service_name"; then
+      print_recent_service_log "$service_name"
+    fi
+  done <<EOF
+$services
+EOF
+}
+
 print_logs_summary() {
   print_section "Installer Logs"
 
@@ -413,6 +589,8 @@ main() {
   echo "Generated at: $(date '+%Y-%m-%d %H:%M:%S %Z')"
   echo "Repository root: $REPO_ROOT"
 
+  print_hotspot_action_summary
+  print_dashboard_action_summary
   print_system_info
   print_initbox_state
   print_config_files
@@ -456,6 +634,10 @@ This command is read-only. It prints diagnostics for:
   - FMS/CAN
   - sniffer bridge
   - RTC
+
+The first two sections are action summaries:
+  - Hotspot / Wi-Fi Action Summary
+  - Dashboard / Web Terminal Action Summary
 EOF
     ;;
   *)
