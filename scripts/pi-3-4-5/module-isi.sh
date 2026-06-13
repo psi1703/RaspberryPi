@@ -17,6 +17,12 @@
 #   - isirunall.sh starts only when the role file contains: isi
 #   - br0 is managed by bridge-check.service from the sniffer bridge module.
 #
+# Dashboard module availability model:
+#   - This module sets ISI=1 after install.
+#   - This module sets ISI=0 after uninstall/purge.
+#   - If pi-nodered.service exists, it is restarted after the flag update
+#     so the dashboard UI reloads module availability immediately.
+#
 # Actions:
 #   install    Install/update ISI simulator service and payloads
 #   uninstall  Disable/remove ISI service and files created by this module
@@ -44,6 +50,9 @@ ISI_FILE_2="/usr/local/bin/isi2.txt"
 ISI_FILE_3="/usr/local/bin/isi3.txt"
 
 ROLE_FILE="${ROLE_FILE:-/etc/pi_roles.conf}"
+
+DASHBOARD_FLAGS_FILE="${DASHBOARD_FLAGS_FILE:-}"
+NODERED_SERVICE="${NODERED_SERVICE:-pi-nodered.service}"
 
 ts() {
   date +"%Y-%m-%d %H:%M:%S"
@@ -137,6 +146,126 @@ EOF
     chmod 664 "$ROLE_FILE" || true
     chown root:"$OWNER" "$ROLE_FILE" 2>/dev/null || true
   fi
+}
+
+dashboard_flags_file_path() {
+  local candidate=""
+
+  if [ -n "$DASHBOARD_FLAGS_FILE" ]; then
+    printf '%s\n' "$DASHBOARD_FLAGS_FILE"
+    return 0
+  fi
+
+  for candidate in \
+    /etc/initbox/dashboard-modules.env \
+    /etc/initbox/dashboard-flags.env \
+    /etc/pi-dashboard-modules.env \
+    /etc/pi_dashboard_modules.conf; do
+    if [ -f "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  printf '%s\n' "/etc/initbox/dashboard-modules.env"
+}
+
+ensure_dashboard_flags_file() {
+  local flags_file=""
+  local flags_dir=""
+
+  flags_file="$(dashboard_flags_file_path)"
+  flags_dir="$(dirname "$flags_file")"
+
+  mkdir -p "$flags_dir"
+
+  if [ ! -f "$flags_file" ]; then
+    log "Creating dashboard module flags file: ${flags_file}"
+
+    cat >"$flags_file" <<'EOF'
+# InitBox dashboard module availability flags
+# 1 means the module/control is available in the dashboard.
+# 0 means hide or disable the related dashboard control.
+FMS=0
+WSBR0=0
+RTC=0
+HOTSPOT=1
+DASHBOARD=1
+ISI=0
+EOF
+  fi
+
+  chmod 664 "$flags_file" || true
+  chown root:"$OWNER" "$flags_file" 2>/dev/null || true
+}
+
+write_dashboard_module_flag() {
+  local key="$1"
+  local value="$2"
+  local flags_file=""
+  local tmp_file=""
+
+  ensure_dashboard_flags_file
+  flags_file="$(dashboard_flags_file_path)"
+  tmp_file="$(mktemp)"
+
+  awk -v key="$key" -v value="$value" '
+    BEGIN {
+      found = 0
+    }
+
+    $0 ~ "^" key "=" {
+      print key "=" value
+      found = 1
+      next
+    }
+
+    {
+      print
+    }
+
+    END {
+      if (found == 0) {
+        print key "=" value
+      }
+    }
+  ' "$flags_file" >"$tmp_file"
+
+  install -m 0664 "$tmp_file" "$flags_file"
+  rm -f "$tmp_file"
+
+  chown root:"$OWNER" "$flags_file" 2>/dev/null || true
+
+  log "Dashboard module flag updated: ${key}=${value} in ${flags_file}"
+}
+
+restart_dashboard_if_present() {
+  if ! systemctl cat "$NODERED_SERVICE" >/dev/null 2>&1; then
+    log "Dashboard Node-RED service not installed; no restart needed."
+    return 0
+  fi
+
+  if systemctl is-active "$NODERED_SERVICE" >/dev/null 2>&1; then
+    log "Restarting ${NODERED_SERVICE} so dashboard UI reloads module flags."
+    if systemctl restart "$NODERED_SERVICE"; then
+      ok "${NODERED_SERVICE} restarted."
+    else
+      warn "Failed to restart ${NODERED_SERVICE}."
+    fi
+    return 0
+  fi
+
+  if systemctl is-enabled "$NODERED_SERVICE" >/dev/null 2>&1; then
+    log "${NODERED_SERVICE} exists but is not active; starting it so dashboard UI reloads module flags."
+    if systemctl restart "$NODERED_SERVICE"; then
+      ok "${NODERED_SERVICE} started."
+    else
+      warn "Failed to start ${NODERED_SERVICE}."
+    fi
+    return 0
+  fi
+
+  log "${NODERED_SERVICE} exists but is disabled/inactive; no dashboard restart needed."
 }
 
 write_runner() {
@@ -577,7 +706,11 @@ install_module() {
   write_service
   enable_service
 
+  write_dashboard_module_flag "ISI" "1"
+  restart_dashboard_if_present
+
   ok "ISI simulator module installed."
+  ok "Dashboard availability flag set: ISI=1"
   ok "Dashboard role file controls startup: ${ROLE_FILE}"
   ok "Enable role with dashboard or set: ROLES=\"isi\""
 }
@@ -607,7 +740,11 @@ uninstall_module() {
 
   systemctl daemon-reload
 
+  write_dashboard_module_flag "ISI" "0"
+  restart_dashboard_if_present
+
   ok "ISI simulator service and helper files removed."
+  ok "Dashboard availability flag set: ISI=0"
   warn "Installed packages were left in place intentionally."
   warn "Role file was left in place intentionally: ${ROLE_FILE}"
 }
@@ -635,6 +772,13 @@ Role control:
 
   ISI starts only when the role file includes:
     isi
+
+Dashboard availability:
+  This module sets:
+    ISI=1 on install
+    ISI=0 on uninstall/purge
+
+  If ${NODERED_SERVICE} exists, it is restarted after the flag update.
 
 Bridge:
   This Pi 3/4/5 module expects br0 to be created by:
