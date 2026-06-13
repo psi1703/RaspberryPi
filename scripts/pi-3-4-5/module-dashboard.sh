@@ -3,27 +3,35 @@
 # InitBox Raspberry Pi 3 / 4 / 5 dashboard module
 #
 # Installs:
-#   - Node-RED dashboard controller
+#   - Node.js 22 when required
+#   - Node-RED dashboard controller under /home/initbox/.node-red
+#   - node-red-dashboard package
 #   - ttyd web terminal
 #   - captive portal redirect to Node-RED
 #   - role sync helper using /etc/pi_roles.conf
 #   - Pi stats helper for dashboard use
 #
-# Package/cache model:
-#   - Uses scripts/lib/packages.sh for Debian packages.
-#   - With Internet: installs packages and keeps them cached.
-#   - Without Internet: installs Debian packages from local cache only.
-#   - ttyd is built once, installed, and cached locally for future reruns.
-#   - Node-RED installer script is downloaded once and cached locally.
-#   - Node.js and npm are owned by the official Node-RED installer, not by Debian apt cache.
-#   - If Node-RED and node-red-dashboard are already installed with a supported Node.js,
-#     offline reruns reuse them.
+# Important service model:
+#   - InitBox uses pi-nodered.service only.
+#   - The upstream/default nodered.service is stopped, disabled, masked, and removed
+#     if it exists locally.
+#   - Node-RED must never run from /root/.node-red for InitBox.
 #
-# Node-RED model:
-#   - The module itself is run as root because it writes systemd units and helper scripts.
-#   - The official Node-RED installer is executed as OWNER, normally initbox.
-#   - The Node-RED installer uses sudo internally to upgrade system Node.js.
-#   - This avoids installing Node-RED under /root.
+# Important flow/settings model:
+#   - Repository source files must exist here:
+#       scripts/pi-3-4-5/flows.json
+#       scripts/pi-3-4-5/settings.js
+#   - Runtime files are always replaced with the repository versions:
+#       /home/initbox/.node-red/flows.json
+#       /home/initbox/.node-red/settings.js
+#   - Generated/hostname flow files are removed during install.
+#
+# Package/cache model:
+#   - Uses scripts/lib/packages.sh for Debian packages where practical.
+#   - With Internet: installs packages and keeps Debian packages cached.
+#   - Without Internet: reuses already-installed Node.js, Node-RED, dashboard nodes,
+#     ttyd, and local Debian package cache.
+#   - ttyd is built once, installed, and cached locally for future reruns.
 #
 # Pi 3 / 4 / 5 role model:
 #   - Dashboard/Node-RED owns /etc/pi_roles.conf.
@@ -50,9 +58,6 @@ INITBOX_PACKAGE_CACHE_DIR="${INITBOX_PACKAGE_CACHE_DIR:-/opt/initbox-package-cac
 DASHBOARD_CACHE_DIR="${DASHBOARD_CACHE_DIR:-${INITBOX_PACKAGE_CACHE_DIR}/dashboard}"
 TTYD_CACHE_BIN="${TTYD_CACHE_BIN:-${DASHBOARD_CACHE_DIR}/ttyd}"
 
-NODE_RED_INSTALLER_CACHE="${NODE_RED_INSTALLER_CACHE:-${DASHBOARD_CACHE_DIR}/update-nodejs-and-nodered}"
-NODE_RED_INSTALLER_URL="${NODE_RED_INSTALLER_URL:-https://raw.githubusercontent.com/node-red/linux-installers/master/deb/update-nodejs-and-nodered}"
-
 MIN_NODE_MAJOR="${MIN_NODE_MAJOR:-22}"
 
 LOG_DIR="/home/${OWNER}/pi_logs"
@@ -64,6 +69,11 @@ MODS_FILE="${MODS_FILE:-/etc/initbox-mods.conf}"
 TTYD_PORT="${TTYD_PORT:-7681}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-1880}"
 HOTSPOT_IFACE="${HOTSPOT_IFACE:-wlan0}"
+
+NODE_RED_USER_DIR="/home/${OWNER}/.node-red"
+NODE_RED_LOCAL_BIN="${NODE_RED_USER_DIR}/node_modules/.bin/node-red"
+REPO_FLOWS_FILE="${SCRIPT_DIR}/flows.json"
+REPO_SETTINGS_FILE="${SCRIPT_DIR}/settings.js"
 
 ts() {
   date +"%Y-%m-%d %H:%M:%S"
@@ -123,20 +133,6 @@ require_owner_user() {
   fi
 }
 
-require_owner_passwordless_sudo() {
-  require_owner_user
-
-  if sudo -H -u "$OWNER" sudo -n true >/dev/null 2>&1; then
-    return 0
-  fi
-
-  err "User ${OWNER} cannot run passwordless sudo."
-  err "The Node-RED installer must run as ${OWNER} and use sudo internally to upgrade Node.js."
-  err "Run the main installer first so it grants passwordless sudo:"
-  err "  sudo ./scripts/initbox-installer.sh pi-3-4-5"
-  exit 1
-}
-
 require_package_helper() {
   if [ ! -f "$PACKAGES_HELPER" ]; then
     err "Package helper not found: $PACKAGES_HELPER"
@@ -166,6 +162,66 @@ install_base_packages() {
     err "  sudo ./scripts/initbox-installer.sh pi-3-4-5 p"
     exit 1
   fi
+}
+
+node_major_version() {
+  local version=""
+
+  if ! command -v node >/dev/null 2>&1; then
+    echo 0
+    return 0
+  fi
+
+  version="$(node -v 2>/dev/null || true)"
+  version="${version#v}"
+  version="${version%%.*}"
+
+  if [[ "$version" =~ ^[0-9]+$ ]]; then
+    echo "$version"
+  else
+    echo 0
+  fi
+}
+
+node_version_is_supported() {
+  local major=""
+
+  major="$(node_major_version)"
+  [ "$major" -ge "$MIN_NODE_MAJOR" ]
+}
+
+install_nodejs_22() {
+  if node_version_is_supported; then
+    log "Node.js already meets requirement: $(node -v 2>/dev/null || echo unknown)"
+    return 0
+  fi
+
+  if ! have_internet; then
+    err "Node.js is missing or too old, and Internet is unavailable."
+    err "Current Node.js: $(node -v 2>/dev/null || echo missing)"
+    err "Required Node.js major version: ${MIN_NODE_MAJOR}+"
+    exit 1
+  fi
+
+  log "Installing/upgrading Node.js 22 using NodeSource."
+
+  if ! curl -fsSL https://deb.nodesource.com/setup_22.x | bash - 2>&1 | tee -a "$LOGFILE"; then
+    err "NodeSource setup failed."
+    exit 1
+  fi
+
+  if ! DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 install -y nodejs 2>&1 | tee -a "$LOGFILE"; then
+    err "Node.js 22 installation failed."
+    exit 1
+  fi
+
+  if ! node_version_is_supported; then
+    err "Node.js is still too old after installation: $(node -v 2>/dev/null || echo missing)"
+    err "Required Node.js major version: ${MIN_NODE_MAJOR}+"
+    exit 1
+  fi
+
+  ok "Node.js installed/upgraded: $(node -v 2>/dev/null || echo unknown)"
 }
 
 restore_ttyd_from_cache() {
@@ -285,167 +341,64 @@ install_ttyd() {
   emit_ttyd_service
 }
 
-node_red_is_installed() {
-  command -v node-red >/dev/null 2>&1 || sudo -H -u "$OWNER" bash -lc 'command -v node-red >/dev/null 2>&1'
+enforce_pi_nodered_only() {
+  log "Enforcing Node-RED service model: pi-nodered.service only."
+
+  systemctl stop nodered.service 2>/dev/null || true
+  systemctl disable nodered.service 2>/dev/null || true
+  systemctl mask nodered.service 2>/dev/null || true
+
+  if [ -f /etc/systemd/system/nodered.service ]; then
+    warn "Removing generated /etc/systemd/system/nodered.service."
+    rm -f /etc/systemd/system/nodered.service
+  fi
+
+  systemctl daemon-reload
+
+  if systemctl is-active --quiet nodered.service 2>/dev/null; then
+    err "nodered.service is still active. InitBox requires pi-nodered.service only."
+    return 1
+  fi
+
+  ok "nodered.service is stopped/disabled/masked. InitBox will use pi-nodered.service only."
 }
 
-node_major_version() {
-  local version=""
+prepare_node_red_user_dir() {
+  require_owner_user
 
-  if ! command -v node >/dev/null 2>&1; then
-    echo 0
-    return 0
-  fi
+  install -d -m 0755 -o "$OWNER" -g "$OWNER" "$NODE_RED_USER_DIR"
+  install -d -m 0755 -o "$OWNER" -g "$OWNER" "${NODE_RED_USER_DIR}/public"
 
-  version="$(node -v 2>/dev/null || true)"
-  version="${version#v}"
-  version="${version%%.*}"
-
-  if [[ "$version" =~ ^[0-9]+$ ]]; then
-    echo "$version"
-  else
-    echo 0
-  fi
+  chown -R "${OWNER}:${OWNER}" "$NODE_RED_USER_DIR" || true
 }
 
-node_version_is_supported() {
-  local major=""
-
-  major="$(node_major_version)"
-
-  [ "$major" -ge "$MIN_NODE_MAJOR" ]
-}
-
-node_red_needs_installer() {
-  if ! node_red_is_installed; then
-    return 0
-  fi
-
-  if ! node_version_is_supported; then
-    warn "Installed Node.js is too old for current Node-RED: $(node -v 2>/dev/null || echo missing)"
-    warn "Node.js must be major version ${MIN_NODE_MAJOR} or newer."
-    return 0
-  fi
-
-  return 1
+node_red_local_is_installed() {
+  [ -x "$NODE_RED_LOCAL_BIN" ]
 }
 
 node_red_dashboard_is_installed() {
-  local nr_dir="/home/${OWNER}/.node-red"
-
-  if [ ! -d "$nr_dir" ]; then
+  if [ ! -d "$NODE_RED_USER_DIR" ]; then
     return 1
   fi
 
   sudo -H -u "$OWNER" bash -lc 'cd "$HOME/.node-red" 2>/dev/null && npm list node-red-dashboard --depth=0 >/dev/null 2>&1'
 }
 
-remove_bad_node_red_installer_cache() {
-  local stale_file
+install_node_red_local() {
+  prepare_node_red_user_dir
 
-  for stale_file in \
-    "${DASHBOARD_CACHE_DIR}/install-update-nodered-deb.sh" \
-    "${DASHBOARD_CACHE_DIR}/update-nodejs-and-nodered-deb.sh"; do
-    if [ -f "$stale_file" ]; then
-      warn "Removing stale Node-RED installer cache: ${stale_file}"
-      rm -f "$stale_file"
-    fi
-  done
-}
-
-remove_root_node_red_artifacts() {
-  if [ -d /root/.node-red ]; then
-    warn "Detected stale root Node-RED user directory from failed install: /root/.node-red"
-    warn "Leaving /root/.node-red in place; InitBox will not use it."
-  fi
-
-  if systemctl list-unit-files | grep -q '^nodered\.service'; then
-    log "Disabling upstream nodered.service; InitBox uses pi-nodered.service."
-    systemctl disable --now nodered.service 2>/dev/null || true
-  fi
-}
-
-download_node_red_installer_once() {
-  prepare_dashboard_cache
-  remove_bad_node_red_installer_cache
-
-  if [ -f "$NODE_RED_INSTALLER_CACHE" ]; then
-    log "Node-RED installer script already cached: ${NODE_RED_INSTALLER_CACHE}"
-    chmod 755 "$NODE_RED_INSTALLER_CACHE" || true
-    chown "$OWNER:$OWNER" "$NODE_RED_INSTALLER_CACHE" 2>/dev/null || true
+  if node_red_local_is_installed && node_red_dashboard_is_installed; then
+    log "Local Node-RED and node-red-dashboard already installed for ${OWNER}."
     return 0
   fi
 
   if ! have_internet; then
-    warn "No Internet and Node-RED installer script is not cached."
-    return 1
+    err "Node-RED/dashboard npm packages are missing and Internet is unavailable."
+    err "Run dashboard install once in the lab with Internet."
+    exit 1
   fi
 
-  log "Downloading Node-RED installer script once to ${NODE_RED_INSTALLER_CACHE}."
-  log "Node-RED installer URL: ${NODE_RED_INSTALLER_URL}"
-
-  if ! curl -fsSL "$NODE_RED_INSTALLER_URL" -o "$NODE_RED_INSTALLER_CACHE"; then
-    rm -f "$NODE_RED_INSTALLER_CACHE"
-    err "Failed to download Node-RED installer."
-    return 1
-  fi
-
-  chmod 755 "$NODE_RED_INSTALLER_CACHE"
-  chown "$OWNER:$OWNER" "$NODE_RED_INSTALLER_CACHE" 2>/dev/null || true
-  ok "Cached Node-RED installer script."
-}
-
-run_node_red_installer() {
-  if [ ! -x "$NODE_RED_INSTALLER_CACHE" ]; then
-    err "Node-RED installer cache is not executable: ${NODE_RED_INSTALLER_CACHE}"
-    return 1
-  fi
-
-  if ! have_internet && ! node_red_is_installed; then
-    err "Node-RED is not installed and Internet is unavailable."
-    err "Run this module once in the lab with Internet so Node-RED is installed and retained."
-    return 1
-  fi
-
-  if ! have_internet && ! node_version_is_supported; then
-    err "Node.js is too old and Internet is unavailable."
-    err "Reconnect in the lab and rerun dashboard so the official Node-RED installer can upgrade Node.js."
-    return 1
-  fi
-
-  require_owner_passwordless_sudo
-
-  log "Running official Node-RED installer as user: ${OWNER}"
-  log "Installer will use sudo internally for system Node.js upgrade."
-  log "Installer: ${NODE_RED_INSTALLER_CACHE}"
-
-  chmod 755 "$NODE_RED_INSTALLER_CACHE" || true
-  chown "$OWNER:$OWNER" "$NODE_RED_INSTALLER_CACHE" 2>/dev/null || true
-
-  if ! sudo -H -u "$OWNER" bash "$NODE_RED_INSTALLER_CACHE" \
-    --confirm-install \
-    --skip-pi \
-    --node22 2>&1 | tee -a "$LOGFILE"; then
-    err "Node-RED installer failed."
-    return 1
-  fi
-}
-
-install_node_red_dashboard_package() {
-  install -d -m 0755 -o "$OWNER" -g "$OWNER" "/home/${OWNER}/.node-red"
-
-  if node_red_dashboard_is_installed; then
-    log "node-red-dashboard already installed for ${OWNER}; reusing existing install."
-    return 0
-  fi
-
-  if ! have_internet; then
-    err "node-red-dashboard is not installed and Internet is unavailable."
-    err "Install dashboard once in the lab with Internet so npm dependencies remain on the Pi."
-    return 1
-  fi
-
-  log "Installing node-red-dashboard npm package for ${OWNER}."
+  log "Installing Node-RED and node-red-dashboard locally under ${NODE_RED_USER_DIR}."
 
   sudo -H -u "$OWNER" bash <<'EOS'
 set -euo pipefail
@@ -456,98 +409,141 @@ PUBLIC_DIR="${NR_DIR}/public"
 mkdir -p "${PUBLIC_DIR}"
 cd "${NR_DIR}"
 
-if [ -f "${HOME}/logo.png" ]; then
-  cp -f "${HOME}/logo.png" "${PUBLIC_DIR}/logo.png"
-fi
-
 if [ ! -f package.json ]; then
-  npm init -y >/dev/null 2>&1 || true
+  npm init -y >/dev/null 2>&1
 fi
 
-npm install --unsafe-perm node-red-dashboard
+npm install --unsafe-perm node-red node-red-dashboard
 EOS
+
+  if ! node_red_local_is_installed; then
+    err "Local Node-RED binary not found after npm install: ${NODE_RED_LOCAL_BIN}"
+    exit 1
+  fi
+
+  if ! node_red_dashboard_is_installed; then
+    err "node-red-dashboard package not found after npm install."
+    exit 1
+  fi
+
+  ok "Local Node-RED installed: ${NODE_RED_LOCAL_BIN}"
 }
 
 install_nodered() {
-  log "Installing or reusing Node-RED."
+  log "Installing or reusing InitBox Node-RED."
 
-  remove_root_node_red_artifacts
+  enforce_pi_nodered_only
+  install_nodejs_22
+  install_node_red_local
+  enforce_pi_nodered_only
 
-  if node_red_needs_installer; then
-    download_node_red_installer_once
-    run_node_red_installer
-  else
-    log "Node-RED already installed with supported Node.js."
-    log "Node.js: $(node -v 2>/dev/null || echo unknown)"
-    log "Node-RED: $(sudo -H -u "$OWNER" bash -lc 'node-red --version 2>&1 | head -n 1' || true)"
+  log "Node.js: $(node -v 2>/dev/null || echo unknown)"
+  log "npm: $(npm -v 2>/dev/null || echo unknown)"
+  log "Node-RED binary: ${NODE_RED_LOCAL_BIN}"
+}
+
+require_repo_dashboard_files() {
+  if [ ! -f "$REPO_FLOWS_FILE" ]; then
+    err "Required repository flow file missing: ${REPO_FLOWS_FILE}"
+    err "Place your approved Node-RED dashboard flow here:"
+    err "  scripts/pi-3-4-5/flows.json"
+    exit 1
   fi
 
-  if ! node_red_is_installed; then
-    err "node-red command not found after install/reuse step."
-    return 1
+  if [ ! -f "$REPO_SETTINGS_FILE" ]; then
+    err "Required repository settings file missing: ${REPO_SETTINGS_FILE}"
+    err "Place your approved Node-RED settings file here:"
+    err "  scripts/pi-3-4-5/settings.js"
+    exit 1
   fi
-
-  if ! node_version_is_supported; then
-    err "Node.js is still too old after Node-RED installer: $(node -v 2>/dev/null || echo missing)"
-    err "Expected Node.js major version ${MIN_NODE_MAJOR} or newer."
-    return 1
-  fi
-
-  log "Node.js after install/reuse: $(node -v 2>/dev/null || echo unknown)"
-  log "Node-RED after install/reuse: $(sudo -H -u "$OWNER" bash -lc 'node-red --version 2>&1 | head -n 1' || true)"
-
-  install_node_red_dashboard_package
 }
 
 deploy_flows_settings() {
-  local nr_dir="/home/${OWNER}/.node-red"
   local host=""
-  local flows_src=""
 
   host="$(hostname 2>/dev/null || echo raspberrypi)"
 
-  if [ -f "${SCRIPT_DIR}/flows_initbox.json" ]; then
-    flows_src="${SCRIPT_DIR}/flows_initbox.json"
-  elif [ -f "${SCRIPT_DIR}/flows_dashboard.json" ]; then
-    flows_src="${SCRIPT_DIR}/flows_dashboard.json"
-  elif [ -f "${SCRIPT_DIR}/flows.json" ]; then
-    flows_src="${SCRIPT_DIR}/flows.json"
-  fi
+  require_repo_dashboard_files
+  prepare_node_red_user_dir
 
-  install -d -m 0755 -o "$OWNER" -g "$OWNER" "$nr_dir"
+  log "Discarding generated/hostname Node-RED flow files."
+  rm -f "${NODE_RED_USER_DIR}/flows_"*.json
+  rm -f "${NODE_RED_USER_DIR}/flows_initbox.json"
+  rm -f "${NODE_RED_USER_DIR}/flows_dashboard.json"
 
-  if [ -n "$flows_src" ]; then
-    log "Deploying Node-RED flows from $(basename "$flows_src")."
-    install -m 0644 "$flows_src" "${nr_dir}/flows_initbox.json"
-    install -m 0644 "$flows_src" "${nr_dir}/flows_${host}.json"
+  log "Deploying approved repository flows.json."
+  install -m 0644 -o "$OWNER" -g "$OWNER" "$REPO_FLOWS_FILE" "${NODE_RED_USER_DIR}/flows.json"
+
+  log "Deploying approved repository settings.js."
+  install -m 0644 -o "$OWNER" -g "$OWNER" "$REPO_SETTINGS_FILE" "${NODE_RED_USER_DIR}/settings.js"
+
+  if [ -f "${SCRIPT_DIR}/logo.png" ]; then
+    log "Deploying dashboard logo.png."
+    install -m 0644 -o "$OWNER" -g "$OWNER" "${SCRIPT_DIR}/logo.png" "${NODE_RED_USER_DIR}/public/logo.png"
+  elif [ -f "/home/${OWNER}/logo.png" ]; then
+    log "Deploying existing owner logo.png."
+    install -m 0644 -o "$OWNER" -g "$OWNER" "/home/${OWNER}/logo.png" "${NODE_RED_USER_DIR}/public/logo.png"
   else
-    log "No flows_initbox.json/flows_dashboard.json/flows.json found; leaving default flows."
+    log "No logo.png found; dashboard logo endpoint may return missing file until logo is added."
   fi
 
-  if [ -f "${SCRIPT_DIR}/settings.js" ]; then
-    log "Deploying Node-RED settings.js."
-    install -m 0644 "${SCRIPT_DIR}/settings.js" "${nr_dir}/settings.js"
-  else
-    log "No custom settings.js found; using default Node-RED settings."
-  fi
+  chown -R "${OWNER}:${OWNER}" "$NODE_RED_USER_DIR" || true
 
-  chown -R "${OWNER}:${OWNER}" "$nr_dir" || true
+  log "Runtime Node-RED files:"
+  log "  ${NODE_RED_USER_DIR}/flows.json"
+  log "  ${NODE_RED_USER_DIR}/settings.js"
+  log "Hostname flow files discarded for host: ${host}"
 }
 
-install_initbox_mods() {
-  log "Ensuring ${MODS_FILE} exists."
+set_mod_flag() {
+  local key="$1"
+  local value="$2"
+  local tmp_file=""
 
   if [ ! -f "$MODS_FILE" ]; then
     cat >"$MODS_FILE" <<'EOF'
 ISI=0
 FMS=0
 WSBR0=0
+HOTSPOT=0
+DASHBOARD=0
+RTC=0
+EOF
+  fi
+
+  tmp_file="$(mktemp)"
+
+  if grep -q "^${key}=" "$MODS_FILE"; then
+    grep -v "^${key}=" "$MODS_FILE" >"$tmp_file"
+  else
+    cat "$MODS_FILE" >"$tmp_file"
+  fi
+
+  printf '%s=%s\n' "$key" "$value" >>"$tmp_file"
+  install -m 0644 "$tmp_file" "$MODS_FILE"
+  rm -f "$tmp_file"
+
+  chown root:root "$MODS_FILE" 2>/dev/null || true
+}
+
+install_initbox_mods() {
+  log "Ensuring ${MODS_FILE} exists and marking dashboard available."
+
+  if [ ! -f "$MODS_FILE" ]; then
+    cat >"$MODS_FILE" <<'EOF'
+ISI=0
+FMS=0
+WSBR0=0
+HOTSPOT=0
 DASHBOARD=1
+RTC=0
 EOF
     chmod 644 "$MODS_FILE"
+    chown root:root "$MODS_FILE" 2>/dev/null || true
     log "Created ${MODS_FILE} with default flags."
   else
-    log "${MODS_FILE} already exists; leaving contents unchanged."
+    set_mod_flag "DASHBOARD" "1"
+    log "Updated ${MODS_FILE}: DASHBOARD=1"
   fi
 }
 
@@ -584,6 +580,8 @@ EOF
 install_nodered_service() {
   log "Installing pi-nodered.service."
 
+  enforce_pi_nodered_only
+
   cat >/etc/systemd/system/pi-nodered.service <<EOF
 [Unit]
 Description=InitBox Node-RED dashboard controller
@@ -596,7 +594,8 @@ User=${OWNER}
 Group=${OWNER}
 WorkingDirectory=/home/${OWNER}
 Environment=NODE_OPTIONS=--max-old-space-size=128
-ExecStart=/bin/bash -lc 'exec node-red'
+Environment=NODE_RED_HOME=${NODE_RED_USER_DIR}
+ExecStart=${NODE_RED_LOCAL_BIN} --userDir ${NODE_RED_USER_DIR} --settings ${NODE_RED_USER_DIR}/settings.js
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -893,10 +892,18 @@ EOF
 enable_and_start_services() {
   log "Enabling and restarting dashboard services."
 
+  enforce_pi_nodered_only
+
   systemctl daemon-reload
 
   systemctl enable pi-nodered.service pi-servsync.service portal.service 2>/dev/null || true
-  systemctl restart pi-nodered.service 2>/dev/null || true
+
+  if ! systemctl restart pi-nodered.service; then
+    err "pi-nodered.service failed to restart."
+    systemctl status pi-nodered.service --no-pager 2>&1 | tee -a "$LOGFILE" || true
+    exit 1
+  fi
+
   systemctl restart pi-servsync.service 2>/dev/null || true
   systemctl restart portal.service 2>/dev/null || true
 
@@ -904,6 +911,8 @@ enable_and_start_services() {
     systemctl enable ttyd.service 2>/dev/null || true
     systemctl restart ttyd.service 2>/dev/null || true
   fi
+
+  enforce_pi_nodered_only
 }
 
 install_module() {
@@ -932,6 +941,8 @@ install_module() {
   ok "Web terminal: http://initbox.wlan:${TTYD_PORT}"
   ok "Role file: ${ROLE_FILE}"
   ok "Dashboard cache: ${DASHBOARD_CACHE_DIR}"
+  ok "Node-RED runtime: ${NODE_RED_USER_DIR}"
+  ok "Only Node-RED service enabled by InitBox: pi-nodered.service"
 }
 
 uninstall_module() {
@@ -939,6 +950,10 @@ uninstall_module() {
   prepare_log
 
   log "Uninstalling Dashboard module."
+
+  systemctl stop nodered.service 2>/dev/null || true
+  systemctl disable nodered.service 2>/dev/null || true
+  systemctl mask nodered.service 2>/dev/null || true
 
   systemctl stop portal.service 2>/dev/null || true
   systemctl disable portal.service 2>/dev/null || true
@@ -956,16 +971,30 @@ uninstall_module() {
   rm -f /etc/systemd/system/pi-servsync.service
   rm -f /etc/systemd/system/pi-nodered.service
   rm -f /etc/systemd/system/ttyd.service
+  rm -f /etc/systemd/system/nodered.service
 
   rm -f /usr/local/bin/portal.sh
   rm -f /usr/local/bin/pi-servsync.sh
   rm -f /usr/local/bin/pi-rolectl.sh
   rm -f /usr/local/bin/pi-stats.sh
 
+  rm -f "${NODE_RED_USER_DIR}/flows.json"
+  rm -f "${NODE_RED_USER_DIR}/flows_"*.json
+  rm -f "${NODE_RED_USER_DIR}/flows_initbox.json"
+  rm -f "${NODE_RED_USER_DIR}/flows_dashboard.json"
+  rm -f "${NODE_RED_USER_DIR}/settings.js"
+
+  if [ -f "$MODS_FILE" ]; then
+    set_mod_flag "DASHBOARD" "0"
+  fi
+
   systemctl daemon-reload
 
   ok "Dashboard services and helper scripts removed."
-  warn "Node-RED, ttyd, npm packages, ${ROLE_FILE}, ${MODS_FILE}, and cache files were left in place intentionally."
+  ok "Runtime flows/settings deployed by this module were removed."
+  ok "DASHBOARD flag set to 0 in ${MODS_FILE} when present."
+  warn "Node.js, npm packages, ${ROLE_FILE}, ${MODS_FILE}, ttyd binary, and cache files were left in place intentionally."
+  warn "nodered.service remains masked so InitBox cannot accidentally run Node-RED as root."
 }
 
 usage() {
@@ -975,8 +1004,20 @@ Usage:
 
 Actions:
   install    Install/update dashboard services
-  uninstall  Remove dashboard services and helper scripts
+  uninstall  Remove dashboard services and helper scripts created by this module
   purge      Compatibility alias for uninstall; packages are not purged
+
+Required repository files:
+  ${REPO_FLOWS_FILE}
+  ${REPO_SETTINGS_FILE}
+
+Runtime Node-RED files:
+  ${NODE_RED_USER_DIR}/flows.json
+  ${NODE_RED_USER_DIR}/settings.js
+
+Service model:
+  InitBox uses pi-nodered.service only.
+  nodered.service is stopped, disabled, masked, and not used.
 
 Package cache:
   This module uses:
@@ -990,12 +1031,6 @@ Dashboard asset cache:
 
 Cached assets:
   ${TTYD_CACHE_BIN}
-  ${NODE_RED_INSTALLER_CACHE}
-
-Node-RED note:
-  Node.js and npm are managed by the official Node-RED installer.
-  The installer is run as ${OWNER}, not root.
-  It uses sudo internally to upgrade system Node.js.
 
 Role file:
   ${ROLE_FILE}
