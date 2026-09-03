@@ -12,7 +12,7 @@
 #   sudo scripts/lib/module-runner.sh uninstall MODULE
 #
 # MODULE is one of:
-#   hotspot web-terminal dashboard sniffer-bridge isi fms rtc
+#   hotspot runtime-control web-terminal dashboard sniffer-bridge isi fms rtc
 set -euo pipefail
 
 ACTION="${1:-}"
@@ -59,6 +59,7 @@ Actions:
 
 Modules:
   hotspot
+  runtime-control
   web-terminal
   dashboard
   sniffer-bridge
@@ -157,6 +158,7 @@ main() {
   export INITBOX_PACKAGE_CACHE_ROOT="$package_cache_root"
   export INITBOX_APT_CACHE_DIR="$apt_cache_dir"
   export INITBOX_PACKAGE_CACHE_DIR="$apt_cache_dir"
+  export HOTSPOT_SUBNET_PREFIX="$INITBOX_HOTSPOT_SUBNET_PREFIX"
   export HOTSPOT_GATEWAY="$INITBOX_HOTSPOT_GATEWAY"
 
   initbox_state_record_hardware \

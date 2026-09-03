@@ -512,6 +512,7 @@ initbox_packages_usage() {
 Usage:
   source scripts/lib/packages.sh
 
+Unified CLI:
   sudo scripts/lib/packages.sh preseed PROFILE
   scripts/lib/packages.sh verify PROFILE
   scripts/lib/packages.sh status PROFILE
@@ -519,79 +520,132 @@ Usage:
   sudo scripts/lib/packages.sh install-cache PROFILE PACKAGE...
   scripts/lib/packages.sh list PROFILE
 
+Compatibility CLI for profile modules launched through module-runner.sh:
+  sudo scripts/lib/packages.sh install PACKAGE...
+  sudo scripts/lib/packages.sh install-cache PACKAGE...
+
+The compatibility form requires INITBOX_PROFILE_ID to be exported by the
+unified module runner.
+
 Profiles:
   pi-zero2w
   pi-full
 
 Policy:
   - apt-get only
-  - no apt-get upgrade/dist-upgrade/full-upgrade
+  - this helper never runs apt-get upgrade/dist-upgrade/full-upgrade
+  - the top-level installer may separately offer an explicit apt-get upgrade
   - package names must be present in the selected profile allow-list
   - local cache is tried first
   - online download is attempted only when required
 EOF_USAGE
 }
 
+initbox_packages_resolve_cli_profile() {
+  local candidate="${1:-}"
+
+  case "$candidate" in
+    pi-zero2w|pi-full)
+      printf '%s\n' "$candidate"
+      return 0
+      ;;
+  esac
+
+  case "${INITBOX_PROFILE_ID:-}" in
+    pi-zero2w|pi-full)
+      printf '%s\n' "$INITBOX_PROFILE_ID"
+      return 0
+      ;;
+    *)
+      initbox_packages_error "profile was not supplied and INITBOX_PROFILE_ID is not set to a supported profile"
+      return 1
+      ;;
+  esac
+}
+
 initbox_packages_main() {
   local action="${1:-}"
-  local profile_id="${2:-}"
+  local candidate="${2:-}"
+  local profile_id=""
   local packages_file=""
+  local explicit_profile="no"
 
   case "$action" in
-    preseed)
-      [ -n "$profile_id" ] || {
-        initbox_packages_usage
-        return 1
-      }
-      initbox_packages_preseed_for_profile "$profile_id"
+    preseed|verify|status|list)
+      case "$candidate" in
+        pi-zero2w|pi-full)
+          profile_id="$candidate"
+          ;;
+        *)
+          initbox_packages_usage
+          return 1
+          ;;
+      esac
       ;;
-    verify)
-      [ -n "$profile_id" ] || {
-        initbox_packages_usage
-        return 1
-      }
-      initbox_packages_verify_for_profile "$profile_id"
-      ;;
-    status)
-      [ -n "$profile_id" ] || {
-        initbox_packages_usage
-        return 1
-      }
-      initbox_packages_status_for_profile "$profile_id"
-      ;;
-    install)
-      [ -n "$profile_id" ] || {
-        initbox_packages_usage
-        return 1
-      }
-      shift 2
-      initbox_packages_install_for_profile "$profile_id" "$@"
-      ;;
-    install-cache)
-      [ -n "$profile_id" ] || {
-        initbox_packages_usage
-        return 1
-      }
-      packages_file="$(initbox_packages_list_for_profile "$profile_id")"
-      shift 2
-      initbox_packages_validate_requested "$packages_file" "$@"
-      initbox_packages_install_from_cache_only "$INITBOX_APT_CACHE_DIR" "$@"
-      ;;
-    list)
-      [ -n "$profile_id" ] || {
-        initbox_packages_usage
-        return 1
-      }
-      packages_file="$(initbox_packages_list_for_profile "$profile_id")"
-      initbox_packages_read_list "$packages_file"
+    install|install-cache)
+      case "$candidate" in
+        pi-zero2w|pi-full)
+          profile_id="$candidate"
+          explicit_profile="yes"
+          ;;
+        *)
+          profile_id="$(initbox_packages_resolve_cli_profile "$candidate")" || {
+            initbox_packages_usage
+            return 1
+          }
+          ;;
+      esac
       ;;
     -h|--help|help|"")
       initbox_packages_usage
+      return 0
       ;;
     *)
       initbox_packages_error "unknown action: $action"
       initbox_packages_usage
       return 1
+      ;;
+  esac
+
+  case "$action" in
+    preseed)
+      initbox_packages_preseed_for_profile "$profile_id"
+      ;;
+    verify)
+      initbox_packages_verify_for_profile "$profile_id"
+      ;;
+    status)
+      initbox_packages_status_for_profile "$profile_id"
+      ;;
+    list)
+      packages_file="$(initbox_packages_list_for_profile "$profile_id")"
+      initbox_packages_read_list "$packages_file"
+      ;;
+    install)
+      if [ "$explicit_profile" = "yes" ]; then
+        shift 2
+      else
+        shift 1
+      fi
+      if [ "$#" -eq 0 ]; then
+        initbox_packages_error "no package names were requested"
+        return 1
+      fi
+      initbox_packages_install_for_profile "$profile_id" "$@"
+      ;;
+    install-cache)
+      packages_file="$(initbox_packages_list_for_profile "$profile_id")"
+      if [ "$explicit_profile" = "yes" ]; then
+        shift 2
+      else
+        shift 1
+      fi
+      if [ "$#" -eq 0 ]; then
+        initbox_packages_error "no package names were requested"
+        return 1
+      fi
+      initbox_packages_validate_requested "$packages_file" "$@"
+      initbox_packages_install_from_cache_only "$INITBOX_APT_CACHE_DIR" "$@"
       ;;
   esac
 }

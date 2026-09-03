@@ -32,6 +32,9 @@ initbox_module_script_path() {
     pi-full:hotspot)
       printf '%s/scripts/pi-full/module-hotspot.sh\n' "$repo_root"
       ;;
+    pi-full:runtime-control)
+      printf '%s/scripts/pi-full/module-runtime-control.sh\n' "$repo_root"
+      ;;
     pi-full:web-terminal)
       printf '%s/scripts/pi-full/module-ttyd-portal.sh\n' "$repo_root"
       ;;
@@ -64,6 +67,9 @@ initbox_module_display_name() {
     hotspot)
       printf 'Hotspot\n'
       ;;
+    runtime-control)
+      printf 'Runtime Control\n'
+      ;;
     web-terminal)
       printf 'Web Terminal\n'
       ;;
@@ -91,6 +97,7 @@ initbox_module_display_name() {
 initbox_all_known_modules() {
   cat <<'EOF_MODULES'
 hotspot
+runtime-control
 web-terminal
 dashboard
 sniffer-bridge

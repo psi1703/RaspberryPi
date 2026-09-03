@@ -7,7 +7,7 @@
 set -euo pipefail
 
 INITBOX_PROFILE_LOADED="no"
-INITBOX_MODULE_IDS="hotspot web-terminal dashboard sniffer-bridge isi fms rtc"
+INITBOX_MODULE_IDS="hotspot runtime-control web-terminal dashboard sniffer-bridge isi fms rtc"
 
 PROFILE_ID=""
 PROFILE_NAME=""
@@ -189,6 +189,11 @@ initbox_validate_pi_zero_policy() {
     return 1
   fi
 
+  if [ "$MODULE_RUNTIME_CONTROL" != "no" ]; then
+    echo "ERROR: pi-zero2w must set MODULE_RUNTIME_CONTROL=no." >&2
+    return 1
+  fi
+
   if initbox_default_modules_contains dashboard; then
     echo "ERROR: pi-zero2w DEFAULT_MODULES must not include dashboard." >&2
     return 1
@@ -222,6 +227,16 @@ initbox_validate_pi_full_policy() {
 
   if [ "$PRIMARY_MANAGEMENT_INTERFACE" != "web-terminal" ]; then
     echo "ERROR: pi-full baseline management interface must be web-terminal." >&2
+    return 1
+  fi
+
+  if [ "$MODULE_RUNTIME_CONTROL" != "yes" ]; then
+    echo "ERROR: pi-full must include the shared Runtime Control module." >&2
+    return 1
+  fi
+
+  if ! initbox_default_modules_contains runtime-control; then
+    echo "ERROR: pi-full DEFAULT_MODULES must include runtime-control." >&2
     return 1
   fi
 
