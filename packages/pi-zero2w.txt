@@ -1,0 +1,30 @@
+# InitBox package allow-list: Raspberry Pi Zero W / Zero 2 W
+#
+# This profile stays deliberately small. Dashboard/build packages do not belong
+# here. Module scripts may request only package names listed below.
+
+# Common / Web Terminal
+ca-certificates
+curl
+
+# Hotspot
+hostapd
+dnsmasq
+dhcpcd5
+iproute2
+iptables
+rfkill
+
+# ISI simulator
+bridge-utils
+isc-dhcp-client
+netcat-openbsd
+
+# FMS / SocketCAN
+can-utils
+ifupdown
+
+# Sniffer / capture
+libcap2-bin
+tshark
+zip
