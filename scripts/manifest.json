@@ -9,253 +9,345 @@
       "source": "scripts/manifest.json",
       "target": "/usr/local/share/initbox/manifest.json",
       "mode": "0644",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "sync"
     },
     {
       "source": "scripts/bootstrap-initbox.sh",
       "target": "/usr/local/bin/initbox-bootstrap.sh",
       "mode": "0755",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "bootstrap"
     },
     {
       "source": "scripts/bootstrap-initbox.sh",
       "target": "/usr/local/share/initbox/scripts/bootstrap-initbox.sh",
       "mode": "0644",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "bootstrap-source"
     },
     {
       "source": "scripts/install-initbox.sh",
       "target": "/usr/local/bin/initbox-installer.sh",
       "mode": "0755",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "installer"
     },
     {
       "source": "scripts/install-initbox.sh",
       "target": "/usr/local/share/initbox/scripts/install-initbox.sh",
       "mode": "0644",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "installer-source"
+    },
+    {
+      "source": "scripts/validate-initbox.sh",
+      "target": "/usr/local/bin/initbox-validate.sh",
+      "mode": "0755",
+      "profiles": [
+        "all"
+      ],
+      "component": "validator"
+    },
+    {
+      "source": "scripts/validate-initbox.sh",
+      "target": "/usr/local/share/initbox/scripts/validate-initbox.sh",
+      "mode": "0644",
+      "profiles": [
+        "all"
+      ],
+      "component": "validator-source"
     },
     {
       "source": "scripts/initbox-sync.sh",
       "target": "/usr/local/bin/initbox-sync.sh",
       "mode": "0755",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "sync"
     },
     {
       "source": "scripts/bin/initbox-module-runner.sh",
       "target": "/usr/local/bin/initbox-module-runner.sh",
       "mode": "0755",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "runtime-wrapper"
     },
     {
       "source": "scripts/bin/initbox-package-cache.sh",
       "target": "/usr/local/bin/initbox-package-cache.sh",
       "mode": "0755",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "runtime-wrapper"
     },
     {
       "source": "profiles/pi-zero2w.conf",
       "target": "/usr/local/share/initbox/profiles/pi-zero2w.conf",
       "mode": "0644",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "profile"
     },
     {
       "source": "profiles/pi-full.conf",
       "target": "/usr/local/share/initbox/profiles/pi-full.conf",
       "mode": "0644",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "profile"
     },
     {
       "source": "scripts/lib/hardware.sh",
       "target": "/usr/local/share/initbox/scripts/lib/hardware.sh",
       "mode": "0644",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "library"
     },
     {
       "source": "scripts/lib/profile.sh",
       "target": "/usr/local/share/initbox/scripts/lib/profile.sh",
       "mode": "0644",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "library"
     },
     {
       "source": "scripts/lib/modules.sh",
       "target": "/usr/local/share/initbox/scripts/lib/modules.sh",
       "mode": "0644",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "library"
     },
     {
       "source": "scripts/lib/state.sh",
       "target": "/usr/local/share/initbox/scripts/lib/state.sh",
       "mode": "0644",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "library"
     },
     {
       "source": "scripts/lib/packages.sh",
       "target": "/usr/local/share/initbox/scripts/lib/packages.sh",
       "mode": "0644",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "library"
     },
     {
       "source": "scripts/lib/module-runner.sh",
       "target": "/usr/local/share/initbox/scripts/lib/module-runner.sh",
       "mode": "0644",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "library"
     },
     {
       "source": "scripts/packages/pi-zero2w.txt",
       "target": "/usr/local/share/initbox/scripts/packages/pi-zero2w.txt",
       "mode": "0644",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "package-list"
     },
     {
       "source": "scripts/packages/pi-full.txt",
       "target": "/usr/local/share/initbox/scripts/packages/pi-full.txt",
       "mode": "0644",
-      "profiles": ["all"],
+      "profiles": [
+        "all"
+      ],
       "component": "package-list"
     },
     {
       "source": "scripts/pi-zero2w/module-hotspot.sh",
       "target": "/usr/local/share/initbox/scripts/pi-zero2w/module-hotspot.sh",
       "mode": "0644",
-      "profiles": ["pi-zero2w"],
+      "profiles": [
+        "pi-zero2w"
+      ],
       "component": "pi-zero2w-hotspot"
     },
     {
       "source": "scripts/pi-zero2w/module-ttyd-portal.sh",
       "target": "/usr/local/share/initbox/scripts/pi-zero2w/module-ttyd-portal.sh",
       "mode": "0644",
-      "profiles": ["pi-zero2w"],
+      "profiles": [
+        "pi-zero2w"
+      ],
       "component": "pi-zero2w-web-terminal"
     },
     {
       "source": "scripts/pi-zero2w/module-isi.sh",
       "target": "/usr/local/share/initbox/scripts/pi-zero2w/module-isi.sh",
       "mode": "0644",
-      "profiles": ["pi-zero2w"],
+      "profiles": [
+        "pi-zero2w"
+      ],
       "component": "pi-zero2w-isi"
     },
     {
       "source": "scripts/pi-zero2w/module-ws-br0.sh",
       "target": "/usr/local/share/initbox/scripts/pi-zero2w/module-ws-br0.sh",
       "mode": "0644",
-      "profiles": ["pi-zero2w"],
+      "profiles": [
+        "pi-zero2w"
+      ],
       "component": "pi-zero2w-sniffer-bridge"
     },
     {
       "source": "scripts/pi-zero2w/module-fms.sh",
       "target": "/usr/local/share/initbox/scripts/pi-zero2w/module-fms.sh",
       "mode": "0644",
-      "profiles": ["pi-zero2w"],
+      "profiles": [
+        "pi-zero2w"
+      ],
       "component": "pi-zero2w-fms"
     },
     {
       "source": "scripts/pi-full/module-hotspot.sh",
       "target": "/usr/local/share/initbox/scripts/pi-full/module-hotspot.sh",
       "mode": "0644",
-      "profiles": ["pi-full"],
+      "profiles": [
+        "pi-full"
+      ],
       "component": "pi-full-hotspot"
     },
     {
       "source": "scripts/pi-full/module-runtime-control.sh",
       "target": "/usr/local/share/initbox/scripts/pi-full/module-runtime-control.sh",
       "mode": "0644",
-      "profiles": ["pi-full"],
+      "profiles": [
+        "pi-full"
+      ],
       "component": "pi-full-runtime-control"
     },
     {
       "source": "scripts/pi-full/module-ttyd-portal.sh",
       "target": "/usr/local/share/initbox/scripts/pi-full/module-ttyd-portal.sh",
       "mode": "0644",
-      "profiles": ["pi-full"],
+      "profiles": [
+        "pi-full"
+      ],
       "component": "pi-full-web-terminal"
     },
     {
       "source": "scripts/pi-full/module-dashboard.sh",
       "target": "/usr/local/share/initbox/scripts/pi-full/module-dashboard.sh",
       "mode": "0644",
-      "profiles": ["pi-full"],
+      "profiles": [
+        "pi-full"
+      ],
       "component": "pi-full-dashboard"
     },
     {
       "source": "scripts/pi-full/module-ws-br0.sh",
       "target": "/usr/local/share/initbox/scripts/pi-full/module-ws-br0.sh",
       "mode": "0644",
-      "profiles": ["pi-full"],
+      "profiles": [
+        "pi-full"
+      ],
       "component": "pi-full-sniffer-bridge"
     },
     {
       "source": "scripts/pi-full/module-isi.sh",
       "target": "/usr/local/share/initbox/scripts/pi-full/module-isi.sh",
       "mode": "0644",
-      "profiles": ["pi-full"],
+      "profiles": [
+        "pi-full"
+      ],
       "component": "pi-full-isi"
     },
     {
       "source": "scripts/pi-full/module-fms.sh",
       "target": "/usr/local/share/initbox/scripts/pi-full/module-fms.sh",
       "mode": "0644",
-      "profiles": ["pi-full"],
+      "profiles": [
+        "pi-full"
+      ],
       "component": "pi-full-fms"
     },
     {
       "source": "scripts/pi-full/module-rtc.sh",
       "target": "/usr/local/share/initbox/scripts/pi-full/module-rtc.sh",
       "mode": "0644",
-      "profiles": ["pi-full"],
+      "profiles": [
+        "pi-full"
+      ],
       "component": "pi-full-rtc"
     },
     {
       "source": "backend/initbox_dashboard_api.py",
       "target": "/usr/local/bin/initbox-dashboard-api.py",
       "mode": "0755",
-      "profiles": ["pi-full"],
+      "profiles": [
+        "pi-full"
+      ],
       "component": "dashboard-api",
-      "restart": ["initbox-dashboard.service"]
+      "restart": [
+        "initbox-dashboard.service"
+      ]
     },
     {
       "source": "frontend/dist/index.html",
       "target": "/usr/local/share/initbox/dashboard/ui/index.html",
       "mode": "0644",
-      "profiles": ["pi-full"],
+      "profiles": [
+        "pi-full"
+      ],
       "component": "dashboard-ui"
     },
     {
       "source": "frontend/dist/logo.png",
       "target": "/usr/local/share/initbox/dashboard/ui/logo.png",
       "mode": "0644",
-      "profiles": ["pi-full"],
+      "profiles": [
+        "pi-full"
+      ],
       "component": "dashboard-ui"
     },
     {
       "source": "frontend/dist/assets/index-B3HGkxX8.css",
       "target": "/usr/local/share/initbox/dashboard/ui/assets/index-B3HGkxX8.css",
       "mode": "0644",
-      "profiles": ["pi-full"],
+      "profiles": [
+        "pi-full"
+      ],
       "component": "dashboard-ui"
     },
     {
       "source": "frontend/dist/assets/index-Cng8s_jj.js",
       "target": "/usr/local/share/initbox/dashboard/ui/assets/index-Cng8s_jj.js",
       "mode": "0644",
-      "profiles": ["pi-full"],
+      "profiles": [
+        "pi-full"
+      ],
       "component": "dashboard-ui"
     }
   ]
