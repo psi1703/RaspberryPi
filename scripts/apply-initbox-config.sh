@@ -23,6 +23,8 @@ RUN_VALIDATION="${INITBOX_APPLY_VALIDATE:-1}"
 PROFILE_ID=""
 HOTSPOT_IP=""
 HOTSPOT_PREFIX=""
+CONFIG_CHANGED="0"
+HOTSPOT_RESTART_NEEDED="0"
 
 usage() {
   cat <<'EOF_USAGE'
@@ -36,7 +38,8 @@ Actions:
 What apply does:
   - removes legacy /home/*/pi_logs directories
   - restores Pi-full hotspot dnsmasq captive DNS config if missing/drifted
-  - restarts dnsmasq/hostapd when hotspot DNS config is repaired
+  - asserts the hotspot IP on wlan0 and waits before validation
+  - restarts dnsmasq/hostapd when hotspot DNS or IP state is repaired
   - keeps portal target sane when Dashboard is absent
   - removes stale bridge NetworkManager policy when no ISI/sniff role is active
   - runs initbox-validate.sh at the end, if installed
@@ -88,44 +91,39 @@ state_value() {
   printf '%s\n' "$value"
 }
 
-read_pi_model() {
-  if [ -r /proc/device-tree/model ]; then
-    tr -d '\000' </proc/device-tree/model 2>/dev/null || true
-  fi
-}
-
-detect_profile() {
-  local model=""
-
+load_state() {
   PROFILE_ID="$(state_value PROFILE_ID 2>/dev/null || true)"
   HOTSPOT_IP="$(state_value HOTSPOT_GATEWAY 2>/dev/null || true)"
 
-  if [ -n "$PROFILE_ID" ] && [ -n "$HOTSPOT_IP" ]; then
-    return 0
+  if [ -z "$PROFILE_ID" ]; then
+    PROFILE_ID="${INITBOX_PROFILE_ID:-}"
   fi
 
-  model="$(read_pi_model)"
-  case "$model" in
-    *"Raspberry Pi Zero 2 W"*|*"Raspberry Pi Zero W"*)
-      PROFILE_ID="pi-zero2w"
-      HOTSPOT_IP="192.168.20.1"
-      ;;
-    *"Raspberry Pi 3"*)
-      PROFILE_ID="pi-full"
-      HOTSPOT_IP="192.168.30.1"
-      ;;
-    *"Raspberry Pi 4"*|*"Compute Module 4"*)
-      PROFILE_ID="pi-full"
-      HOTSPOT_IP="192.168.40.1"
-      ;;
-    *"Raspberry Pi 5"*|*"Compute Module 5"*)
-      PROFILE_ID="pi-full"
-      HOTSPOT_IP="192.168.50.1"
-      ;;
-    *)
-      fail "could not determine profile/hotspot IP from state or hardware"
-      ;;
-  esac
+  if [ -z "$HOTSPOT_IP" ]; then
+    case "$PROFILE_ID" in
+      pi-zero2w)
+        HOTSPOT_IP="192.168.20.1"
+        ;;
+      *)
+        HOTSPOT_IP="192.168.30.1"
+        ;;
+    esac
+  fi
+
+  HOTSPOT_PREFIX="${HOTSPOT_IP%.*}"
+}
+
+current_roles() {
+  local roles=""
+
+  if [ -r "$ROLE_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$ROLE_FILE" 2>/dev/null || true
+    roles="${ROLES:-${roles:-}}"
+    roles="${roles,,}"
+  fi
+
+  printf '%s\n' "$roles"
 }
 
 remove_legacy_logs() {
@@ -135,26 +133,19 @@ remove_legacy_logs() {
     [ -e "$path" ] || continue
     log "Removing legacy log directory: $path"
     rm -rf "$path"
+    CONFIG_CHANGED="1"
   done
 }
 
-prefix_from_hotspot_ip() {
-  HOTSPOT_PREFIX="${HOTSPOT_IP%.*}"
-  if [ "$HOTSPOT_PREFIX" = "$HOTSPOT_IP" ] || [ -z "$HOTSPOT_PREFIX" ]; then
-    fail "invalid hotspot IP: $HOTSPOT_IP"
-  fi
-}
-
-write_pi_full_dnsmasq_conf_if_needed() {
+write_pi_full_dnsmasq_config() {
   local tmp_file=""
-  local dhcp_range=""
 
   [ "$PROFILE_ID" = "pi-full" ] || return 0
-  prefix_from_hotspot_ip
-  dhcp_range="${HOTSPOT_PREFIX}.10,${HOTSPOT_PREFIX}.20,24h"
 
+  install -d -m 0755 "$DNSMASQ_DROPIN_DIR"
   tmp_file="$(mktemp)"
-  cat >"$tmp_file" <<EOF_DNSMASQ
+
+  cat >"$tmp_file" <<DNSMASQ_EOF
 # initbox-hotspot - managed by module-hotspot.sh / initbox-apply-config.sh
 # Clients need only reach the Pi (SSH + dashboard/terminal). No internet forwarding.
 interface=${HOTSPOT_IFACE}
@@ -163,7 +154,7 @@ bind-dynamic
 no-resolv
 local-service
 
-dhcp-range=${dhcp_range}
+dhcp-range=${HOTSPOT_PREFIX}.10,${HOTSPOT_PREFIX}.20,24h
 dhcp-option=3,${HOTSPOT_IP}
 dhcp-option=6,${HOTSPOT_IP}
 domain=${HOTSPOT_IFACE}
@@ -196,148 +187,184 @@ address=/detectportal.firefox.com/${HOTSPOT_IP}
 # Generic
 address=/neverssl.com/${HOTSPOT_IP}
 address=/www.neverssl.com/${HOTSPOT_IP}
-EOF_DNSMASQ
+DNSMASQ_EOF
 
-  install -d -m 0755 "$DNSMASQ_DROPIN_DIR"
+  if [ ! -f "$DNSMASQ_CONF" ] || ! cmp -s "$tmp_file" "$DNSMASQ_CONF"; then
+    log "Writing hotspot dnsmasq config: $DNSMASQ_CONF"
+    install -m 0644 -o root -g root "$tmp_file" "$DNSMASQ_CONF"
+    CONFIG_CHANGED="1"
+    HOTSPOT_RESTART_NEEDED="1"
+  else
+    log "Hotspot dnsmasq config is already converged: $DNSMASQ_CONF"
+  fi
 
-  if [ -f "$DNSMASQ_CONF" ] && cmp -s "$tmp_file" "$DNSMASQ_CONF"; then
-    rm -f "$tmp_file"
-    log "Hotspot dnsmasq config already converged: $DNSMASQ_CONF"
+  rm -f "$tmp_file"
+}
+
+ensure_portal_target() {
+  if [ ! -x "$PORTAL_TARGET_HELPER" ]; then
     return 0
   fi
 
-  log "Writing hotspot dnsmasq config: $DNSMASQ_CONF"
-  install -m 0644 -o root -g root "$tmp_file" "$DNSMASQ_CONF"
-  rm -f "$tmp_file"
+  if systemctl cat initbox-dashboard.service >/dev/null 2>&1; then
+    return 0
+  fi
+
+  log "Ensuring portal target is Web Terminal because Dashboard is absent"
+  "$PORTAL_TARGET_HELPER" terminal >/dev/null 2>&1 || warn "failed to set portal target to terminal"
+}
+
+remove_stale_bridge_policy_if_roles_inactive() {
+  local roles=""
+  local bridge_policy="/etc/NetworkManager/conf.d/99-initbox-bridge-unmanaged.conf"
+
+  [ "$PROFILE_ID" = "pi-full" ] || return 0
+  roles="$(current_roles)"
+
+  case " $roles " in
+    *" isi "*|*" sniff "*|*" wireshark "*|*" sniffer "*|*" sniffer-bridge "*)
+      log "ISI/sniff role active; preserving bridge policy"
+      return 0
+      ;;
+  esac
+
+  if [ -f "$bridge_policy" ]; then
+    log "Removing stale bridge NetworkManager policy while ISI/sniff roles are inactive"
+    rm -f "$bridge_policy"
+    CONFIG_CHANGED="1"
+    if command -v nmcli >/dev/null 2>&1; then
+      nmcli general reload >/dev/null 2>&1 || true
+      nmcli device set eth0 managed yes >/dev/null 2>&1 || true
+      nmcli device connect eth0 >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+assert_hotspot_ip() {
+  local current=""
+
+  if ! ip link show "$HOTSPOT_IFACE" >/dev/null 2>&1; then
+    warn "hotspot interface is missing: $HOTSPOT_IFACE"
+    return 0
+  fi
+
+  current="$(ip -4 -o addr show dev "$HOTSPOT_IFACE" 2>/dev/null | awk '{print $4}' | head -n 1 || true)"
+  if [ "$current" = "${HOTSPOT_IP}/24" ]; then
+    log "Hotspot IP already present on ${HOTSPOT_IFACE}: ${HOTSPOT_IP}/24"
+    return 0
+  fi
+
+  log "Applying hotspot IP on ${HOTSPOT_IFACE}: ${HOTSPOT_IP}/24"
+  ip link set "$HOTSPOT_IFACE" up >/dev/null 2>&1 || true
+  ip addr replace "${HOTSPOT_IP}/24" dev "$HOTSPOT_IFACE" >/dev/null 2>&1 || true
+  HOTSPOT_RESTART_NEEDED="1"
+  CONFIG_CHANGED="1"
+}
+
+restart_hotspot_services_if_needed() {
+  if [ "$HOTSPOT_RESTART_NEEDED" != "1" ]; then
+    return 0
+  fi
+
+  log "Restarting hotspot DNS/AP services after convergence"
+  systemctl daemon-reload >/dev/null 2>&1 || true
 
   if command -v dnsmasq >/dev/null 2>&1; then
-    dnsmasq --test >>"$LOG_FILE" 2>&1 || fail "dnsmasq config test failed after writing $DNSMASQ_CONF"
+    if dnsmasq --test >/dev/null 2>&1; then
+      log "dnsmasq configuration test passed"
+    else
+      warn "dnsmasq configuration test failed"
+    fi
   fi
 
   systemctl restart dnsmasq.service >/dev/null 2>&1 || warn "failed to restart dnsmasq.service"
+  systemctl restart hostapd.service >/dev/null 2>&1 || warn "failed to restart hostapd.service"
 }
 
-ensure_hotspot_services() {
-  if systemctl cat hostapd.service >/dev/null 2>&1; then
-    systemctl enable hostapd.service >/dev/null 2>&1 || true
-    systemctl restart hostapd.service >/dev/null 2>&1 || warn "failed to restart hostapd.service"
-  fi
+wait_for_hotspot_ip() {
+  local attempt=0
+  local current=""
 
-  if systemctl cat dnsmasq.service >/dev/null 2>&1; then
-    systemctl enable dnsmasq.service >/dev/null 2>&1 || true
-    systemctl restart dnsmasq.service >/dev/null 2>&1 || warn "failed to restart dnsmasq.service"
-  fi
-}
-
-portal_target_is_dashboard() {
-  [ -r /etc/initbox/portal-target.env ] && grep -q '^INITBOX_PORTAL_TARGET_NAME=dashboard$' /etc/initbox/portal-target.env
-}
-
-ensure_sane_portal_target() {
-  if [ ! -x "$PORTAL_TARGET_HELPER" ]; then
-    warn "portal target helper not installed: $PORTAL_TARGET_HELPER"
+  if ! ip link show "$HOTSPOT_IFACE" >/dev/null 2>&1; then
     return 0
   fi
 
-  if portal_target_is_dashboard && ! systemctl cat initbox-dashboard.service >/dev/null 2>&1; then
-    log "Dashboard portal target selected but Dashboard is absent; switching portal to terminal"
-    "$PORTAL_TARGET_HELPER" terminal >>"$LOG_FILE" 2>&1 || warn "failed to switch portal target to terminal"
-  fi
-}
+  while [ "$attempt" -lt 20 ]; do
+    current="$(ip -4 -o addr show dev "$HOTSPOT_IFACE" 2>/dev/null | awk '{print $4}' | head -n 1 || true)"
+    if [ "$current" = "${HOTSPOT_IP}/24" ]; then
+      log "Confirmed ${HOTSPOT_IFACE} hotspot IP: ${HOTSPOT_IP}/24"
+      return 0
+    fi
 
-roles_text() {
-  local role_text=""
-  if [ -r "$ROLE_FILE" ]; then
-    # shellcheck disable=SC1090
-    . "$ROLE_FILE" || true
-    role_text="${ROLES:-${roles:-}}"
-  fi
-  printf '%s\n' "$role_text" | xargs 2>/dev/null || true
-}
-
-bridge_role_active() {
-  local role=""
-  for role in $(roles_text); do
-    case "$role" in
-      isi|sniff|wireshark|sniffer|sniffer-bridge|ethsniffer)
-        return 0
-        ;;
-    esac
+    ip addr replace "${HOTSPOT_IP}/24" dev "$HOTSPOT_IFACE" >/dev/null 2>&1 || true
+    attempt=$((attempt + 1))
+    sleep 1
   done
-  return 1
+
+  current="$(ip -4 -o addr show dev "$HOTSPOT_IFACE" 2>/dev/null | awk '{print $4}' | head -n 1 || true)"
+  warn "${HOTSPOT_IFACE} did not settle on ${HOTSPOT_IP}/24 before validation; current=${current:-none}"
 }
 
-cleanup_inactive_bridge_policy() {
-  [ "$PROFILE_ID" = "pi-full" ] || return 0
-
-  if bridge_role_active; then
-    log "ISI/sniff role active; bridge policy left unchanged"
-    return 0
-  fi
-
-  if [ -f /etc/NetworkManager/conf.d/99-initbox-bridge-unmanaged.conf ]; then
-    log "Removing stale bridge NetworkManager unmanaged policy while no ISI/sniff role is active"
-    rm -f /etc/NetworkManager/conf.d/99-initbox-bridge-unmanaged.conf
-    command -v nmcli >/dev/null 2>&1 && nmcli general reload >/dev/null 2>&1 || true
-  fi
-
-  if ip link show br0 >/dev/null 2>&1; then
-    log "Removing stale br0 while no ISI/sniff role is active"
-    ip link set br0 down >/dev/null 2>&1 || true
-    ip link delete br0 type bridge >/dev/null 2>&1 || true
-  fi
-}
-
-run_validation() {
+run_validator() {
   if [ "$RUN_VALIDATION" != "1" ]; then
+    log "Validation skipped by INITBOX_APPLY_VALIDATE=0"
     return 0
   fi
 
   if [ ! -x "$VALIDATOR" ]; then
-    warn "validator not installed: $VALIDATOR"
+    warn "Validator is not installed: $VALIDATOR"
     return 0
   fi
 
   log "Running InitBox validator"
   if "$VALIDATOR"; then
-    log "Validation passed"
+    log "Validation completed without failures"
   else
-    warn "Validation reported failures. See /var/log/initbox/validate-latest.log"
+    warn "Validation reported failures. See ${LOG_DIR}/validate-latest.log"
     return 1
   fi
 }
 
 apply_config() {
-  require_root
-  prepare_log
-  detect_profile
-
   log "Applying InitBox runtime convergence"
-  log "Profile: $PROFILE_ID"
+  load_state
+  log "Profile: ${PROFILE_ID:-unknown}"
   log "Hotspot IP: $HOTSPOT_IP"
 
   remove_legacy_logs
-  write_pi_full_dnsmasq_conf_if_needed
-  ensure_hotspot_services
-  ensure_sane_portal_target
-  cleanup_inactive_bridge_policy
-  run_validation
+  write_pi_full_dnsmasq_config
+  ensure_portal_target
+  remove_stale_bridge_policy_if_roles_inactive
+  assert_hotspot_ip
+  restart_hotspot_services_if_needed
+  wait_for_hotspot_ip
+  run_validator
 }
 
-case "$ACTION" in
-  apply|--from-sync)
-    apply_config
-    ;;
-  validate)
-    require_root
-    prepare_log
-    run_validation
-    ;;
-  -h|--help|help)
-    usage
-    ;;
-  *)
-    usage >&2
-    fail "unknown action: $ACTION"
-    ;;
-esac
+main() {
+  case "$ACTION" in
+    apply)
+      ;;
+    validate)
+      require_root
+      prepare_log
+      load_state
+      run_validator
+      exit $?
+      ;;
+    -h|--help|help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      fail "unknown action: $ACTION"
+      ;;
+  esac
+
+  require_root
+  prepare_log
+  apply_config
+}
+
+main "$@"
