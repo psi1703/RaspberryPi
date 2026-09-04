@@ -55,6 +55,13 @@
       "component": "module-wrapper"
     },
     {
+      "source": "scripts/bin/module-dashboard.sh",
+      "target": "/usr/local/bin/module-dashboard.sh",
+      "mode": "0755",
+      "profiles": ["pi-full"],
+      "component": "module-wrapper"
+    },
+    {
       "source": "scripts/bin/module-isi.sh",
       "target": "/usr/local/bin/module-isi.sh",
       "mode": "0755",
@@ -207,6 +214,13 @@
       "mode": "0644",
       "profiles": ["pi-full"],
       "component": "pi-full-web-terminal"
+    },
+    {
+      "source": "scripts/pi-full/module-dashboard.sh",
+      "target": "/usr/local/share/initbox/scripts/pi-full/module-dashboard.sh",
+      "mode": "0644",
+      "profiles": ["pi-full"],
+      "component": "pi-full-dashboard"
     },
     {
       "source": "scripts/pi-full/module-ws-br0.sh",
