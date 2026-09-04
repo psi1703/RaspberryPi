@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/31826288/README.md)
 # InitBox Raspberry Pi Runtime
 
 InitBox is a field-appliance runtime for supported Raspberry Pi hardware.
@@ -223,7 +222,7 @@ apt-get dist-upgrade
 apt-get full-upgrade
 ```
 
-The top-level installer may optionally run this first-install lab operation only when explicitly selected:
+The top-level installer may optionally run this first-install lab operation only when selected:
 
 ```bash
 apt-get update
@@ -234,21 +233,10 @@ It must never run `dist-upgrade` or `full-upgrade`.
 
 ## Module installation
 
-Use the unified module runner:
+Use the unified module runner only when manual module work is needed:
 
 ```bash
-sudo initbox-module-runner.sh install hotspot
-sudo initbox-module-runner.sh install web-terminal
-sudo initbox-module-runner.sh install isi
-sudo initbox-module-runner.sh install sniffer-bridge
 sudo initbox-module-runner.sh install fms
-sudo initbox-module-runner.sh install rtc
-sudo initbox-module-runner.sh install dashboard
-```
-
-Uninstall example:
-
-```bash
 sudo initbox-module-runner.sh uninstall fms
 ```
 
@@ -267,102 +255,35 @@ Supported module IDs:
 
 Unsupported modules are blocked by the profile.
 
-## Logs
-
-All InitBox logs live under:
-
-```text
-/var/log/initbox/
-```
-
-Expected files include:
-
-```text
-/var/log/initbox/install.log
-/var/log/initbox/sync.log
-/var/log/initbox/module-hotspot.log
-/var/log/initbox/module-web-terminal.log
-/var/log/initbox/module-dashboard.log
-/var/log/initbox/module-isi.log
-/var/log/initbox/module-sniffer-bridge.log
-/var/log/initbox/module-fms.log
-/var/log/initbox/module-rtc.log
-```
-
 ## Module ownership boundaries
 
 Preserve these boundaries when editing modules.
 
 ### Hotspot
 
-Owns:
-
-- `wlan0` hotspot addressing
-- hostapd
-- dnsmasq
-- hotspot DHCP/DNS
-- `/etc/pi-boxno`
-
-Does not own Dashboard, ttyd, ISI, FMS, sniffer, or RTC behavior.
+Owns `wlan0`, hostapd, dnsmasq, hotspot DHCP/DNS, and `/etc/pi-boxno`.
 
 ### Web Terminal / Portal
 
-Owns:
-
-- ttyd service
-- port-80 captive responder/socket
-- `/usr/local/sbin/initbox-portal-target`
-- terminal/dashboard portal target selection
+Owns ttyd, the port-80 captive responder/socket, `/usr/local/sbin/initbox-portal-target`, and terminal/dashboard portal target selection.
 
 Dashboard must not recreate ttyd or the port-80 portal.
 
 ### Runtime Control
 
-Pi-full only.
-
-Owns:
-
-- `/etc/pi_roles.conf`
-- `/etc/initbox/dashboard-modules.env`
-- `/usr/local/bin/pi-servsync.sh`
-- `/usr/local/bin/pi-rolectl.sh`
-- `pi-servsync.service`
+Pi-full only. Owns `/etc/pi_roles.conf`, `/etc/initbox/dashboard-modules.env`, `/usr/local/bin/pi-servsync.sh`, `/usr/local/bin/pi-rolectl.sh`, and `pi-servsync.service`.
 
 Dashboard must not recreate this logic.
 
 ### Dashboard
 
-Pi-full only and optional.
+Pi-full only and optional. Owns `/usr/local/bin/initbox-dashboard-api.py`, `/usr/local/share/initbox/dashboard/ui/`, `/etc/initbox/dashboard-auth.env`, `initbox-dashboard.service`, `/usr/local/bin/pi-stats.sh`, `/usr/local/bin/initbox-file-transfer.sh`, `DASHBOARD=1`, and switching the shared portal target to `dashboard`.
 
-Owns:
-
-- `/usr/local/bin/initbox-dashboard-api.py`
-- `/usr/local/share/initbox/dashboard/ui/`
-- `/etc/initbox/dashboard-auth.env`
-- `initbox-dashboard.service`
-- `/usr/local/bin/pi-stats.sh`
-- `/usr/local/bin/initbox-file-transfer.sh`
-- `DASHBOARD=1` in `/etc/initbox/dashboard-modules.env`
-- switching the shared portal target to `dashboard`
-
-Does not own:
-
-- ttyd
-- port-80 captive portal/socket
-- runtime-control
-- role files
-- ISI/FMS/sniffer/hotspot/RTC services
-- Node.js, npm, or React build tooling
+Dashboard does not own ttyd, the port-80 captive portal/socket, runtime-control, role files, ISI/FMS/sniffer/hotspot/RTC services, Node.js, npm, or React build tooling.
 
 ### Pi Zero field modules
 
-The Pi Zero profile must remain lightweight:
-
-- no Dashboard
-- no Runtime Control
-- no RTC
-- Web Terminal only for management
-- low CPU/RAM behavior preserved
+The Pi Zero profile must remain lightweight: no Dashboard, no Runtime Control, no RTC, Web Terminal only for management, and low CPU/RAM behavior preserved.
 
 ## Sync from GitHub in the lab
 
@@ -396,15 +317,7 @@ Show local sync state:
 sudo initbox-sync.sh status
 ```
 
-The sync tool:
-
-- does not use git
-- does not provide rollback
-- downloads and installs only changed runtime artifacts
-- verifies downloaded files by SHA-256
-- replaces files atomically
-- restarts only affected services listed in `scripts/manifest.json`
-- refuses to change the system if GitHub is unreachable
+The sync tool does not use git, does not provide rollback, downloads and installs only changed runtime artifacts, verifies downloads by SHA-256, replaces files atomically, restarts only affected services listed in `scripts/manifest.json`, and refuses to change the system if GitHub is unreachable.
 
 ## Offline package cache
 
@@ -429,14 +342,32 @@ sudo initbox-package-cache.sh verify pi-zero2w
 sudo initbox-package-cache.sh verify pi-full
 ```
 
-Show cache status:
+Field installs should use the existing cache and fail cleanly if the cache is incomplete.
 
-```bash
-sudo initbox-package-cache.sh status pi-zero2w
-sudo initbox-package-cache.sh status pi-full
+## Logs
+
+All InitBox logs are under:
+
+```text
+/var/log/initbox/
 ```
 
-Field installs should use the existing cache and fail cleanly if the cache is incomplete.
+Important files:
+
+```text
+/var/log/initbox/install.log
+/var/log/initbox/sync.log
+/var/log/initbox/module-hotspot.log
+/var/log/initbox/module-web-terminal.log
+/var/log/initbox/module-runtime-control.log
+/var/log/initbox/module-dashboard.log
+/var/log/initbox/module-isi.log
+/var/log/initbox/module-sniffer-bridge.log
+/var/log/initbox/module-fms.log
+/var/log/initbox/module-rtc.log
+```
+
+The module runner exports the log path before launching each module, so proven modules can keep their existing internals while still writing to the central log directory.
 
 ## Validation after install or sync
 
@@ -485,19 +416,6 @@ can0        no inet, if present
 
 Only `wlan0` should have the management IP on Pi Zero.
 
-## Dashboard access
-
-Dashboard is optional and Pi-full only.
-
-When installed, the Dashboard API runs on port 8080 and the shared portal target points users to Dashboard:
-
-```text
-http://initbox.wlan/
-http://<hotspot-gateway>/
-```
-
-The Web Terminal remains available through the shared portal/terminal path and ttyd backend. Dashboard installation must not remove Web Terminal.
-
 ## React frontend policy
 
 The Pi does not build React.
@@ -529,28 +447,13 @@ If the frontend is rebuilt and asset filenames change, update `scripts/manifest.
 
 The existing module behavior is treated as proven. Do not rewrite module internals unless there is a confirmed defect.
 
-Allowed changes:
+Allowed changes: path integration, installer wiring, manifest updates, logging improvements, confirmed bug fixes, and documentation.
 
-- path integration
-- installer wiring
-- manifest updates
-- logging improvements
-- confirmed bug fixes
-- documentation
+Avoid changing network ownership, DHCP behavior, bridge/namespace logic, FMS SocketCAN/CAN.trc behavior, ttyd/portal ownership, Dashboard ownership boundaries, or adding Node/npm runtime requirements to the Pi.
 
-Avoid:
+## Quick commands
 
-- changing network ownership
-- changing DHCP behavior without evidence
-- rewriting bridge/namespace logic casually
-- changing FMS SocketCAN/CAN.trc behavior casually
-- moving ttyd/portal ownership into Dashboard
-- adding Node/npm runtime requirements to the Pi
-- adding GitHub Actions runners to field devices
-
-## Quick command summary
-
-Fresh Pi bootstrap, no clone:
+Fresh Pi bootstrap:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/psi1703/RaspberryPi/main/scripts/bootstrap-initbox.sh | sudo bash
