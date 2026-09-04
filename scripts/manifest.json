@@ -41,6 +41,8 @@
     {"source":"scripts/pi-full/module-ttyd-portal.sh","target":"/usr/local/share/initbox/scripts/pi-full/module-ttyd-portal.sh","mode":"0644","profiles":["pi-full"],"component":"pi-full-web-terminal"},
     {"source":"scripts/pi-full/module-dashboard.sh","target":"/usr/local/share/initbox/scripts/pi-full/module-dashboard.sh","mode":"0644","profiles":["pi-full"],"component":"pi-full-dashboard"},
     {"source":"scripts/pi-full/module-ws-br0.sh","target":"/usr/local/share/initbox/scripts/pi-full/module-ws-br0.sh","mode":"0644","profiles":["pi-full"],"component":"pi-full-sniffer-bridge"},
+    {"source":"scripts/pi-full/bridge-check-safe.sh","target":"/usr/local/bin/bridge-check.sh","mode":"0755","profiles":["pi-full"],"component":"pi-full-sniffer-bridge","restart":["bridge-check.service"]},
+    {"source":"scripts/pi-full/bridge-check-safe.sh","target":"/usr/local/share/initbox/scripts/pi-full/bridge-check-safe.sh","mode":"0644","profiles":["pi-full"],"component":"pi-full-sniffer-bridge-source"},
     {"source":"scripts/pi-full/module-isi.sh","target":"/usr/local/share/initbox/scripts/pi-full/module-isi.sh","mode":"0644","profiles":["pi-full"],"component":"pi-full-isi"},
     {"source":"scripts/pi-full/module-fms.sh","target":"/usr/local/share/initbox/scripts/pi-full/module-fms.sh","mode":"0644","profiles":["pi-full"],"component":"pi-full-fms"},
     {"source":"scripts/pi-full/module-rtc.sh","target":"/usr/local/share/initbox/scripts/pi-full/module-rtc.sh","mode":"0644","profiles":["pi-full"],"component":"pi-full-rtc"},
