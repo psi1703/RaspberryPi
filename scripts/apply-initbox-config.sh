@@ -9,6 +9,11 @@
 set -euo pipefail
 
 ACTION="${1:-apply}"
+case "$ACTION" in
+  --from-sync)
+    ACTION="apply"
+    ;;
+esac
 OWNER="${OWNER:-initbox}"
 LOG_DIR="${INITBOX_LOG_DIR:-/var/log/initbox}"
 LOG_FILE="${INITBOX_APPLY_LOG:-${LOG_DIR}/apply-config.log}"
@@ -34,12 +39,13 @@ DASHBOARD_INSTALL_ATTEMPTED="0"
 usage() {
   cat <<'EOF_USAGE'
 Usage:
-  sudo initbox-apply-config.sh [apply|dashboard|validate|--help]
+  sudo initbox-apply-config.sh [apply|dashboard|validate|--from-sync|--help]
 
 Actions:
-  apply       Apply safe repo-controlled runtime configuration convergence.
-  dashboard   Apply convergence, install/repair Dashboard, and validate.
-  validate    Run the InitBox validator only.
+  apply        Apply safe repo-controlled runtime configuration convergence.
+  dashboard    Apply convergence, install/repair Dashboard, and validate.
+  validate     Run the InitBox validator only.
+  --from-sync  Compatibility alias used by initbox-sync.sh; same as apply.
 
 Environment:
   INITBOX_APPLY_DASHBOARD=yes   During apply, also install/repair Dashboard.
