@@ -27,6 +27,7 @@ MODULES_LIB="$REPO_ROOT/scripts/lib/modules.sh"
 STATE_LIB="$REPO_ROOT/scripts/lib/state.sh"
 
 INITBOX_LOG_DIR="${INITBOX_LOG_DIR:-/var/log/initbox}"
+MODULE_RUN_DIR="${MODULE_RUN_DIR:-/run/initbox/module-runner}"
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -104,9 +105,38 @@ prepare_module_log() {
   export LOGFILE="$module_log_file"
 }
 
+prepare_log_normalized_module_script() {
+  local source_script="$1"
+  local module_id="$2"
+  local target_script=""
+
+  install -d -m 0700 "$MODULE_RUN_DIR"
+  target_script="${MODULE_RUN_DIR}/${module_id}.sh"
+
+  awk -v module_id="$module_id" '
+    $0 == "LOG_DIR=\"/home/${OWNER}/pi_logs\"" {
+      print "LOG_DIR=\"${INITBOX_LOG_DIR:-/var/log/initbox}\""
+      next
+    }
+
+    $0 == ": \"${LOGFILE:=/home/${OWNER}/pi_logs/initbox-install.log}\"" {
+      print ": \"${LOGFILE:=${INITBOX_LOG_DIR:-/var/log/initbox}/module-" module_id ".log}\""
+      next
+    }
+
+    {
+      print
+    }
+  ' "$source_script" >"$target_script"
+
+  chmod 0700 "$target_script"
+  printf '%s\n' "$target_script"
+}
+
 main() {
   local detected_profile_id=""
   local module_script=""
+  local module_run_script=""
   local module_name=""
   local state_action=""
   local packages_file=""
@@ -166,6 +196,7 @@ main() {
   package_cache_root="${INITBOX_PACKAGE_CACHE_ROOT:-/opt/initbox/packages}"
   apt_cache_dir="${INITBOX_APT_CACHE_DIR:-${package_cache_root}/apt}"
   prepare_module_log "$MODULE_ID"
+  module_run_script="$(prepare_log_normalized_module_script "$module_script" "$MODULE_ID")"
 
   # Compatibility environment for the proven profile-specific modules. Older
   # modules accepted these variables while defaulting to the former single
@@ -204,7 +235,7 @@ main() {
   printf 'Log:      %s\n' "$LOGFILE"
   printf '\n'
 
-  if bash "$module_script" "$ACTION"; then
+  if bash "$module_run_script" "$ACTION"; then
     if [ "$state_action" = "install" ]; then
       initbox_state_record_module_success "$MODULE_ID" "$module_name"
     else
