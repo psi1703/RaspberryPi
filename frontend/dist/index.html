@@ -6,8 +6,133 @@
     <title>InitBox Dashboard</title>
     <script type="module" crossorigin src="/assets/index-Cng8s_jj.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-B3HGkxX8.css">
+    <style>
+      .system-card {
+        overflow: visible !important;
+      }
+
+      .system-card .system-row {
+        display: grid !important;
+        grid-template-columns: 1fr !important;
+        gap: 10px !important;
+        width: 100% !important;
+        min-width: 0 !important;
+      }
+
+      .system-card .metric-grid,
+      .system-card .metric-grid.dense {
+        display: grid !important;
+        grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)) !important;
+        gap: 8px !important;
+        width: 100% !important;
+        max-width: 100% !important;
+      }
+
+      .system-card .info-grid,
+      .system-card .initbox-system-extra {
+        display: grid !important;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)) !important;
+        gap: 8px !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        margin-top: 8px !important;
+      }
+
+      .system-card .metric-grid > div,
+      .system-card .info-grid > div,
+      .system-card .initbox-system-extra > div {
+        min-width: 0 !important;
+        width: auto !important;
+        background: #0b1525;
+        border: 1px solid var(--line, #22324a);
+        border-radius: 14px;
+        min-height: 60px;
+        padding: 10px 11px;
+      }
+
+      .system-card .metric-grid span,
+      .system-card .info-grid span,
+      .system-card .initbox-system-extra span {
+        display: block;
+        color: var(--muted, #93a4bd);
+        font-size: 0.74rem;
+        line-height: 1.05;
+        margin-bottom: 6px;
+        white-space: nowrap;
+      }
+
+      .system-card .metric-grid strong,
+      .system-card .info-grid strong,
+      .system-card .initbox-system-extra strong {
+        display: block;
+        color: var(--text, #eef5ff);
+        font-size: 0.84rem;
+        font-weight: 800;
+        line-height: 1.18;
+        overflow-wrap: anywhere;
+        white-space: normal;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      (function () {
+        function formatUptime(seconds) {
+          var value = Number(seconds || 0);
+          if (!Number.isFinite(value) || value <= 0) return '-';
+          var days = Math.floor(value / 86400);
+          var hours = Math.floor((value % 86400) / 3600);
+          var minutes = Math.floor((value % 3600) / 60);
+          if (days > 0) return days + 'd ' + hours + 'h';
+          if (hours > 0) return hours + 'h ' + minutes + 'm';
+          return minutes + 'm';
+        }
+
+        function put(panel, label, value) {
+          var tile = document.createElement('div');
+          var labelNode = document.createElement('span');
+          var valueNode = document.createElement('strong');
+          labelNode.textContent = label;
+          valueNode.textContent = value || '-';
+          tile.appendChild(labelNode);
+          tile.appendChild(valueNode);
+          panel.appendChild(tile);
+        }
+
+        async function refreshSystemIdentity() {
+          try {
+            var response = await fetch('/api/status', { credentials: 'same-origin' });
+            if (!response.ok) return;
+            var status = await response.json();
+            var stats = status.stats || {};
+            var card = document.querySelector('.system-card');
+            if (!card) return;
+
+            var panel = card.querySelector('.initbox-system-extra');
+            if (!panel) {
+              panel = document.createElement('div');
+              panel.className = 'initbox-system-extra';
+              card.appendChild(panel);
+            }
+
+            panel.textContent = '';
+            put(panel, 'Hostname', stats.hostname || status.hostname || '-');
+            put(panel, 'IP address', stats.ip || '-');
+            put(panel, 'OS', stats.os || '-');
+            put(panel, 'Model', stats.model || '-');
+            put(panel, 'Serial', stats.serial || '-');
+            put(panel, 'Time', stats.time || '-');
+            put(panel, 'Uptime', formatUptime(stats.uptime_s));
+          } catch (err) {
+            // Dashboard identity panel is best-effort; the main React app remains authoritative.
+          }
+        }
+
+        window.setInterval(refreshSystemIdentity, 5000);
+        window.setTimeout(refreshSystemIdentity, 500);
+        window.setTimeout(refreshSystemIdentity, 1500);
+      })();
+    </script>
   </body>
 </html>
