@@ -15,6 +15,7 @@
     {"source":"scripts/apply-initbox-config.sh","target":"/usr/local/bin/initbox-apply-config.sh","mode":"0755","profiles":["all"],"component":"apply-config"},
     {"source":"scripts/apply-initbox-config.sh","target":"/usr/local/share/initbox/scripts/apply-initbox-config.sh","mode":"0644","profiles":["all"],"component":"apply-config-source"},
     {"source":"scripts/initbox-sync.sh","target":"/usr/local/bin/initbox-sync.sh","mode":"0755","profiles":["all"],"component":"sync"},
+    {"source":"scripts/initbox-sync.sh","target":"/usr/local/share/initbox/scripts/initbox-sync.sh","mode":"0644","profiles":["all"],"component":"sync-source"},
     {"source":"scripts/bin/initbox-module-runner.sh","target":"/usr/local/bin/initbox-module-runner.sh","mode":"0755","profiles":["all"],"component":"runtime-wrapper"},
     {"source":"scripts/bin/initbox-package-cache.sh","target":"/usr/local/bin/initbox-package-cache.sh","mode":"0755","profiles":["all"],"component":"runtime-wrapper"},
     {"source":"profiles/pi-zero2w.conf","target":"/usr/local/share/initbox/profiles/pi-zero2w.conf","mode":"0644","profiles":["all"],"component":"profile"},
