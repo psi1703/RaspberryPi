@@ -7,6 +7,12 @@
 # profile-specific package/cache paths expected by the module, records module
 # state, and forces module logs into /var/log/initbox.
 #
+# Important compatibility detail:
+#   Older profile modules derive REPO_ROOT from BASH_SOURCE[0]. The runner may
+#   execute a normalized temporary copy under /run to replace legacy log paths.
+#   Therefore the temporary copy must preserve INITBOX_REPO_ROOT explicitly;
+#   otherwise those modules incorrectly look for /run/scripts/lib/packages.sh.
+#
 # Usage:
 #   sudo scripts/lib/module-runner.sh install MODULE
 #   sudo scripts/lib/module-runner.sh uninstall MODULE
@@ -124,6 +130,16 @@ prepare_log_normalized_module_script() {
       next
     }
 
+    $0 == "REPO_ROOT=\"$(cd \"$SCRIPT_DIR/../..\" && pwd)\"" {
+      print "REPO_ROOT=\"${INITBOX_REPO_ROOT:-$(cd \"$SCRIPT_DIR/../..\" && pwd)}\""
+      next
+    }
+
+    $0 == "REPO_ROOT=\"${INITBOX_REPO_ROOT:-$(cd \"$SCRIPT_DIR/../..\" && pwd)}\"" {
+      print
+      next
+    }
+
     {
       print
     }
@@ -196,12 +212,9 @@ main() {
   package_cache_root="${INITBOX_PACKAGE_CACHE_ROOT:-/opt/initbox/packages}"
   apt_cache_dir="${INITBOX_APT_CACHE_DIR:-${package_cache_root}/apt}"
   prepare_module_log "$MODULE_ID"
-  module_run_script="$(prepare_log_normalized_module_script "$module_script" "$MODULE_ID")"
 
-  # Compatibility environment for the proven profile-specific modules. Older
-  # modules accepted these variables while defaulting to the former single
-  # scripts/packages.txt layout. The unified runner always supplies the new
-  # profile-specific allow-list, APT cache location, and central log path.
+  # Export before building the normalized copy. The normalized script may use
+  # this during parse-time defaults as well as runtime helper lookup.
   export INITBOX_REPO_ROOT="$REPO_ROOT"
   export INITBOX_PROFILE_ID="$detected_profile_id"
   export INITBOX_PACKAGES_FILE="$packages_file"
@@ -210,6 +223,8 @@ main() {
   export INITBOX_PACKAGE_CACHE_DIR="$apt_cache_dir"
   export HOTSPOT_SUBNET_PREFIX="$INITBOX_HOTSPOT_SUBNET_PREFIX"
   export HOTSPOT_GATEWAY="$INITBOX_HOTSPOT_GATEWAY"
+
+  module_run_script="$(prepare_log_normalized_module_script "$module_script" "$MODULE_ID")"
 
   initbox_state_record_hardware \
     "$INITBOX_HARDWARE_ID" \
