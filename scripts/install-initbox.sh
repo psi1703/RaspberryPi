@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # InitBox unified first-install bootstrapper.
 #
-# This is the lab/first-install entry point. Running it with no arguments opens
-# a menu. Advanced command-line options are retained for automation, but normal
-# technicians should not need to remember long commands with flags.
+# The installer is the master roster/orchestrator for a safe management
+# baseline. It installs only management-safe modules by default, records the
+# requested Dashboard state before module installation begins, and leaves all
+# field/runtime roles OFF until an operator explicitly enables them.
 #
 # Runtime layout:
 #   executables: /usr/local/bin
@@ -27,9 +28,11 @@ LOG_DIR="${INITBOX_LOG_DIR:-/var/log/initbox}"
 PACKAGE_CACHE_ROOT="${INITBOX_PACKAGE_CACHE_ROOT:-/opt/initbox/packages}"
 APT_CACHE_DIR="${INITBOX_APT_CACHE_DIR:-${PACKAGE_CACHE_ROOT}/apt}"
 INSTALL_LOG="${INITBOX_INSTALL_LOG:-${LOG_DIR}/install.log}"
+DASHBOARD_REQUEST_FILE="${DASHBOARD_REQUEST_FILE:-/etc/initbox/dashboard-requested.env}"
 REPO_ROOT=""
 PROFILE_ID=""
 DEFAULT_MODULES_LIST=""
+OPERATIONAL_MODULES_LIST=""
 DASHBOARD_SELECTED="no"
 
 usage() {
@@ -70,9 +73,10 @@ Design rules:
   - apt-get only.
   - never runs apt-get dist-upgrade or full-upgrade.
   - no git checkout and no GitHub Actions runner.
-  - Dashboard is optional on Pi-full and blocked on Pi Zero.
+  - Dashboard selection is recorded before module installation begins.
+  - Pi-full baseline installs only management-safe modules.
+  - ISI, sniffer-bridge, and FMS roles remain OFF until explicitly enabled.
   - all InitBox logs go under /var/log/initbox.
-  - module behavior is preserved; modules are launched through module-runner.
 EOF_USAGE
 }
 
@@ -105,14 +109,9 @@ require_root() {
 }
 
 validate_yes_no_prompt() {
-  local value="$1"
-
-  case "$value" in
-    yes|no|prompt)
-      ;;
-    *)
-      fail "expected yes, no, or prompt; got: $value"
-      ;;
+  case "$1" in
+    yes|no|prompt) ;;
+    *) fail "expected yes, no, or prompt; got: $1" ;;
   esac
 }
 
@@ -176,11 +175,8 @@ parse_args() {
   done
 
   case "$ACTION" in
-    menu|install|plan|status)
-      ;;
-    *)
-      fail "unknown action: $ACTION"
-      ;;
+    menu|install|plan|status) ;;
+    *) fail "unknown action: $ACTION" ;;
   esac
 
   if [ "$ASSUME_YES" = "1" ]; then
@@ -197,15 +193,9 @@ ask_yes_no() {
   local suffix=""
 
   case "$default_answer" in
-    yes)
-      suffix="Y/n"
-      ;;
-    no)
-      suffix="y/N"
-      ;;
-    *)
-      fail "invalid default answer: $default_answer"
-      ;;
+    yes) suffix="Y/n" ;;
+    no) suffix="y/N" ;;
+    *) fail "invalid default answer: $default_answer" ;;
   esac
 
   if [ "$ASSUME_YES" = "1" ]; then
@@ -222,21 +212,14 @@ ask_yes_no() {
   fi
 
   case "${reply:-$default_answer}" in
-    y|Y|yes|YES|Yes)
-      printf 'yes\n'
-      ;;
-    n|N|no|NO|No)
-      printf 'no\n'
-      ;;
-    *)
-      printf '%s\n' "$default_answer"
-      ;;
+    y|Y|yes|YES|Yes) printf 'yes\n' ;;
+    n|N|no|NO|No) printf 'no\n' ;;
+    *) printf '%s\n' "$default_answer" ;;
   esac
 }
 
 read_menu_choice() {
   local choice=""
-
   if [ -e /dev/tty ]; then
     read -r -p "Select option: " choice </dev/tty || choice="q"
   elif [ -t 0 ]; then
@@ -244,16 +227,11 @@ read_menu_choice() {
   else
     choice="q"
   fi
-
   printf '%s\n' "$choice"
 }
 
 prepare_base_dirs() {
-  install -d -m 0755 "$RUNTIME_ROOT"
-  install -d -m 0755 "$BIN_DIR"
-  install -d -m 0755 "$STATE_DIR"
-  install -d -m 0755 "$LOG_DIR"
-  install -d -m 0755 "$PACKAGE_CACHE_ROOT" "$APT_CACHE_DIR"
+  install -d -m 0755 "$RUNTIME_ROOT" "$BIN_DIR" "$STATE_DIR" "$LOG_DIR" "$PACKAGE_CACHE_ROOT" "$APT_CACHE_DIR"
   touch "$INSTALL_LOG"
   chmod 0644 "$INSTALL_LOG" 2>/dev/null || true
 }
@@ -277,10 +255,8 @@ find_repo_root() {
   local candidate=""
 
   if [ -n "$REPO_ROOT" ]; then
-    if [ -f "$REPO_ROOT/scripts/lib/hardware.sh" ]; then
-      return 0
-    fi
-    fail "--repo-root does not look like InitBox repo root: $REPO_ROOT"
+    [ -f "$REPO_ROOT/scripts/lib/hardware.sh" ] || fail "--repo-root does not look like InitBox repo root: $REPO_ROOT"
+    return 0
   fi
 
   if [ -n "${INITBOX_REPO_ROOT:-}" ] && [ -f "${INITBOX_REPO_ROOT}/scripts/lib/hardware.sh" ]; then
@@ -306,8 +282,7 @@ find_repo_root() {
 }
 
 require_file() {
-  local path="$1"
-  [ -f "$path" ] || fail "required file is missing: $path"
+  [ -f "$1" ] || fail "required file is missing: $1"
 }
 
 source_helpers() {
@@ -329,25 +304,29 @@ detect_and_load_profile() {
   initbox_load_profile "$PROFILE_ID"
   initbox_validate_profile_for_hardware "$PROFILE_ID"
   DEFAULT_MODULES_LIST="$DEFAULT_MODULES"
+  OPERATIONAL_MODULES_LIST="${OPERATIONAL_MODULES:-}"
 }
 
 print_plan() {
   echo "InitBox unified installer"
   echo "========================"
-  echo "Source root:      $REPO_ROOT"
-  echo "Runtime root:     $RUNTIME_ROOT"
-  echo "Executable dir:   $BIN_DIR"
-  echo "Log root:         $LOG_DIR"
-  echo "Hardware:         $INITBOX_HARDWARE_NAME"
-  echo "Model:            $INITBOX_MODEL_RAW"
-  echo "Profile:          $PROFILE_ID"
-  echo "Hotspot gateway:  $INITBOX_HOTSPOT_GATEWAY/24"
-  echo "Default modules:  $DEFAULT_MODULES_LIST"
+  echo "Source root:         $REPO_ROOT"
+  echo "Runtime root:        $RUNTIME_ROOT"
+  echo "Executable dir:      $BIN_DIR"
+  echo "Log root:            $LOG_DIR"
+  echo "Hardware:            $INITBOX_HARDWARE_NAME"
+  echo "Model:               $INITBOX_MODEL_RAW"
+  echo "Profile:             $PROFILE_ID"
+  echo "Hotspot gateway:     $INITBOX_HOTSPOT_GATEWAY/24"
+  echo "Baseline roster:     $DEFAULT_MODULES_LIST"
+  echo "Operational roster:  ${OPERATIONAL_MODULES_LIST:-none}"
   if [ "$PROFILE_ID" = "pi-full" ]; then
-    echo "Dashboard policy: optional prompt"
+    echo "Dashboard policy:    optional prompt / explicit menu choice"
   else
-    echo "Dashboard policy: disabled"
+    echo "Dashboard policy:    disabled"
   fi
+  echo
+  echo "Installer rule: operational roles are OFF after install. Operator must enable required roles explicitly."
 }
 
 install_file_atomic() {
@@ -380,10 +359,7 @@ copy_directory_contents() {
   local source_dir="$1"
   local target_dir="$2"
 
-  if [ ! -d "$source_dir" ]; then
-    return 1
-  fi
-
+  [ -d "$source_dir" ] || return 1
   install -d -m 0755 "$target_dir"
   rm -rf "${target_dir:?}/"*
   cp -a "$source_dir/." "$target_dir/"
@@ -411,18 +387,16 @@ install_runtime_tree() {
   local module_source=""
   local module_target_dir=""
   local installer_source=""
-  local bootstrap_source=""
 
   log "Installing InitBox runtime tree"
-
   installer_source="$(resolve_installer_source)" || fail "could not resolve installer source"
+
   install_file_atomic "$installer_source" "$BIN_DIR/initbox-installer.sh" 0755
   install_file_atomic "$installer_source" "$RUNTIME_ROOT/scripts/install-initbox.sh" 0644
 
   if [ -f "$REPO_ROOT/scripts/bootstrap-initbox.sh" ]; then
-    bootstrap_source="$REPO_ROOT/scripts/bootstrap-initbox.sh"
-    install_file_atomic "$bootstrap_source" "$BIN_DIR/initbox-bootstrap.sh" 0755
-    install_file_atomic "$bootstrap_source" "$RUNTIME_ROOT/scripts/bootstrap-initbox.sh" 0644
+    install_file_atomic "$REPO_ROOT/scripts/bootstrap-initbox.sh" "$BIN_DIR/initbox-bootstrap.sh" 0755
+    install_file_atomic "$REPO_ROOT/scripts/bootstrap-initbox.sh" "$RUNTIME_ROOT/scripts/bootstrap-initbox.sh" 0644
   fi
 
   install_file_atomic "$REPO_ROOT/scripts/initbox-sync.sh" "$BIN_DIR/initbox-sync.sh" 0755
@@ -432,6 +406,11 @@ install_runtime_tree() {
   if [ -f "$REPO_ROOT/scripts/validate-initbox.sh" ]; then
     install_file_atomic "$REPO_ROOT/scripts/validate-initbox.sh" "$BIN_DIR/initbox-validate.sh" 0755
     install_file_atomic "$REPO_ROOT/scripts/validate-initbox.sh" "$RUNTIME_ROOT/scripts/validate-initbox.sh" 0644
+  fi
+
+  if [ -f "$REPO_ROOT/scripts/apply-initbox-config.sh" ]; then
+    install_file_atomic "$REPO_ROOT/scripts/apply-initbox-config.sh" "$BIN_DIR/initbox-apply-config.sh" 0755
+    install_file_atomic "$REPO_ROOT/scripts/apply-initbox-config.sh" "$RUNTIME_ROOT/scripts/apply-initbox-config.sh" 0644
   fi
 
   install_file_atomic "$REPO_ROOT/scripts/manifest.json" "$RUNTIME_ROOT/manifest.json" 0644
@@ -477,19 +456,62 @@ record_base_state() {
   initbox_state_record_profile "$PROFILE_ID" "$PROFILE_NAME"
 }
 
-reset_runtime_roles_for_install_safety() {
+record_dashboard_request_file() {
+  local requested="$1"
+  local source="${2:-installer}"
+
+  install -d -m 0755 "$(dirname "$DASHBOARD_REQUEST_FILE")"
+  cat >"$DASHBOARD_REQUEST_FILE" <<EOF_REQUEST
+# InitBox dashboard request. Managed by install-initbox.sh / initbox-apply-config.sh.
+DASHBOARD_REQUESTED="${requested}"
+DASHBOARD_REQUEST_SOURCE="${source}"
+DASHBOARD_REQUEST_RECORDED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+EOF_REQUEST
+  chmod 0644 "$DASHBOARD_REQUEST_FILE"
+  chown root:root "$DASHBOARD_REQUEST_FILE" 2>/dev/null || true
+}
+
+select_and_record_dashboard_request() {
+  local decision="no"
+  local source="operator"
+
+  if [ "$PROFILE_ID" != "pi-full" ]; then
+    DASHBOARD_SELECTED="no"
+    initbox_state_record_dashboard_selection "no" "policy"
+    record_dashboard_request_file "no" "policy"
+    return 0
+  fi
+
+  case "$DASHBOARD_POLICY" in
+    yes|no)
+      decision="$DASHBOARD_POLICY"
+      source="operator"
+      ;;
+    prompt)
+      decision="$(ask_yes_no "Install React Dashboard on this Pi-full device" no)"
+      source="operator"
+      ;;
+  esac
+
+  DASHBOARD_SELECTED="$decision"
+  initbox_state_record_dashboard_selection "$decision" "$source"
+  record_dashboard_request_file "$decision" "$source"
+  log "Dashboard request recorded before module installation: $decision"
+}
+
+enforce_management_safe_state() {
   if [ "$PROFILE_ID" != "pi-full" ]; then
     return 0
   fi
 
-  log "Resetting Pi-full runtime roles before module installation to protect the SSH/lab uplink"
-
+  log "Enforcing management-safe runtime state: field roles OFF"
   install -d -m 0755 /etc
   printf 'ROLES=""\n' >/etc/pi_roles.conf
   chmod 0664 /etc/pi_roles.conf 2>/dev/null || true
   chown root:"$OWNER" /etc/pi_roles.conf 2>/dev/null || chown root:root /etc/pi_roles.conf 2>/dev/null || true
 
-  systemctl stop isirunall.service wireshark-autostart.service bridge-check.service >/dev/null 2>&1 || true
+  systemctl stop isirunall.service wireshark-autostart.service fms.service >/dev/null 2>&1 || true
+  systemctl disable isirunall.service wireshark-autostart.service fms.service >/dev/null 2>&1 || true
 
   if [ -x /usr/local/bin/bridge-check.sh ]; then
     /usr/local/bin/bridge-check.sh cleanup >/dev/null 2>&1 || true
@@ -497,23 +519,18 @@ reset_runtime_roles_for_install_safety() {
 
   ip link set eth0 nomaster >/dev/null 2>&1 || true
   ip link set eth1 nomaster >/dev/null 2>&1 || true
-  ip link set eth0 up >/dev/null 2>&1 || true
-  ip link set eth1 up >/dev/null 2>&1 || true
-
   if ip link show br0 >/dev/null 2>&1; then
-    ip addr flush dev br0 >/dev/null 2>&1 || true
     ip link set br0 down >/dev/null 2>&1 || true
     ip link delete br0 type bridge >/dev/null 2>&1 || true
   fi
 
+  rm -f /etc/NetworkManager/conf.d/99-initbox-bridge-unmanaged.conf
   if command -v nmcli >/dev/null 2>&1; then
+    nmcli general reload >/dev/null 2>&1 || true
     nmcli device set eth0 managed yes >/dev/null 2>&1 || true
-    nmcli device set eth1 managed yes >/dev/null 2>&1 || true
-    nmcli device connect eth0 >/dev/null 2>&1 || true
-  fi
-
-  if command -v dhcpcd >/dev/null 2>&1; then
-    dhcpcd -n eth0 >/dev/null 2>&1 || true
+    if ! ip route show default 2>/dev/null | grep -q '^default '; then
+      nmcli device connect eth0 >/dev/null 2>&1 || true
+    fi
   fi
 }
 
@@ -521,12 +538,8 @@ run_first_install_system_upgrade() {
   local decision="no"
 
   case "$SYSTEM_UPGRADE_POLICY" in
-    yes|no)
-      decision="$SYSTEM_UPGRADE_POLICY"
-      ;;
-    prompt)
-      decision="$(ask_yes_no "Run first-install apt-get update and apt-get upgrade in the lab" no)"
-      ;;
+    yes|no) decision="$SYSTEM_UPGRADE_POLICY" ;;
+    prompt) decision="$(ask_yes_no "Run first-install apt-get update and apt-get upgrade in the lab" no)" ;;
   esac
 
   if [ "$decision" != "yes" ]; then
@@ -552,34 +565,18 @@ install_default_modules() {
     return 0
   fi
 
-  log "Installing default modules for profile: $PROFILE_ID"
+  log "Installing management-safe baseline modules for profile: $PROFILE_ID"
   for module_id in $DEFAULT_MODULES_LIST; do
+    case "$PROFILE_ID:$module_id" in
+      pi-full:isi|pi-full:fms|pi-full:sniffer-bridge)
+        fail "unsafe operational module '$module_id' is present in DEFAULT_MODULES; fix profile roster"
+        ;;
+    esac
+
     module_log="$LOG_DIR/module-${module_id}.log"
     log "Installing module: $module_id (log: $module_log)"
     INITBOX_LOG_DIR="$LOG_DIR" LOGFILE="$module_log" "$BIN_DIR/initbox-module-runner.sh" install "$module_id"
   done
-}
-
-select_dashboard() {
-  local decision="no"
-
-  if [ "$PROFILE_ID" != "pi-full" ]; then
-    DASHBOARD_SELECTED="no"
-    initbox_state_record_dashboard_selection "no" "policy"
-    return 0
-  fi
-
-  case "$DASHBOARD_POLICY" in
-    yes|no)
-      decision="$DASHBOARD_POLICY"
-      ;;
-    prompt)
-      decision="$(ask_yes_no "Install React Dashboard on this Pi-full device" no)"
-      ;;
-  esac
-
-  DASHBOARD_SELECTED="$decision"
-  initbox_state_record_dashboard_selection "$decision" "operator"
 }
 
 install_dashboard_if_selected() {
@@ -589,11 +586,9 @@ install_dashboard_if_selected() {
     return 0
   fi
 
-  select_dashboard
-
   if [ "$DASHBOARD_SELECTED" = "yes" ]; then
     module_log="$LOG_DIR/module-dashboard.log"
-    log "Installing optional Dashboard module (log: $module_log)"
+    log "Installing selected Dashboard module (log: $module_log)"
     INITBOX_LOG_DIR="$LOG_DIR" LOGFILE="$module_log" "$BIN_DIR/initbox-module-runner.sh" install dashboard
   else
     log "Dashboard not selected"
@@ -604,12 +599,8 @@ refresh_package_cache_if_selected() {
   local decision="no"
 
   case "$REFRESH_CACHE_POLICY" in
-    yes|no)
-      decision="$REFRESH_CACHE_POLICY"
-      ;;
-    prompt)
-      decision="$(ask_yes_no "Refresh offline package cache for field use" no)"
-      ;;
+    yes|no) decision="$REFRESH_CACHE_POLICY" ;;
+    prompt) decision="$(ask_yes_no "Refresh offline package cache for field use" no)" ;;
   esac
 
   if [ "$decision" != "yes" ]; then
@@ -619,6 +610,22 @@ refresh_package_cache_if_selected() {
 
   log "Refreshing offline package cache for profile: $PROFILE_ID"
   INITBOX_LOG_DIR="$LOG_DIR" "$BIN_DIR/initbox-package-cache.sh" preseed "$PROFILE_ID"
+}
+
+run_apply_config() {
+  if [ ! -x "$BIN_DIR/initbox-apply-config.sh" ]; then
+    warn "Apply-config helper is not installed yet: $BIN_DIR/initbox-apply-config.sh"
+    return 0
+  fi
+
+  echo
+  echo "Applying InitBox convergence"
+  echo "----------------------------"
+  if [ "$DASHBOARD_SELECTED" = "yes" ]; then
+    INITBOX_APPLY_DASHBOARD="yes" "$BIN_DIR/initbox-apply-config.sh" apply || warn "apply-config reported warnings/failures"
+  else
+    "$BIN_DIR/initbox-apply-config.sh" apply || warn "apply-config reported warnings/failures"
+  fi
 }
 
 show_status() {
@@ -640,10 +647,11 @@ show_log_summary() {
   echo
   echo "Logs"
   echo "----"
-  echo "Installer:  $INSTALL_LOG"
-  echo "Modules:    $LOG_DIR/module-<module>.log"
-  echo "Sync:       $LOG_DIR/sync.log"
-  echo "Validator:  $LOG_DIR/validate-latest.log"
+  echo "Installer:     $INSTALL_LOG"
+  echo "Modules:       $LOG_DIR/module-<module>.log"
+  echo "Sync:          $LOG_DIR/sync.log"
+  echo "Apply-config:  $LOG_DIR/apply-config.log"
+  echo "Validator:     $LOG_DIR/validate-latest.log"
 }
 
 run_validation_summary() {
@@ -668,9 +676,12 @@ run_install_flow() {
   run_first_install_system_upgrade
   install_runtime_tree
   record_base_state
-  reset_runtime_roles_for_install_safety
+  select_and_record_dashboard_request
+  enforce_management_safe_state
   install_default_modules
   install_dashboard_if_selected
+  enforce_management_safe_state
+  run_apply_config
   refresh_package_cache_if_selected
   show_service_summary
   show_log_summary
@@ -683,6 +694,7 @@ run_install_flow() {
   echo "  $BIN_DIR/initbox-sync.sh"
   echo "  $BIN_DIR/initbox-module-runner.sh"
   echo "  $BIN_DIR/initbox-package-cache.sh"
+  echo "  $BIN_DIR/initbox-apply-config.sh"
   echo "  $BIN_DIR/initbox-validate.sh"
   echo "  $BIN_DIR/initbox-bootstrap.sh"
 }
@@ -706,10 +718,10 @@ print_menu() {
   echo "Logs:     $LOG_DIR"
   echo
   echo "1) Show install plan"
-  echo "2) Install baseline without Dashboard"
+  echo "2) Install management baseline without Dashboard"
   if [ "$PROFILE_ID" = "pi-full" ]; then
-    echo "3) Install baseline with Dashboard"
-    echo "4) Full lab install: prompt OS upgrade, prompt Dashboard, refresh cache"
+    echo "3) Install management baseline with Dashboard"
+    echo "4) Full lab management install: prompt OS upgrade, prompt Dashboard, refresh cache"
     echo "5) Refresh offline package cache only"
     echo "6) Run validation only"
     echo "7) Show installed state"
@@ -760,7 +772,7 @@ run_menu() {
         ;;
       pi-full:6)
         install_runtime_tree
-        run_validation_summary
+        run_apply_config
         ;;
       pi-full:7)
         show_status
@@ -777,7 +789,7 @@ run_menu() {
         ;;
       pi-zero2w:5)
         install_runtime_tree
-        run_validation_summary
+        run_apply_config
         ;;
       pi-zero2w:6)
         show_status
@@ -808,18 +820,10 @@ main() {
   detect_and_load_profile
 
   case "$ACTION" in
-    plan)
-      print_plan
-      ;;
-    menu)
-      run_menu
-      ;;
-    install)
-      run_install_flow
-      ;;
-    *)
-      fail "unsupported action: $ACTION"
-      ;;
+    plan) print_plan ;;
+    menu) run_menu ;;
+    install) run_install_flow ;;
+    *) fail "unsupported action: $ACTION" ;;
   esac
 }
 
