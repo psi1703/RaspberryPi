@@ -13,11 +13,32 @@
       "component": "sync"
     },
     {
+      "source": "scripts/bootstrap-initbox.sh",
+      "target": "/usr/local/bin/initbox-bootstrap.sh",
+      "mode": "0755",
+      "profiles": ["all"],
+      "component": "bootstrap"
+    },
+    {
+      "source": "scripts/bootstrap-initbox.sh",
+      "target": "/usr/local/share/initbox/scripts/bootstrap-initbox.sh",
+      "mode": "0644",
+      "profiles": ["all"],
+      "component": "bootstrap-source"
+    },
+    {
       "source": "scripts/install-initbox.sh",
       "target": "/usr/local/bin/initbox-installer.sh",
       "mode": "0755",
       "profiles": ["all"],
       "component": "installer"
+    },
+    {
+      "source": "scripts/install-initbox.sh",
+      "target": "/usr/local/share/initbox/scripts/install-initbox.sh",
+      "mode": "0644",
+      "profiles": ["all"],
+      "component": "installer-source"
     },
     {
       "source": "scripts/initbox-sync.sh",
