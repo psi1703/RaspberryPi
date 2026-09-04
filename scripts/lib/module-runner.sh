@@ -4,8 +4,8 @@
 # This wrapper is the compatibility boundary between the unified installer and
 # profile-specific module implementations. It detects the Raspberry Pi model,
 # loads the matching profile, validates the requested module, exports the
-# profile-specific package/cache paths expected by the module, and records the
-# module result in /etc/initbox/install-state.env.
+# profile-specific package/cache paths expected by the module, records module
+# state, and forces module logs into /var/log/initbox.
 #
 # Usage:
 #   sudo scripts/lib/module-runner.sh install MODULE
@@ -25,6 +25,8 @@ HARDWARE_LIB="$REPO_ROOT/scripts/lib/hardware.sh"
 PROFILE_LIB="$REPO_ROOT/scripts/lib/profile.sh"
 MODULES_LIB="$REPO_ROOT/scripts/lib/modules.sh"
 STATE_LIB="$REPO_ROOT/scripts/lib/state.sh"
+
+INITBOX_LOG_DIR="${INITBOX_LOG_DIR:-/var/log/initbox}"
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -69,6 +71,8 @@ Modules:
 
 The Raspberry Pi model is detected automatically. Unsupported modules are
 blocked by the selected hardware profile.
+
+Module logs are written under /var/log/initbox.
 EOF_USAGE
 }
 
@@ -84,6 +88,20 @@ normalize_state_action() {
       return 1
       ;;
   esac
+}
+
+prepare_module_log() {
+  local module_id="$1"
+  local module_log_file=""
+
+  install -d -m 0755 "$INITBOX_LOG_DIR"
+
+  module_log_file="${LOGFILE:-${INITBOX_LOG_DIR}/module-${module_id}.log}"
+  touch "$module_log_file"
+  chmod 0644 "$module_log_file" 2>/dev/null || true
+
+  export INITBOX_LOG_DIR
+  export LOGFILE="$module_log_file"
 }
 
 main() {
@@ -147,11 +165,12 @@ main() {
 
   package_cache_root="${INITBOX_PACKAGE_CACHE_ROOT:-/opt/initbox/packages}"
   apt_cache_dir="${INITBOX_APT_CACHE_DIR:-${package_cache_root}/apt}"
+  prepare_module_log "$MODULE_ID"
 
   # Compatibility environment for the proven profile-specific modules. Older
   # modules accepted these variables while defaulting to the former single
   # scripts/packages.txt layout. The unified runner always supplies the new
-  # profile-specific allow-list and APT cache location.
+  # profile-specific allow-list, APT cache location, and central log path.
   export INITBOX_REPO_ROOT="$REPO_ROOT"
   export INITBOX_PROFILE_ID="$detected_profile_id"
   export INITBOX_PACKAGES_FILE="$packages_file"
@@ -182,6 +201,7 @@ main() {
   printf 'Module:   %s (%s)\n' "$module_name" "$MODULE_ID"
   printf 'Action:   %s\n' "$ACTION"
   printf 'Script:   %s\n' "$module_script"
+  printf 'Log:      %s\n' "$LOGFILE"
   printf '\n'
 
   if bash "$module_script" "$ACTION"; then
