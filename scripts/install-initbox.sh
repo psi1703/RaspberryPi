@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # InitBox unified first-install bootstrapper.
 #
-# The installer is the master roster/orchestrator for a safe management
-# baseline. It installs only management-safe modules by default, records the
-# requested Dashboard state before module installation begins, and leaves all
-# field/runtime roles OFF until an operator explicitly enables them.
+# The installer is the master roster/orchestrator. Pi-full installs the modules
+# needed by the Dashboard, including ISI, sniffer-bridge, and FMS, but it keeps
+# all operational roles and field services inactive until the operator enables
+# them explicitly.
 #
 # Runtime layout:
 #   executables: /usr/local/bin
@@ -74,7 +74,7 @@ Design rules:
   - never runs apt-get dist-upgrade or full-upgrade.
   - no git checkout and no GitHub Actions runner.
   - Dashboard selection is recorded before module installation begins.
-  - Pi-full baseline installs only management-safe modules.
+  - Pi-full installs supported operational modules for Dashboard toggles.
   - ISI, sniffer-bridge, and FMS roles remain OFF until explicitly enabled.
   - all InitBox logs go under /var/log/initbox.
 EOF_USAGE
@@ -318,15 +318,15 @@ print_plan() {
   echo "Model:               $INITBOX_MODEL_RAW"
   echo "Profile:             $PROFILE_ID"
   echo "Hotspot gateway:     $INITBOX_HOTSPOT_GATEWAY/24"
-  echo "Baseline roster:     $DEFAULT_MODULES_LIST"
-  echo "Operational roster:  ${OPERATIONAL_MODULES_LIST:-none}"
+  echo "Install roster:      $DEFAULT_MODULES_LIST"
+  echo "Operational modules: ${OPERATIONAL_MODULES_LIST:-none}"
   if [ "$PROFILE_ID" = "pi-full" ]; then
     echo "Dashboard policy:    optional prompt / explicit menu choice"
   else
     echo "Dashboard policy:    disabled"
   fi
   echo
-  echo "Installer rule: operational roles are OFF after install. Operator must enable required roles explicitly."
+  echo "Installer rule: operational modules may be installed, but operational roles are OFF after install."
 }
 
 install_file_atomic() {
@@ -499,19 +499,19 @@ select_and_record_dashboard_request() {
   log "Dashboard request recorded before module installation: $decision"
 }
 
-enforce_management_safe_state() {
+enforce_operational_roles_off() {
   if [ "$PROFILE_ID" != "pi-full" ]; then
     return 0
   fi
 
-  log "Enforcing management-safe runtime state: field roles OFF"
+  log "Enforcing inactive operational roles: ISI/Sniffer/FMS OFF"
   install -d -m 0755 /etc
   printf 'ROLES=""\n' >/etc/pi_roles.conf
   chmod 0664 /etc/pi_roles.conf 2>/dev/null || true
   chown root:"$OWNER" /etc/pi_roles.conf 2>/dev/null || chown root:root /etc/pi_roles.conf 2>/dev/null || true
 
-  systemctl stop isirunall.service wireshark-autostart.service fms.service >/dev/null 2>&1 || true
-  systemctl disable isirunall.service wireshark-autostart.service fms.service >/dev/null 2>&1 || true
+  systemctl stop isirunall.service wireshark-autostart.service fms.service bridge-check.service >/dev/null 2>&1 || true
+  systemctl disable isirunall.service wireshark-autostart.service fms.service bridge-check.service >/dev/null 2>&1 || true
 
   if [ -x /usr/local/bin/bridge-check.sh ]; then
     /usr/local/bin/bridge-check.sh cleanup >/dev/null 2>&1 || true
@@ -565,17 +565,16 @@ install_default_modules() {
     return 0
   fi
 
-  log "Installing management-safe baseline modules for profile: $PROFILE_ID"
+  log "Installing InitBox module roster for profile: $PROFILE_ID"
   for module_id in $DEFAULT_MODULES_LIST; do
-    case "$PROFILE_ID:$module_id" in
-      pi-full:isi|pi-full:fms|pi-full:sniffer-bridge)
-        fail "unsafe operational module '$module_id' is present in DEFAULT_MODULES; fix profile roster"
-        ;;
-    esac
-
     module_log="$LOG_DIR/module-${module_id}.log"
     log "Installing module: $module_id (log: $module_log)"
     INITBOX_LOG_DIR="$LOG_DIR" LOGFILE="$module_log" "$BIN_DIR/initbox-module-runner.sh" install "$module_id"
+
+    # Some profile modules install systemd units. The installer is the roster
+    # master, so every module install is followed by a safe OFF convergence for
+    # operational roles. Dashboard/role toggles may activate them later.
+    enforce_operational_roles_off
   done
 }
 
@@ -677,10 +676,10 @@ run_install_flow() {
   install_runtime_tree
   record_base_state
   select_and_record_dashboard_request
-  enforce_management_safe_state
+  enforce_operational_roles_off
   install_default_modules
   install_dashboard_if_selected
-  enforce_management_safe_state
+  enforce_operational_roles_off
   run_apply_config
   refresh_package_cache_if_selected
   show_service_summary
@@ -718,10 +717,10 @@ print_menu() {
   echo "Logs:     $LOG_DIR"
   echo
   echo "1) Show install plan"
-  echo "2) Install management baseline without Dashboard"
+  echo "2) Install full module baseline without Dashboard"
   if [ "$PROFILE_ID" = "pi-full" ]; then
-    echo "3) Install management baseline with Dashboard"
-    echo "4) Full lab management install: prompt OS upgrade, prompt Dashboard, refresh cache"
+    echo "3) Install full module baseline with Dashboard"
+    echo "4) Full lab install: prompt OS upgrade, prompt Dashboard, refresh cache"
     echo "5) Refresh offline package cache only"
     echo "6) Run validation only"
     echo "7) Show installed state"
