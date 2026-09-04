@@ -1,16 +1,8 @@
 # InitBox Raspberry Pi Runtime
 
-InitBox is a field appliance runtime for supported Raspberry Pi hardware. This repository now contains one unified codebase for:
+InitBox is a field-appliance runtime for supported Raspberry Pi hardware.
 
-- Raspberry Pi Zero W / Zero 2 W field units
-- Raspberry Pi 3 / 4 / 5 and Compute Module 4 / 5 full units
-- optional React Dashboard on Pi-full hardware only
-- Web Terminal management on all supported profiles
-- offline package-cache based field operation
-
-The repository is the source of truth. Installed devices run from `/usr/local/bin` and `/usr/local/share/initbox`; they do not run from a Git checkout.
-
----
+This repository is the source of truth. Installed devices run from `/usr/local/bin` and `/usr/local/share/initbox`; they do not run from a Git checkout.
 
 ## Supported hardware
 
@@ -24,30 +16,27 @@ The repository is the source of truth. Installed devices run from `/usr/local/bi
 
 Unknown hardware aborts. The installer does not guess.
 
----
-
 ## Runtime layout
 
-Executable commands live under:
+Executables:
 
 ```text
 /usr/local/bin/
 ```
 
-Shared InitBox runtime files live under:
+Shared runtime files:
 
 ```text
 /usr/local/share/initbox/
 ```
 
-Mutable system state, configuration, logs and package cache live outside `/usr/local`:
+Configuration, state, logs, and package cache:
 
 ```text
 /etc/initbox/              persistent InitBox state/configuration
 /run/initbox/              runtime state
-/var/log/initbox/          installer/sync logs
+/var/log/initbox/          all InitBox installer, module, and sync logs
 /opt/initbox/packages/     offline APT package cache
-/home/initbox/pi_logs/     legacy module log compatibility
 ```
 
 Installed command surface:
@@ -76,8 +65,6 @@ Real module bodies are not flattened into `/usr/local/bin`; they stay in the rep
 ```
 
 This preserves proven module path behavior while keeping the operator-facing command surface small.
-
----
 
 ## Repository layout
 
@@ -131,8 +118,6 @@ frontend/
   vite.config.js
 ```
 
----
-
 ## Operating model
 
 ### Development
@@ -168,48 +153,81 @@ In the field:
 
 If the sync tool has no Internet, it leaves the current installation unchanged.
 
----
+## Menu installer
 
-## First install
-
-From the repository root on the Pi:
+Normal use is menu-driven. From the repository root on the Pi:
 
 ```bash
-sudo bash scripts/install-initbox.sh plan
+sudo bash scripts/install-initbox.sh
 ```
 
-Then install without optional OS upgrade, Dashboard, or cache refresh:
+After first install, the same menu is available from:
 
 ```bash
-sudo bash scripts/install-initbox.sh install \
-  --system-upgrade no \
-  --dashboard no \
-  --refresh-cache no
+sudo initbox-installer.sh
 ```
 
-For Pi-full with Dashboard:
+The menu detects hardware and shows options appropriate for the profile.
 
-```bash
-sudo bash scripts/install-initbox.sh install \
-  --system-upgrade no \
-  --dashboard yes \
-  --refresh-cache no
+Pi-full menu includes:
+
+```text
+1) Show install plan
+2) Install baseline without Dashboard
+3) Install baseline with Dashboard
+4) Full lab install: prompt OS upgrade, prompt Dashboard, refresh cache
+5) Refresh offline package cache only
+6) Show installed state
+q) Quit
 ```
 
-For a lab install that also refreshes the offline package cache:
+Pi Zero menu includes no Dashboard option:
 
-```bash
-sudo bash scripts/install-initbox.sh install \
-  --system-upgrade no \
-  --dashboard yes \
-  --refresh-cache yes
+```text
+1) Show install plan
+2) Install baseline without Dashboard
+3) Full Zero field install: prompt OS upgrade, no Dashboard, refresh cache
+4) Refresh offline package cache only
+5) Show installed state
+q) Quit
 ```
 
 The installer detects the hardware, loads the matching profile, installs the runtime tree under `/usr/local/share/initbox`, installs the command surface under `/usr/local/bin`, then calls the unified module runner for selected modules.
 
 The installer does not duplicate the BOX number prompt. The hotspot module owns BOX number handling and writes `/etc/pi-boxno`.
 
----
+Advanced non-menu commands remain available for automation only:
+
+```bash
+sudo bash scripts/install-initbox.sh plan
+sudo bash scripts/install-initbox.sh install --system-upgrade no --dashboard no --refresh-cache no
+sudo bash scripts/install-initbox.sh status
+```
+
+## Logs
+
+All InitBox logs are under:
+
+```text
+/var/log/initbox/
+```
+
+Important files:
+
+```text
+/var/log/initbox/install.log
+/var/log/initbox/sync.log
+/var/log/initbox/module-hotspot.log
+/var/log/initbox/module-web-terminal.log
+/var/log/initbox/module-runtime-control.log
+/var/log/initbox/module-dashboard.log
+/var/log/initbox/module-isi.log
+/var/log/initbox/module-sniffer-bridge.log
+/var/log/initbox/module-fms.log
+/var/log/initbox/module-rtc.log
+```
+
+The module runner exports the log path before launching each module, so proven modules can keep their existing internals while still writing to the central log directory.
 
 ## System package policy
 
@@ -223,7 +241,7 @@ apt-get dist-upgrade
 apt-get full-upgrade
 ```
 
-The top-level installer may optionally run this first-install lab operation only when explicitly selected:
+The top-level installer may optionally run this first-install lab operation only when selected:
 
 ```bash
 apt-get update
@@ -232,25 +250,12 @@ apt-get upgrade
 
 It must never run `dist-upgrade` or `full-upgrade`.
 
----
-
 ## Module installation
 
-Use the unified module runner:
+Use the unified module runner only when manual module work is needed:
 
 ```bash
-sudo initbox-module-runner.sh install hotspot
-sudo initbox-module-runner.sh install web-terminal
-sudo initbox-module-runner.sh install isi
-sudo initbox-module-runner.sh install sniffer-bridge
 sudo initbox-module-runner.sh install fms
-sudo initbox-module-runner.sh install rtc
-sudo initbox-module-runner.sh install dashboard
-```
-
-Uninstall example:
-
-```bash
 sudo initbox-module-runner.sh uninstall fms
 ```
 
@@ -269,84 +274,35 @@ Supported module IDs:
 
 Unsupported modules are blocked by the profile.
 
----
-
 ## Module ownership boundaries
 
 Preserve these boundaries when editing modules.
 
 ### Hotspot
 
-Owns:
-
-- `wlan0` hotspot addressing
-- hostapd
-- dnsmasq
-- hotspot DHCP/DNS
-- `/etc/pi-boxno`
-
-Does not own Dashboard, ttyd, ISI, FMS, sniffer, or RTC behavior.
+Owns `wlan0`, hostapd, dnsmasq, hotspot DHCP/DNS, and `/etc/pi-boxno`.
 
 ### Web Terminal / Portal
 
-Owns:
-
-- ttyd service
-- port-80 captive responder/socket
-- `/usr/local/sbin/initbox-portal-target`
-- terminal/dashboard portal target selection
+Owns ttyd, the port-80 captive responder/socket, `/usr/local/sbin/initbox-portal-target`, and terminal/dashboard portal target selection.
 
 Dashboard must not recreate ttyd or the port-80 portal.
 
 ### Runtime Control
 
-Pi-full only.
-
-Owns:
-
-- `/etc/pi_roles.conf`
-- `/etc/initbox/dashboard-modules.env`
-- `/usr/local/bin/pi-servsync.sh`
-- `/usr/local/bin/pi-rolectl.sh`
-- `pi-servsync.service`
+Pi-full only. Owns `/etc/pi_roles.conf`, `/etc/initbox/dashboard-modules.env`, `/usr/local/bin/pi-servsync.sh`, `/usr/local/bin/pi-rolectl.sh`, and `pi-servsync.service`.
 
 Dashboard must not recreate this logic.
 
 ### Dashboard
 
-Pi-full only and optional.
+Pi-full only and optional. Owns `/usr/local/bin/initbox-dashboard-api.py`, `/usr/local/share/initbox/dashboard/ui/`, `/etc/initbox/dashboard-auth.env`, `initbox-dashboard.service`, `/usr/local/bin/pi-stats.sh`, `/usr/local/bin/initbox-file-transfer.sh`, `DASHBOARD=1`, and switching the shared portal target to `dashboard`.
 
-Owns:
-
-- `/usr/local/bin/initbox-dashboard-api.py`
-- `/usr/local/share/initbox/dashboard/ui/`
-- `/etc/initbox/dashboard-auth.env`
-- `initbox-dashboard.service`
-- `/usr/local/bin/pi-stats.sh`
-- `/usr/local/bin/initbox-file-transfer.sh`
-- `DASHBOARD=1` in `/etc/initbox/dashboard-modules.env`
-- switching the shared portal target to `dashboard`
-
-Does not own:
-
-- ttyd
-- port-80 captive portal/socket
-- runtime-control
-- role files
-- ISI/FMS/sniffer/hotspot/RTC services
-- Node.js, npm, or React build tooling
+Dashboard does not own ttyd, the port-80 captive portal/socket, runtime-control, role files, ISI/FMS/sniffer/hotspot/RTC services, Node.js, npm, or React build tooling.
 
 ### Pi Zero field modules
 
-The Pi Zero profile must remain lightweight:
-
-- no Dashboard
-- no Runtime Control
-- no RTC
-- Web Terminal only for management
-- low CPU/RAM behavior preserved
-
----
+The Pi Zero profile must remain lightweight: no Dashboard, no Runtime Control, no RTC, Web Terminal only for management, and low CPU/RAM behavior preserved.
 
 ## Sync from GitHub in the lab
 
@@ -380,17 +336,7 @@ Show local sync state:
 sudo initbox-sync.sh status
 ```
 
-The sync tool:
-
-- does not use git
-- does not provide rollback
-- downloads and installs only changed runtime artifacts
-- verifies downloaded files by SHA-256
-- replaces files atomically
-- restarts only affected services listed in `scripts/manifest.json`
-- refuses to change the system if GitHub is unreachable
-
----
+The sync tool does not use git, does not provide rollback, downloads and installs only changed runtime artifacts, verifies downloads by SHA-256, replaces files atomically, restarts only affected services listed in `scripts/manifest.json`, and refuses to change the system if GitHub is unreachable.
 
 ## Offline package cache
 
@@ -415,16 +361,7 @@ sudo initbox-package-cache.sh verify pi-zero2w
 sudo initbox-package-cache.sh verify pi-full
 ```
 
-Show cache status:
-
-```bash
-sudo initbox-package-cache.sh status pi-zero2w
-sudo initbox-package-cache.sh status pi-full
-```
-
 Field installs should use the existing cache and fail cleanly if the cache is incomplete.
-
----
 
 ## Validation after install or sync
 
@@ -435,6 +372,7 @@ systemctl --failed --no-pager
 cat /etc/initbox/install-state.env
 ls -la /usr/local/bin/initbox-*
 ls -la /usr/local/share/initbox
+ls -la /var/log/initbox
 ```
 
 For Pi-full with Dashboard:
@@ -472,23 +410,6 @@ can0        no inet, if present
 
 Only `wlan0` should have the management IP on Pi Zero.
 
----
-
-## Dashboard access
-
-Dashboard is optional and Pi-full only.
-
-When installed, the Dashboard API runs on port 8080 and the shared portal target points users to Dashboard:
-
-```text
-http://initbox.wlan/
-http://<hotspot-gateway>/
-```
-
-The Web Terminal remains available through the shared portal/terminal path and ttyd backend. Dashboard installation must not remove Web Terminal.
-
----
-
 ## React frontend policy
 
 The Pi does not build React.
@@ -516,81 +437,10 @@ The manifest syncs only deployable static assets from `frontend/dist` into:
 
 If the frontend is rebuilt and asset filenames change, update `scripts/manifest.json` to match the new `frontend/dist/assets/*` names.
 
----
-
 ## Safe edit rules
 
 The existing module behavior is treated as proven. Do not rewrite module internals unless there is a confirmed defect.
 
-Allowed changes:
+Allowed changes: path integration, installer wiring, manifest updates, logging improvements, confirmed bug fixes, and documentation.
 
-- path integration
-- installer wiring
-- manifest updates
-- logging improvements
-- confirmed bug fixes
-- documentation
-
-Avoid:
-
-- changing network ownership
-- changing DHCP behavior without evidence
-- rewriting bridge/namespace logic casually
-- changing FMS SocketCAN/CAN.trc behavior casually
-- moving ttyd/portal ownership into Dashboard
-- adding Node/npm runtime requirements to the Pi
-- adding GitHub Actions runners to field devices
-
----
-
-## Quick command summary
-
-First install plan:
-
-```bash
-sudo bash scripts/install-initbox.sh plan
-```
-
-First install without optional Dashboard/cache refresh:
-
-```bash
-sudo bash scripts/install-initbox.sh install \
-  --system-upgrade no \
-  --dashboard no \
-  --refresh-cache no
-```
-
-First install with Dashboard on Pi-full:
-
-```bash
-sudo bash scripts/install-initbox.sh install \
-  --system-upgrade no \
-  --dashboard yes \
-  --refresh-cache no
-```
-
-Lab sync:
-
-```bash
-sudo initbox-sync.sh check
-sudo initbox-sync.sh update
-```
-
-Module install:
-
-```bash
-sudo initbox-module-runner.sh install fms
-```
-
-Package cache refresh:
-
-```bash
-sudo initbox-package-cache.sh preseed pi-full
-```
-
-State and service check:
-
-```bash
-cat /etc/initbox/install-state.env
-systemctl --failed --no-pager
-```
+Avoid changing network ownership, DHCP behavior, bridge/namespace logic, FMS SocketCAN/CAN.trc behavior, ttyd/portal ownership, Dashboard ownership boundaries, or adding Node/npm runtime requirements to the Pi.
