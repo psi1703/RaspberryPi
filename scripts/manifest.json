@@ -6,6 +6,7 @@
   "description": "InitBox runtime synchronization manifest. Sync is lab-only and installs only the files applicable to the detected Pi profile.",
   "files": [
     {"source":"scripts/manifest.json","target":"/usr/local/share/initbox/manifest.json","mode":"0644","profiles":["all"],"component":"sync"},
+    {"source":"scripts/manifest.json","target":"/usr/local/share/initbox/scripts/manifest.json","mode":"0644","profiles":["all"],"component":"sync-source"},
     {"source":"scripts/bootstrap-initbox.sh","target":"/usr/local/bin/initbox-bootstrap.sh","mode":"0755","profiles":["all"],"component":"bootstrap"},
     {"source":"scripts/bootstrap-initbox.sh","target":"/usr/local/share/initbox/scripts/bootstrap-initbox.sh","mode":"0644","profiles":["all"],"component":"bootstrap-source"},
     {"source":"scripts/install-initbox.sh","target":"/usr/local/bin/initbox-installer.sh","mode":"0755","profiles":["all"],"component":"installer"},
