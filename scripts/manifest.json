@@ -47,6 +47,7 @@
     {"source":"backend/initbox_dashboard_api.py","target":"/usr/local/bin/initbox-dashboard-api.py","mode":"0755","profiles":["pi-full"],"component":"dashboard-api","restart":["initbox-dashboard.service"]},
     {"source":"frontend/dist/index.html","target":"/usr/local/share/initbox/dashboard/ui/index.html","mode":"0644","profiles":["pi-full"],"component":"dashboard-ui"},
     {"source":"frontend/dist/logo.png","target":"/usr/local/share/initbox/dashboard/ui/logo.png","mode":"0644","profiles":["pi-full"],"component":"dashboard-ui"},
+    {"source":"frontend/dist/assets/initbox-lite.js","target":"/usr/local/share/initbox/dashboard/ui/assets/initbox-lite.js","mode":"0644","profiles":["pi-full"],"component":"dashboard-ui"},
     {"source":"frontend/dist/assets/index-B3HGkxX8.css","target":"/usr/local/share/initbox/dashboard/ui/assets/index-B3HGkxX8.css","mode":"0644","profiles":["pi-full"],"component":"dashboard-ui"},
     {"source":"frontend/dist/assets/index-Cng8s_jj.js","target":"/usr/local/share/initbox/dashboard/ui/assets/index-Cng8s_jj.js","mode":"0644","profiles":["pi-full"],"component":"dashboard-ui"}
   ]
