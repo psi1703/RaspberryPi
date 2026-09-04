@@ -10,7 +10,13 @@
 #   logs:              /var/log/initbox
 #
 # It does not use git. It does not provide rollback. It only replaces files
-# whose GitHub source or local installed content differs.
+# whose GitHub source content differs from the installed target.
+#
+# Important implementation note:
+#   This tool intentionally downloads files from raw.githubusercontent.com and
+#   compares SHA-256 locally. It does not call GitHub's Contents API once per
+#   file, because a check followed by an update can otherwise exhaust the
+#   unauthenticated API rate limit on a fresh Pi.
 
 set -euo pipefail
 
@@ -32,6 +38,11 @@ LOG_FILE="${INITBOX_SYNC_LOG_FILE:-${LOG_DIR}/sync.log}"
 TMP_ROOT=""
 PROFILE_ID=""
 HARDWARE_NAME=""
+PLAN_FILE=""
+UPDATE_FILE=""
+RESTART_FILE=""
+TOTAL_FILES=0
+CHANGED_FILES=0
 
 usage() {
   cat <<'EOF_USAGE'
@@ -39,7 +50,7 @@ Usage:
   initbox-sync.sh [check|update|refresh-cache|status] [options]
 
 Actions:
-  check           Show which files would be updated. This is the default.
+  check           Download tracked source files to a temp dir and show changes.
   update          Download and atomically install changed runtime files.
   refresh-cache   Refresh the offline APT package cache for this Pi profile.
   status          Show local sync state summary.
@@ -58,7 +69,9 @@ Options:
 Notes:
   - This is a lab-only tool. It requires Internet access.
   - It does not run git.
+  - It does not use GitHub Actions runner.
   - It does not run apt-get upgrade.
+  - It avoids GitHub Contents API per-file metadata calls.
   - It only refreshes the package cache when requested.
 EOF_USAGE
 }
@@ -169,6 +182,17 @@ validate_repository() {
   esac
 }
 
+validate_ref_or_path() {
+  local value="$1"
+  local label="$2"
+
+  case "$value" in
+    ""|*".."*|*" "*|*"~"*|*"^"*|*":"*|*"?"*|*"["*|*"\\"*)
+      fail "unsafe ${label}: $value"
+      ;;
+  esac
+}
+
 validate_profile_id() {
   case "$1" in
     pi-zero2w|pi-full)
@@ -217,68 +241,29 @@ detect_profile() {
   esac
 }
 
-internet_check() {
-  log_line "Checking Internet/GitHub access."
-  if ! curl -fsSL --connect-timeout 8 --max-time 20 "https://api.github.com/repos/${REPOSITORY}" >/dev/null; then
-    fail "GitHub is not reachable. InitBox sync is lab-only and requires Internet access."
-  fi
+raw_file_url() {
+  local path="$1"
+  printf 'https://raw.githubusercontent.com/%s/%s/%s\n' "$REPOSITORY" "$BRANCH" "$path"
 }
 
-api_contents_url() {
-  local path="$1"
-  printf 'https://api.github.com/repos/%s/contents/%s?ref=%s\n' "$REPOSITORY" "$path" "$BRANCH"
-}
-
-fetch_metadata() {
-  local path="$1"
-  local out_file="$2"
+download_raw_file() {
+  local source_path="$1"
+  local dest_file="$2"
   local url=""
 
-  url="$(api_contents_url "$path")"
-  if ! curl -fsSL --connect-timeout 8 --max-time 60 \
-    -H 'Accept: application/vnd.github+json' \
-    "$url" -o "$out_file"; then
+  url="$(raw_file_url "$source_path")"
+  if ! curl -fL --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 240 "$url" -o "$dest_file"; then
     return 1
   fi
 }
 
-metadata_field() {
-  local metadata_file="$1"
-  local field_name="$2"
+internet_check() {
+  local probe_file=""
 
-  python3 - "$metadata_file" "$field_name" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], 'r', encoding='utf-8') as handle:
-    data = json.load(handle)
-
-if isinstance(data, list):
-    raise SystemExit(2)
-
-value = data.get(sys.argv[2], '')
-if value is None:
-    value = ''
-print(value)
-PY
-}
-
-download_repo_file() {
-  local source_path="$1"
-  local dest_file="$2"
-  local metadata_file=""
-  local download_url=""
-
-  metadata_file="${TMP_ROOT}/metadata-$(printf '%s' "$source_path" | tr '/ ' '__').json"
-  if ! fetch_metadata "$source_path" "$metadata_file"; then
-    fail "could not read GitHub metadata for: $source_path"
-  fi
-
-  download_url="$(metadata_field "$metadata_file" download_url)"
-  [ -n "$download_url" ] || fail "GitHub metadata did not contain a download URL for: $source_path"
-
-  if ! curl -fL --connect-timeout 8 --max-time 180 "$download_url" -o "$dest_file"; then
-    fail "could not download repository file: $source_path"
+  probe_file="${TMP_ROOT}/internet-probe"
+  log_line "Checking Internet/GitHub raw access."
+  if ! download_raw_file "$MANIFEST_PATH" "$probe_file"; then
+    fail "GitHub raw content is not reachable. InitBox sync is lab-only and requires Internet access."
   fi
 }
 
@@ -287,7 +272,12 @@ fetch_manifest() {
 
   tmp_manifest="${TMP_ROOT}/manifest.json"
   log_line "Fetching manifest: ${REPOSITORY}@${BRANCH}:${MANIFEST_PATH}"
-  download_repo_file "$MANIFEST_PATH" "$tmp_manifest"
+
+  if [ -f "${TMP_ROOT}/internet-probe" ]; then
+    cp "${TMP_ROOT}/internet-probe" "$tmp_manifest"
+  elif ! download_raw_file "$MANIFEST_PATH" "$tmp_manifest"; then
+    fail "could not download manifest: $MANIFEST_PATH"
+  fi
 
   python3 -m json.tool "$tmp_manifest" >/dev/null || fail "manifest is not valid JSON: $MANIFEST_PATH"
   MANIFEST_LOCAL="$tmp_manifest"
@@ -295,7 +285,8 @@ fetch_manifest() {
 
 manifest_repository() {
   python3 - "$MANIFEST_LOCAL" <<'PY'
-import json, sys
+import json
+import sys
 with open(sys.argv[1], 'r', encoding='utf-8') as handle:
     data = json.load(handle)
 print(data.get('repository', ''))
@@ -304,7 +295,8 @@ PY
 
 manifest_branch() {
   python3 - "$MANIFEST_LOCAL" <<'PY'
-import json, sys
+import json
+import sys
 with open(sys.argv[1], 'r', encoding='utf-8') as handle:
     data = json.load(handle)
 print(data.get('branch', ''))
@@ -313,7 +305,8 @@ PY
 
 manifest_runtime_root() {
   python3 - "$MANIFEST_LOCAL" "$RUNTIME_ROOT_DEFAULT" <<'PY'
-import json, sys
+import json
+import sys
 with open(sys.argv[1], 'r', encoding='utf-8') as handle:
     data = json.load(handle)
 print(data.get('runtime_root') or sys.argv[2])
@@ -386,17 +379,17 @@ PY
 state_update() {
   local source_path="$1"
   local target_path="$2"
-  local remote_sha="$3"
+  local source_hash="$3"
   local sha256_value="$4"
 
   install -d -m 0755 "$STATE_DIR"
-  python3 - "$STATE_FILE" "$source_path" "$target_path" "$remote_sha" "$sha256_value" "$REPOSITORY" "$BRANCH" <<'PY'
+  python3 - "$STATE_FILE" "$source_path" "$target_path" "$source_hash" "$sha256_value" "$REPOSITORY" "$BRANCH" <<'PY'
 import datetime
 import json
 import os
 import sys
 
-state_file, source, target, remote_sha, sha256_value, repository, branch = sys.argv[1:8]
+state_file, source, target, source_hash, sha256_value, repository, branch = sys.argv[1:8]
 
 try:
     with open(state_file, 'r', encoding='utf-8') as handle:
@@ -410,7 +403,7 @@ data['branch'] = branch
 data.setdefault('files', {})
 data['files'][source] = {
     'target': target,
-    'source_sha': remote_sha,
+    'source_sha': source_hash,
     'sha256': sha256_value,
     'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
 }
@@ -422,30 +415,6 @@ with open(tmp_file, 'w', encoding='utf-8') as handle:
     handle.write('\n')
 os.replace(tmp_file, state_file)
 PY
-}
-
-metadata_sha_for_source() {
-  local source_path="$1"
-  local metadata_file=""
-
-  metadata_file="${TMP_ROOT}/meta-$(printf '%s' "$source_path" | tr '/ ' '__').json"
-  if ! fetch_metadata "$source_path" "$metadata_file"; then
-    fail "could not fetch GitHub metadata for: $source_path"
-  fi
-  metadata_field "$metadata_file" sha
-}
-
-metadata_download_url_for_source() {
-  local source_path="$1"
-  local metadata_file=""
-
-  metadata_file="${TMP_ROOT}/meta-$(printf '%s' "$source_path" | tr '/ ' '__').json"
-  if [ ! -f "$metadata_file" ]; then
-    if ! fetch_metadata "$source_path" "$metadata_file"; then
-      fail "could not fetch GitHub metadata for: $source_path"
-    fi
-  fi
-  metadata_field "$metadata_file" download_url
 }
 
 install_file_atomic() {
@@ -471,8 +440,7 @@ install_file_atomic() {
 entry_needs_update() {
   local source_path="$1"
   local target_path="$2"
-  local remote_sha="$3"
-  local state_source_sha=""
+  local source_hash="$3"
   local state_sha256=""
   local local_sha256=""
 
@@ -481,22 +449,15 @@ entry_needs_update() {
     return 0
   fi
 
-  state_source_sha="$(state_lookup "$source_path" source_sha)"
-  state_sha256="$(state_lookup "$source_path" sha256)"
   local_sha256="$(sha256_file "$target_path")"
 
-  if [ -z "$state_source_sha" ] || [ -z "$state_sha256" ]; then
-    printf 'untracked\n'
-    return 0
-  fi
-
-  if [ "$local_sha256" != "$state_sha256" ]; then
-    printf 'local-drift\n'
-    return 0
-  fi
-
-  if [ "$remote_sha" != "$state_source_sha" ]; then
-    printf 'source-changed\n'
+  if [ "$local_sha256" != "$source_hash" ]; then
+    state_sha256="$(state_lookup "$source_path" sha256 || true)"
+    if [ -z "$state_sha256" ]; then
+      printf 'content-diff\n'
+    else
+      printf 'source-changed\n'
+    fi
     return 0
   fi
 
@@ -512,6 +473,11 @@ write_plan_files() {
   : >"$RESTART_FILE"
 }
 
+cache_path_for_index() {
+  local index="$1"
+  printf '%s/source-%05d' "$TMP_ROOT" "$index"
+}
+
 collect_plan() {
   local source_path=""
   local target_path=""
@@ -520,8 +486,9 @@ collect_plan() {
   local group=""
   local component=""
   local restart_csv=""
-  local remote_sha=""
+  local source_hash=""
   local reason=""
+  local cached_file=""
   local total=0
   local changed=0
 
@@ -530,19 +497,25 @@ collect_plan() {
   while IFS=$'\t' read -r source_path target_path mode owner group component restart_csv; do
     [ -n "$source_path" ] || continue
     total=$((total + 1))
+    cached_file="$(cache_path_for_index "$total")"
 
-    remote_sha="$(metadata_sha_for_source "$source_path")"
+    log_line "Checking: $source_path"
+    if ! download_raw_file "$source_path" "$cached_file"; then
+      fail "could not download repository file: $source_path"
+    fi
+
+    source_hash="$(sha256_file "$cached_file")"
     reason=""
-    if reason="$(entry_needs_update "$source_path" "$target_path" "$remote_sha")"; then
+    if reason="$(entry_needs_update "$source_path" "$target_path" "$source_hash")"; then
       changed=$((changed + 1))
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$source_path" "$target_path" "$mode" "$owner" "$group" "$component" "$restart_csv" "$remote_sha" "$reason" >>"$UPDATE_FILE"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$source_path" "$target_path" "$mode" "$owner" "$group" "$component" "$restart_csv" "$source_hash" "$reason" "$cached_file" >>"$UPDATE_FILE"
       if [ -n "$restart_csv" ]; then
         printf '%s\n' "$restart_csv" | tr ',' '\n' >>"$RESTART_FILE"
       fi
     fi
 
-    printf '%s\t%s\t%s\n' "$source_path" "$target_path" "$remote_sha" >>"$PLAN_FILE"
+    printf '%s\t%s\t%s\n' "$source_path" "$target_path" "$source_hash" >>"$PLAN_FILE"
   done < <(manifest_entries "$PROFILE_ID")
 
   TOTAL_FILES="$total"
@@ -572,8 +545,9 @@ print_plan_summary() {
   local group=""
   local component=""
   local restart_csv=""
-  local remote_sha=""
+  local source_hash=""
   local reason=""
+  local cached_file=""
   local service=""
 
   echo
@@ -590,7 +564,7 @@ print_plan_summary() {
 
   echo
   echo "Files to update:"
-  while IFS=$'\t' read -r source_path target_path mode owner group component restart_csv remote_sha reason; do
+  while IFS=$'\t' read -r source_path target_path mode owner group component restart_csv source_hash reason cached_file; do
     [ -n "$source_path" ] || continue
     printf '  - %s -> %s (%s)\n' "$source_path" "$target_path" "$reason"
   done <"$UPDATE_FILE"
@@ -634,12 +608,10 @@ apply_updates() {
   local group=""
   local component=""
   local restart_csv=""
-  local remote_sha=""
+  local source_hash=""
   local reason=""
-  local download_url=""
-  local downloaded_file=""
+  local cached_file=""
   local sha256_value=""
-  local count=0
 
   if [ "$CHANGED_FILES" -eq 0 ]; then
     return 0
@@ -651,28 +623,23 @@ apply_updates() {
     return 0
   fi
 
-  while IFS=$'\t' read -r source_path target_path mode owner group component restart_csv remote_sha reason; do
+  while IFS=$'\t' read -r source_path target_path mode owner group component restart_csv source_hash reason cached_file; do
     [ -n "$source_path" ] || continue
-    count=$((count + 1))
-    downloaded_file="${TMP_ROOT}/download-${count}"
+    [ -f "$cached_file" ] || fail "cached download disappeared for: $source_path"
 
-    log_line "Downloading: $source_path"
-    download_url="$(metadata_download_url_for_source "$source_path")"
-    [ -n "$download_url" ] || fail "missing download URL for: $source_path"
-
-    if ! curl -fL --connect-timeout 8 --max-time 240 "$download_url" -o "$downloaded_file"; then
-      fail "download failed: $source_path"
+    sha256_value="$(sha256_file "$cached_file")"
+    if [ "$sha256_value" != "$source_hash" ]; then
+      fail "cached download SHA256 changed unexpectedly: $source_path"
     fi
 
-    sha256_value="$(sha256_file "$downloaded_file")"
     log_line "Installing: $target_path"
-    install_file_atomic "$downloaded_file" "$target_path" "$mode" "$owner" "$group"
+    install_file_atomic "$cached_file" "$target_path" "$mode" "$owner" "$group"
 
     if [ "$(sha256_file "$target_path")" != "$sha256_value" ]; then
       fail "post-install SHA256 verification failed: $target_path"
     fi
 
-    state_update "$source_path" "$target_path" "$remote_sha" "$sha256_value"
+    state_update "$source_path" "$target_path" "$source_hash" "$sha256_value"
     append_log_file "updated source=$source_path target=$target_path sha256=$sha256_value"
   done <"$UPDATE_FILE"
 }
@@ -717,8 +684,6 @@ restart_services() {
 
 refresh_package_cache() {
   local helper=""
-
-  internet_check
 
   helper="/usr/local/share/initbox/scripts/lib/packages.sh"
   if [ ! -f "$helper" ]; then
@@ -774,6 +739,8 @@ PY
 main() {
   parse_args "$@"
   validate_repository
+  validate_ref_or_path "$BRANCH" "branch/ref"
+  validate_ref_or_path "$MANIFEST_PATH" "manifest path"
   need_command curl
   need_command python3
   need_command sha256sum
@@ -789,6 +756,12 @@ main() {
 
   detect_profile
   prepare_runtime_dirs
+
+  if [ "$ACTION" = "refresh-cache" ]; then
+    refresh_package_cache
+    exit 0
+  fi
+
   internet_check
   fetch_manifest
 
@@ -801,12 +774,6 @@ main() {
 
   if [ -n "$local_manifest_branch" ] && [ "$local_manifest_branch" != "$BRANCH" ]; then
     warn_line "manifest branch is '$local_manifest_branch' but sync is using '$BRANCH'"
-  fi
-
-  if [ "$ACTION" = "refresh-cache" ]; then
-    print_header
-    refresh_package_cache
-    exit 0
   fi
 
   print_header
