@@ -1,28 +1,29 @@
 #!/usr/bin/env bash
 # InitBox unified first-install bootstrapper.
 #
-# This script is the lab/first-install entry point. It installs the InitBox
-# runtime layout under /usr/local, then invokes the unified module runner for
-# the modules enabled by the detected hardware profile.
+# This is the lab/first-install entry point. Running it with no arguments opens
+# a menu. Advanced command-line options are retained for automation, but normal
+# technicians should not need to remember long commands with flags.
 #
-# It does not replace module logic. It only wires the proven modules together.
+# Runtime layout:
+#   executables: /usr/local/bin
+#   shared files: /usr/local/share/initbox
+#   logs: /var/log/initbox
 
 set -euo pipefail
 
-ACTION="install"
+ACTION="menu"
 ASSUME_YES="0"
 SYSTEM_UPGRADE_POLICY="prompt"
 DASHBOARD_POLICY="prompt"
 REFRESH_CACHE_POLICY="prompt"
 SKIP_MODULES="0"
-SHOW_PLAN_ONLY="0"
 
 OWNER="${OWNER:-initbox}"
 RUNTIME_ROOT="${INITBOX_RUNTIME_ROOT:-/usr/local/share/initbox}"
 BIN_DIR="${INITBOX_BIN_DIR:-/usr/local/bin}"
 STATE_DIR="${INITBOX_STATE_DIR:-/etc/initbox}"
 LOG_DIR="${INITBOX_LOG_DIR:-/var/log/initbox}"
-LEGACY_LOG_DIR="/home/${OWNER}/pi_logs"
 PACKAGE_CACHE_ROOT="${INITBOX_PACKAGE_CACHE_ROOT:-/opt/initbox/packages}"
 APT_CACHE_DIR="${INITBOX_APT_CACHE_DIR:-${PACKAGE_CACHE_ROOT}/apt}"
 INSTALL_LOG="${INITBOX_INSTALL_LOG:-${LOG_DIR}/install.log}"
@@ -34,17 +35,25 @@ DASHBOARD_SELECTED="no"
 usage() {
   cat <<'EOF_USAGE'
 Usage:
-  sudo scripts/install-initbox.sh [install|plan|status] [options]
+  sudo scripts/install-initbox.sh
+  sudo scripts/install-initbox.sh menu
+  sudo scripts/install-initbox.sh plan
+  sudo scripts/install-initbox.sh status
+  sudo scripts/install-initbox.sh install [advanced options]
+
+Normal use:
+  Run without arguments and use the menu.
 
 Actions:
-  install               Install InitBox runtime files and selected modules.
+  menu                  Guided installer menu. Default when no action is given.
+  install               Advanced non-menu install.
   plan                  Show detected hardware/profile and planned modules only.
   status                Show installed InitBox state if present.
 
-Options:
-  --yes, -y             Accept installer prompts using safe defaults.
+Advanced options for install:
+  --yes, -y             Accept prompts using safe defaults.
   --system-upgrade yes|no|prompt
-                         Offer/run first-install apt-get update + apt-get upgrade.
+                         First-install apt-get update + apt-get upgrade.
                          Default: prompt.
   --dashboard yes|no|prompt
                          Pi-full only. Dashboard is never installed on Zero.
@@ -62,6 +71,7 @@ Design rules:
   - never runs apt-get dist-upgrade or full-upgrade.
   - no git checkout and no GitHub Actions runner.
   - Dashboard is optional on Pi-full and blocked on Pi Zero.
+  - all InitBox logs go under /var/log/initbox.
   - module behavior is preserved; modules are launched through module-runner.
 EOF_USAGE
 }
@@ -108,7 +118,7 @@ validate_yes_no_prompt() {
 parse_args() {
   if [ "$#" -gt 0 ]; then
     case "$1" in
-      install|plan|status)
+      menu|install|plan|status)
         ACTION="$1"
         shift
         ;;
@@ -165,7 +175,7 @@ parse_args() {
   done
 
   case "$ACTION" in
-    install|plan|status)
+    menu|install|plan|status)
       ;;
     *)
       fail "unknown action: $ACTION"
@@ -223,18 +233,26 @@ ask_yes_no() {
   esac
 }
 
+read_menu_choice() {
+  local reply=""
+
+  if [ -e /dev/tty ]; then
+    read -r -p "Select option: " reply </dev/tty || reply=""
+  elif [ -t 0 ]; then
+    read -r -p "Select option: " reply || reply=""
+  else
+    reply="q"
+  fi
+
+  printf '%s\n' "$reply"
+}
+
 prepare_base_dirs() {
   install -d -m 0755 "$RUNTIME_ROOT"
   install -d -m 0755 "$BIN_DIR"
   install -d -m 0755 "$STATE_DIR"
   install -d -m 0755 "$LOG_DIR"
   install -d -m 0755 "$PACKAGE_CACHE_ROOT" "$APT_CACHE_DIR"
-
-  if id "$OWNER" >/dev/null 2>&1; then
-    install -d -m 0755 -o "$OWNER" -g "$OWNER" "$LEGACY_LOG_DIR" 2>/dev/null || install -d -m 0755 "$LEGACY_LOG_DIR"
-  else
-    install -d -m 0755 "$LEGACY_LOG_DIR"
-  fi
 
   touch "$INSTALL_LOG"
   chmod 0644 "$INSTALL_LOG" 2>/dev/null || true
@@ -319,13 +337,14 @@ print_plan() {
   echo "Source root:      $REPO_ROOT"
   echo "Runtime root:     $RUNTIME_ROOT"
   echo "Executable dir:   $BIN_DIR"
+  echo "Log dir:          $LOG_DIR"
   echo "Hardware:         $INITBOX_HARDWARE_NAME"
   echo "Model:            $INITBOX_MODEL_RAW"
   echo "Profile:          $PROFILE_ID"
   echo "Hotspot gateway:  $INITBOX_HOTSPOT_GATEWAY/24"
   echo "Default modules:  $DEFAULT_MODULES_LIST"
   if [ "$PROFILE_ID" = "pi-full" ]; then
-    echo "Dashboard policy: optional prompt"
+    echo "Dashboard policy: optional"
   else
     echo "Dashboard policy: disabled"
   fi
@@ -445,6 +464,7 @@ run_first_install_system_upgrade() {
 
 install_default_modules() {
   local module_id=""
+  local module_log=""
 
   if [ "$SKIP_MODULES" = "1" ]; then
     log "Skipping module installation because --skip-modules was requested"
@@ -453,8 +473,9 @@ install_default_modules() {
 
   log "Installing default modules for profile: $PROFILE_ID"
   for module_id in $DEFAULT_MODULES_LIST; do
-    log "Installing module: $module_id"
-    "$BIN_DIR/initbox-module-runner.sh" install "$module_id"
+    module_log="$LOG_DIR/module-${module_id}.log"
+    log "Installing module: $module_id (log: $module_log)"
+    INITBOX_LOG_DIR="$LOG_DIR" LOGFILE="$module_log" "$BIN_DIR/initbox-module-runner.sh" install "$module_id"
   done
 }
 
@@ -481,6 +502,8 @@ select_dashboard() {
 }
 
 install_dashboard_if_selected() {
+  local module_log=""
+
   if [ "$SKIP_MODULES" = "1" ]; then
     return 0
   fi
@@ -488,8 +511,9 @@ install_dashboard_if_selected() {
   select_dashboard
 
   if [ "$DASHBOARD_SELECTED" = "yes" ]; then
-    log "Installing optional Dashboard module"
-    "$BIN_DIR/initbox-module-runner.sh" install dashboard
+    module_log="$LOG_DIR/module-dashboard.log"
+    log "Installing optional Dashboard module (log: $module_log)"
+    INITBOX_LOG_DIR="$LOG_DIR" LOGFILE="$module_log" "$BIN_DIR/initbox-module-runner.sh" install dashboard
   else
     log "Dashboard not selected"
   fi
@@ -513,7 +537,7 @@ refresh_package_cache_if_selected() {
   fi
 
   log "Refreshing offline package cache for profile: $PROFILE_ID"
-  "$BIN_DIR/initbox-package-cache.sh" preseed "$PROFILE_ID"
+  INITBOX_LOG_DIR="$LOG_DIR" "$BIN_DIR/initbox-package-cache.sh" preseed "$PROFILE_ID"
 }
 
 show_status() {
@@ -531,6 +555,132 @@ show_service_summary() {
   systemctl --failed --no-pager || true
 }
 
+show_log_summary() {
+  echo
+  echo "Logs"
+  echo "----"
+  echo "Installer: $INSTALL_LOG"
+  echo "Modules:   $LOG_DIR/module-<module>.log"
+  echo "Sync:      $LOG_DIR/sync.log"
+}
+
+run_install_flow() {
+  print_plan
+  ensure_owner_user
+  run_first_install_system_upgrade
+  install_runtime_tree
+  record_base_state
+  install_default_modules
+  install_dashboard_if_selected
+  refresh_package_cache_if_selected
+  show_service_summary
+  show_log_summary
+
+  log "InitBox installation complete"
+  echo
+  echo "Installed commands:"
+  echo "  $BIN_DIR/initbox-installer.sh"
+  echo "  $BIN_DIR/initbox-sync.sh"
+  echo "  $BIN_DIR/initbox-module-runner.sh"
+  echo "  $BIN_DIR/initbox-package-cache.sh"
+}
+
+refresh_cache_only() {
+  ensure_owner_user
+  install_runtime_tree
+  record_base_state
+  REFRESH_CACHE_POLICY="yes"
+  refresh_package_cache_if_selected
+  show_log_summary
+}
+
+print_menu() {
+  echo
+  echo "InitBox installer menu"
+  echo "======================"
+  echo "Hardware: $INITBOX_HARDWARE_NAME"
+  echo "Profile:  $PROFILE_ID"
+  echo "Gateway:  $INITBOX_HOTSPOT_GATEWAY/24"
+  echo "Logs:     $LOG_DIR"
+  echo
+  echo "1) Show install plan"
+  echo "2) Install baseline without Dashboard"
+  if [ "$PROFILE_ID" = "pi-full" ]; then
+    echo "3) Install baseline with Dashboard"
+    echo "4) Full lab install: prompt OS upgrade, prompt Dashboard, refresh cache"
+    echo "5) Refresh offline package cache only"
+    echo "6) Show installed state"
+  else
+    echo "3) Full Zero field install: prompt OS upgrade, no Dashboard, refresh cache"
+    echo "4) Refresh offline package cache only"
+    echo "5) Show installed state"
+  fi
+  echo "q) Quit"
+  echo
+}
+
+run_menu() {
+  local choice=""
+
+  while true; do
+    print_menu
+    choice="$(read_menu_choice)"
+
+    case "$PROFILE_ID:$choice" in
+      *:1)
+        print_plan
+        ;;
+      *:2)
+        SYSTEM_UPGRADE_POLICY="prompt"
+        DASHBOARD_POLICY="no"
+        REFRESH_CACHE_POLICY="prompt"
+        run_install_flow
+        return 0
+        ;;
+      pi-full:3)
+        SYSTEM_UPGRADE_POLICY="prompt"
+        DASHBOARD_POLICY="yes"
+        REFRESH_CACHE_POLICY="prompt"
+        run_install_flow
+        return 0
+        ;;
+      pi-full:4)
+        SYSTEM_UPGRADE_POLICY="prompt"
+        DASHBOARD_POLICY="prompt"
+        REFRESH_CACHE_POLICY="yes"
+        run_install_flow
+        return 0
+        ;;
+      pi-full:5)
+        refresh_cache_only
+        ;;
+      pi-full:6)
+        show_status
+        ;;
+      pi-zero2w:3)
+        SYSTEM_UPGRADE_POLICY="prompt"
+        DASHBOARD_POLICY="no"
+        REFRESH_CACHE_POLICY="yes"
+        run_install_flow
+        return 0
+        ;;
+      pi-zero2w:4)
+        refresh_cache_only
+        ;;
+      pi-zero2w:5)
+        show_status
+        ;;
+      *:q|*:Q|*:quit|*:exit)
+        log "Installer menu exited without changes"
+        return 0
+        ;;
+      *)
+        warn "Unknown menu option: $choice"
+        ;;
+    esac
+  done
+}
+
 main() {
   parse_args "$@"
 
@@ -544,28 +694,18 @@ main() {
   find_repo_root
   source_helpers
   detect_and_load_profile
-  print_plan
 
-  if [ "$ACTION" = "plan" ]; then
-    return 0
-  fi
-
-  ensure_owner_user
-  run_first_install_system_upgrade
-  install_runtime_tree
-  record_base_state
-  install_default_modules
-  install_dashboard_if_selected
-  refresh_package_cache_if_selected
-  show_service_summary
-
-  log "InitBox installation complete"
-  echo
-  echo "Installed commands:"
-  echo "  $BIN_DIR/initbox-installer.sh"
-  echo "  $BIN_DIR/initbox-sync.sh"
-  echo "  $BIN_DIR/initbox-module-runner.sh"
-  echo "  $BIN_DIR/initbox-package-cache.sh"
+  case "$ACTION" in
+    plan)
+      print_plan
+      ;;
+    menu)
+      run_menu
+      ;;
+    install)
+      run_install_flow
+      ;;
+  esac
 }
 
 main "$@"
