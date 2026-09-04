@@ -13,6 +13,13 @@
       "component": "sync"
     },
     {
+      "source": "scripts/install-initbox.sh",
+      "target": "/usr/local/bin/initbox-installer.sh",
+      "mode": "0755",
+      "profiles": ["all"],
+      "component": "installer"
+    },
+    {
       "source": "scripts/initbox-sync.sh",
       "target": "/usr/local/bin/initbox-sync.sh",
       "mode": "0755",
@@ -32,62 +39,6 @@
       "mode": "0755",
       "profiles": ["all"],
       "component": "runtime-wrapper"
-    },
-    {
-      "source": "scripts/bin/module-hotspot.sh",
-      "target": "/usr/local/bin/module-hotspot.sh",
-      "mode": "0755",
-      "profiles": ["all"],
-      "component": "module-wrapper"
-    },
-    {
-      "source": "scripts/bin/module-runtime-control.sh",
-      "target": "/usr/local/bin/module-runtime-control.sh",
-      "mode": "0755",
-      "profiles": ["pi-full"],
-      "component": "module-wrapper"
-    },
-    {
-      "source": "scripts/bin/module-ttyd-portal.sh",
-      "target": "/usr/local/bin/module-ttyd-portal.sh",
-      "mode": "0755",
-      "profiles": ["all"],
-      "component": "module-wrapper"
-    },
-    {
-      "source": "scripts/bin/module-dashboard.sh",
-      "target": "/usr/local/bin/module-dashboard.sh",
-      "mode": "0755",
-      "profiles": ["pi-full"],
-      "component": "module-wrapper"
-    },
-    {
-      "source": "scripts/bin/module-isi.sh",
-      "target": "/usr/local/bin/module-isi.sh",
-      "mode": "0755",
-      "profiles": ["all"],
-      "component": "module-wrapper"
-    },
-    {
-      "source": "scripts/bin/module-ws-br0.sh",
-      "target": "/usr/local/bin/module-ws-br0.sh",
-      "mode": "0755",
-      "profiles": ["all"],
-      "component": "module-wrapper"
-    },
-    {
-      "source": "scripts/bin/module-fms.sh",
-      "target": "/usr/local/bin/module-fms.sh",
-      "mode": "0755",
-      "profiles": ["all"],
-      "component": "module-wrapper"
-    },
-    {
-      "source": "scripts/bin/module-rtc.sh",
-      "target": "/usr/local/bin/module-rtc.sh",
-      "mode": "0755",
-      "profiles": ["pi-full"],
-      "component": "module-wrapper"
     },
     {
       "source": "profiles/pi-zero2w.conf",

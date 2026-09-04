@@ -1,0 +1,571 @@
+#!/usr/bin/env bash
+# InitBox unified first-install bootstrapper.
+#
+# This script is the lab/first-install entry point. It installs the InitBox
+# runtime layout under /usr/local, then invokes the unified module runner for
+# the modules enabled by the detected hardware profile.
+#
+# It does not replace module logic. It only wires the proven modules together.
+
+set -euo pipefail
+
+ACTION="install"
+ASSUME_YES="0"
+SYSTEM_UPGRADE_POLICY="prompt"
+DASHBOARD_POLICY="prompt"
+REFRESH_CACHE_POLICY="prompt"
+SKIP_MODULES="0"
+SHOW_PLAN_ONLY="0"
+
+OWNER="${OWNER:-initbox}"
+RUNTIME_ROOT="${INITBOX_RUNTIME_ROOT:-/usr/local/share/initbox}"
+BIN_DIR="${INITBOX_BIN_DIR:-/usr/local/bin}"
+STATE_DIR="${INITBOX_STATE_DIR:-/etc/initbox}"
+LOG_DIR="${INITBOX_LOG_DIR:-/var/log/initbox}"
+LEGACY_LOG_DIR="/home/${OWNER}/pi_logs"
+PACKAGE_CACHE_ROOT="${INITBOX_PACKAGE_CACHE_ROOT:-/opt/initbox/packages}"
+APT_CACHE_DIR="${INITBOX_APT_CACHE_DIR:-${PACKAGE_CACHE_ROOT}/apt}"
+INSTALL_LOG="${INITBOX_INSTALL_LOG:-${LOG_DIR}/install.log}"
+REPO_ROOT=""
+PROFILE_ID=""
+DEFAULT_MODULES_LIST=""
+DASHBOARD_SELECTED="no"
+
+usage() {
+  cat <<'EOF_USAGE'
+Usage:
+  sudo scripts/install-initbox.sh [install|plan|status] [options]
+
+Actions:
+  install               Install InitBox runtime files and selected modules.
+  plan                  Show detected hardware/profile and planned modules only.
+  status                Show installed InitBox state if present.
+
+Options:
+  --yes, -y             Accept installer prompts using safe defaults.
+  --system-upgrade yes|no|prompt
+                         Offer/run first-install apt-get update + apt-get upgrade.
+                         Default: prompt.
+  --dashboard yes|no|prompt
+                         Pi-full only. Dashboard is never installed on Zero.
+                         Default: prompt.
+  --refresh-cache yes|no|prompt
+                         Refresh offline package cache after module install.
+                         Default: prompt.
+  --skip-modules        Install runtime files only; do not install modules.
+  --runtime-root PATH   Runtime root. Default: /usr/local/share/initbox.
+  --repo-root PATH      Source repository root. Auto-detected by default.
+  --help, -h            Show this help.
+
+Design rules:
+  - apt-get only.
+  - never runs apt-get dist-upgrade or full-upgrade.
+  - no git checkout and no GitHub Actions runner.
+  - Dashboard is optional on Pi-full and blocked on Pi Zero.
+  - module behavior is preserved; modules are launched through module-runner.
+EOF_USAGE
+}
+
+log() {
+  printf '[installer] %s\n' "$*"
+  if [ -n "${INSTALL_LOG:-}" ]; then
+    printf '[installer] %s\n' "$*" >>"$INSTALL_LOG" 2>/dev/null || true
+  fi
+}
+
+warn() {
+  printf '[installer] [WARN] %s\n' "$*" >&2
+  if [ -n "${INSTALL_LOG:-}" ]; then
+    printf '[installer] [WARN] %s\n' "$*" >>"$INSTALL_LOG" 2>/dev/null || true
+  fi
+}
+
+fail() {
+  printf '[installer] [ERR] %s\n' "$*" >&2
+  if [ -n "${INSTALL_LOG:-}" ]; then
+    printf '[installer] [ERR] %s\n' "$*" >>"$INSTALL_LOG" 2>/dev/null || true
+  fi
+  exit 1
+}
+
+require_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    fail "this installer must be run as root"
+  fi
+}
+
+validate_yes_no_prompt() {
+  local value="$1"
+  case "$value" in
+    yes|no|prompt)
+      ;;
+    *)
+      fail "expected yes, no, or prompt; got: $value"
+      ;;
+  esac
+}
+
+parse_args() {
+  if [ "$#" -gt 0 ]; then
+    case "$1" in
+      install|plan|status)
+        ACTION="$1"
+        shift
+        ;;
+    esac
+  fi
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --yes|-y)
+        ASSUME_YES="1"
+        shift
+        ;;
+      --system-upgrade)
+        [ "$#" -ge 2 ] || fail "--system-upgrade requires yes, no, or prompt"
+        SYSTEM_UPGRADE_POLICY="$2"
+        validate_yes_no_prompt "$SYSTEM_UPGRADE_POLICY"
+        shift 2
+        ;;
+      --dashboard)
+        [ "$#" -ge 2 ] || fail "--dashboard requires yes, no, or prompt"
+        DASHBOARD_POLICY="$2"
+        validate_yes_no_prompt "$DASHBOARD_POLICY"
+        shift 2
+        ;;
+      --refresh-cache)
+        [ "$#" -ge 2 ] || fail "--refresh-cache requires yes, no, or prompt"
+        REFRESH_CACHE_POLICY="$2"
+        validate_yes_no_prompt "$REFRESH_CACHE_POLICY"
+        shift 2
+        ;;
+      --skip-modules)
+        SKIP_MODULES="1"
+        shift
+        ;;
+      --runtime-root)
+        [ "$#" -ge 2 ] || fail "--runtime-root requires a path"
+        RUNTIME_ROOT="$2"
+        shift 2
+        ;;
+      --repo-root)
+        [ "$#" -ge 2 ] || fail "--repo-root requires a path"
+        REPO_ROOT="$2"
+        shift 2
+        ;;
+      --help|-h|help)
+        usage
+        exit 0
+        ;;
+      *)
+        usage >&2
+        fail "unknown argument: $1"
+        ;;
+    esac
+  done
+
+  case "$ACTION" in
+    install|plan|status)
+      ;;
+    *)
+      fail "unknown action: $ACTION"
+      ;;
+  esac
+
+  if [ "$ASSUME_YES" = "1" ]; then
+    [ "$SYSTEM_UPGRADE_POLICY" = "prompt" ] && SYSTEM_UPGRADE_POLICY="no"
+    [ "$DASHBOARD_POLICY" = "prompt" ] && DASHBOARD_POLICY="no"
+    [ "$REFRESH_CACHE_POLICY" = "prompt" ] && REFRESH_CACHE_POLICY="no"
+  fi
+}
+
+ask_yes_no() {
+  local prompt="$1"
+  local default_answer="$2"
+  local reply=""
+  local suffix=""
+
+  case "$default_answer" in
+    yes)
+      suffix="Y/n"
+      ;;
+    no)
+      suffix="y/N"
+      ;;
+    *)
+      fail "invalid default answer: $default_answer"
+      ;;
+  esac
+
+  if [ "$ASSUME_YES" = "1" ]; then
+    printf '%s\n' "$default_answer"
+    return 0
+  fi
+
+  if [ -e /dev/tty ]; then
+    read -r -p "${prompt} [${suffix}]: " reply </dev/tty || reply=""
+  elif [ -t 0 ]; then
+    read -r -p "${prompt} [${suffix}]: " reply || reply=""
+  else
+    reply=""
+  fi
+
+  case "${reply:-$default_answer}" in
+    y|Y|yes|YES|Yes)
+      printf 'yes\n'
+      ;;
+    n|N|no|NO|No)
+      printf 'no\n'
+      ;;
+    *)
+      printf '%s\n' "$default_answer"
+      ;;
+  esac
+}
+
+prepare_base_dirs() {
+  install -d -m 0755 "$RUNTIME_ROOT"
+  install -d -m 0755 "$BIN_DIR"
+  install -d -m 0755 "$STATE_DIR"
+  install -d -m 0755 "$LOG_DIR"
+  install -d -m 0755 "$PACKAGE_CACHE_ROOT" "$APT_CACHE_DIR"
+
+  if id "$OWNER" >/dev/null 2>&1; then
+    install -d -m 0755 -o "$OWNER" -g "$OWNER" "$LEGACY_LOG_DIR" 2>/dev/null || install -d -m 0755 "$LEGACY_LOG_DIR"
+  else
+    install -d -m 0755 "$LEGACY_LOG_DIR"
+  fi
+
+  touch "$INSTALL_LOG"
+  chmod 0644 "$INSTALL_LOG" 2>/dev/null || true
+}
+
+ensure_owner_user() {
+  if id "$OWNER" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  log "Creating system user: $OWNER"
+  if command -v useradd >/dev/null 2>&1; then
+    useradd --system --create-home --home-dir "/home/${OWNER}" --shell /bin/bash "$OWNER"
+  else
+    fail "useradd is required to create $OWNER"
+  fi
+}
+
+find_repo_root() {
+  local script_path=""
+  local script_dir=""
+  local candidate=""
+
+  if [ -n "$REPO_ROOT" ]; then
+    if [ -f "$REPO_ROOT/scripts/lib/hardware.sh" ]; then
+      return 0
+    fi
+    fail "--repo-root does not look like InitBox repo root: $REPO_ROOT"
+  fi
+
+  if [ -n "${INITBOX_REPO_ROOT:-}" ] && [ -f "${INITBOX_REPO_ROOT}/scripts/lib/hardware.sh" ]; then
+    REPO_ROOT="$INITBOX_REPO_ROOT"
+    return 0
+  fi
+
+  script_path="$(readlink -f "${BASH_SOURCE[0]}")"
+  script_dir="$(cd "$(dirname "$script_path")" && pwd)"
+
+  candidate="$(cd "$script_dir/.." 2>/dev/null && pwd || true)"
+  if [ -n "$candidate" ] && [ -f "$candidate/scripts/lib/hardware.sh" ]; then
+    REPO_ROOT="$candidate"
+    return 0
+  fi
+
+  if [ -f "$RUNTIME_ROOT/scripts/lib/hardware.sh" ]; then
+    REPO_ROOT="$RUNTIME_ROOT"
+    return 0
+  fi
+
+  fail "could not locate InitBox repository/runtime root"
+}
+
+require_file() {
+  local path="$1"
+  [ -f "$path" ] || fail "required file is missing: $path"
+}
+
+source_helpers() {
+  require_file "$REPO_ROOT/scripts/lib/hardware.sh"
+  require_file "$REPO_ROOT/scripts/lib/profile.sh"
+  require_file "$REPO_ROOT/scripts/lib/state.sh"
+
+  # shellcheck source=/dev/null
+  . "$REPO_ROOT/scripts/lib/hardware.sh"
+  # shellcheck source=/dev/null
+  . "$REPO_ROOT/scripts/lib/profile.sh"
+  # shellcheck source=/dev/null
+  . "$REPO_ROOT/scripts/lib/state.sh"
+}
+
+detect_and_load_profile() {
+  initbox_detect_hardware
+  PROFILE_ID="$INITBOX_PROFILE_ID"
+  initbox_load_profile "$PROFILE_ID"
+  initbox_validate_profile_for_hardware "$PROFILE_ID"
+  DEFAULT_MODULES_LIST="$DEFAULT_MODULES"
+}
+
+print_plan() {
+  echo "InitBox unified installer"
+  echo "========================"
+  echo "Source root:      $REPO_ROOT"
+  echo "Runtime root:     $RUNTIME_ROOT"
+  echo "Executable dir:   $BIN_DIR"
+  echo "Hardware:         $INITBOX_HARDWARE_NAME"
+  echo "Model:            $INITBOX_MODEL_RAW"
+  echo "Profile:          $PROFILE_ID"
+  echo "Hotspot gateway:  $INITBOX_HOTSPOT_GATEWAY/24"
+  echo "Default modules:  $DEFAULT_MODULES_LIST"
+  if [ "$PROFILE_ID" = "pi-full" ]; then
+    echo "Dashboard policy: optional prompt"
+  else
+    echo "Dashboard policy: disabled"
+  fi
+}
+
+install_file_atomic() {
+  local source_path="$1"
+  local target_path="$2"
+  local mode="$3"
+  local target_dir=""
+  local temp_path=""
+
+  require_file "$source_path"
+  target_dir="$(dirname "$target_path")"
+  install -d -m 0755 "$target_dir"
+  temp_path="$(mktemp "${target_dir}/.install.XXXXXX")"
+  install -m "$mode" -o root -g root "$source_path" "$temp_path"
+  mv -f "$temp_path" "$target_path"
+}
+
+copy_directory_contents() {
+  local source_dir="$1"
+  local target_dir="$2"
+
+  if [ ! -d "$source_dir" ]; then
+    return 1
+  fi
+
+  install -d -m 0755 "$target_dir"
+  rm -rf "${target_dir:?}/"*
+  cp -a "$source_dir/." "$target_dir/"
+  chown -R root:root "$target_dir" 2>/dev/null || true
+  find "$target_dir" -type d -exec chmod 0755 {} +
+  find "$target_dir" -type f -exec chmod 0644 {} +
+}
+
+install_runtime_tree() {
+  local item=""
+  local module_source=""
+  local module_target_dir=""
+
+  log "Installing InitBox runtime tree"
+
+  install_file_atomic "$REPO_ROOT/scripts/install-initbox.sh" "$BIN_DIR/initbox-installer.sh" 0755
+  install_file_atomic "$REPO_ROOT/scripts/initbox-sync.sh" "$BIN_DIR/initbox-sync.sh" 0755
+  install_file_atomic "$REPO_ROOT/scripts/bin/initbox-module-runner.sh" "$BIN_DIR/initbox-module-runner.sh" 0755
+  install_file_atomic "$REPO_ROOT/scripts/bin/initbox-package-cache.sh" "$BIN_DIR/initbox-package-cache.sh" 0755
+
+  install_file_atomic "$REPO_ROOT/scripts/manifest.json" "$RUNTIME_ROOT/manifest.json" 0644
+
+  install -d -m 0755 "$RUNTIME_ROOT/profiles"
+  install_file_atomic "$REPO_ROOT/profiles/pi-zero2w.conf" "$RUNTIME_ROOT/profiles/pi-zero2w.conf" 0644
+  install_file_atomic "$REPO_ROOT/profiles/pi-full.conf" "$RUNTIME_ROOT/profiles/pi-full.conf" 0644
+
+  install -d -m 0755 "$RUNTIME_ROOT/scripts/lib"
+  for item in hardware.sh profile.sh modules.sh state.sh packages.sh module-runner.sh; do
+    install_file_atomic "$REPO_ROOT/scripts/lib/$item" "$RUNTIME_ROOT/scripts/lib/$item" 0644
+  done
+
+  install -d -m 0755 "$RUNTIME_ROOT/scripts/packages"
+  install_file_atomic "$REPO_ROOT/scripts/packages/pi-zero2w.txt" "$RUNTIME_ROOT/scripts/packages/pi-zero2w.txt" 0644
+  install_file_atomic "$REPO_ROOT/scripts/packages/pi-full.txt" "$RUNTIME_ROOT/scripts/packages/pi-full.txt" 0644
+
+  module_target_dir="$RUNTIME_ROOT/scripts/$PROFILE_ID"
+  install -d -m 0755 "$module_target_dir"
+  for module_source in "$REPO_ROOT/scripts/$PROFILE_ID"/module-*.sh; do
+    [ -f "$module_source" ] || continue
+    install_file_atomic "$module_source" "$module_target_dir/$(basename "$module_source")" 0644
+  done
+
+  if [ "$PROFILE_ID" = "pi-full" ]; then
+    if [ -f "$REPO_ROOT/backend/initbox_dashboard_api.py" ]; then
+      install_file_atomic "$REPO_ROOT/backend/initbox_dashboard_api.py" "$BIN_DIR/initbox-dashboard-api.py" 0755
+    fi
+
+    if [ -d "$REPO_ROOT/frontend/dist" ]; then
+      copy_directory_contents "$REPO_ROOT/frontend/dist" "$RUNTIME_ROOT/dashboard/ui" || true
+    fi
+  fi
+}
+
+record_base_state() {
+  initbox_state_record_hardware \
+    "$INITBOX_HARDWARE_ID" \
+    "$INITBOX_HARDWARE_NAME" \
+    "$INITBOX_MODEL_RAW" \
+    "$INITBOX_HOTSPOT_GATEWAY" \
+    "$INITBOX_DASHBOARD_CAPABLE"
+  initbox_state_record_profile "$PROFILE_ID" "$PROFILE_NAME"
+}
+
+run_first_install_system_upgrade() {
+  local decision="no"
+
+  case "$SYSTEM_UPGRADE_POLICY" in
+    yes|no)
+      decision="$SYSTEM_UPGRADE_POLICY"
+      ;;
+    prompt)
+      decision="$(ask_yes_no "Run first-install apt-get update and apt-get upgrade in the lab" no)"
+      ;;
+  esac
+
+  if [ "$decision" != "yes" ]; then
+    log "Skipping first-install system upgrade"
+    return 0
+  fi
+
+  log "Running apt-get update"
+  apt-get update
+
+  log "Running apt-get upgrade with existing conffiles preserved"
+  DEBIAN_FRONTEND=noninteractive apt-get -y \
+    -o Dpkg::Options::=--force-confold \
+    upgrade
+}
+
+install_default_modules() {
+  local module_id=""
+
+  if [ "$SKIP_MODULES" = "1" ]; then
+    log "Skipping module installation because --skip-modules was requested"
+    return 0
+  fi
+
+  log "Installing default modules for profile: $PROFILE_ID"
+  for module_id in $DEFAULT_MODULES_LIST; do
+    log "Installing module: $module_id"
+    "$BIN_DIR/initbox-module-runner.sh" install "$module_id"
+  done
+}
+
+select_dashboard() {
+  local decision="no"
+
+  if [ "$PROFILE_ID" != "pi-full" ]; then
+    DASHBOARD_SELECTED="no"
+    initbox_state_record_dashboard_selection "no" "policy"
+    return 0
+  fi
+
+  case "$DASHBOARD_POLICY" in
+    yes|no)
+      decision="$DASHBOARD_POLICY"
+      ;;
+    prompt)
+      decision="$(ask_yes_no "Install React Dashboard on this Pi-full device" no)"
+      ;;
+  esac
+
+  DASHBOARD_SELECTED="$decision"
+  initbox_state_record_dashboard_selection "$decision" "operator"
+}
+
+install_dashboard_if_selected() {
+  if [ "$SKIP_MODULES" = "1" ]; then
+    return 0
+  fi
+
+  select_dashboard
+
+  if [ "$DASHBOARD_SELECTED" = "yes" ]; then
+    log "Installing optional Dashboard module"
+    "$BIN_DIR/initbox-module-runner.sh" install dashboard
+  else
+    log "Dashboard not selected"
+  fi
+}
+
+refresh_package_cache_if_selected() {
+  local decision="no"
+
+  case "$REFRESH_CACHE_POLICY" in
+    yes|no)
+      decision="$REFRESH_CACHE_POLICY"
+      ;;
+    prompt)
+      decision="$(ask_yes_no "Refresh offline package cache for field use" no)"
+      ;;
+  esac
+
+  if [ "$decision" != "yes" ]; then
+    log "Skipping package cache refresh"
+    return 0
+  fi
+
+  log "Refreshing offline package cache for profile: $PROFILE_ID"
+  "$BIN_DIR/initbox-package-cache.sh" preseed "$PROFILE_ID"
+}
+
+show_status() {
+  if [ -f "$STATE_DIR/install-state.env" ]; then
+    cat "$STATE_DIR/install-state.env"
+  else
+    echo "No InitBox install state found at $STATE_DIR/install-state.env"
+  fi
+}
+
+show_service_summary() {
+  echo
+  echo "systemctl --failed"
+  echo "------------------"
+  systemctl --failed --no-pager || true
+}
+
+main() {
+  parse_args "$@"
+
+  if [ "$ACTION" = "status" ]; then
+    show_status
+    return 0
+  fi
+
+  require_root
+  prepare_base_dirs
+  find_repo_root
+  source_helpers
+  detect_and_load_profile
+  print_plan
+
+  if [ "$ACTION" = "plan" ]; then
+    return 0
+  fi
+
+  ensure_owner_user
+  run_first_install_system_upgrade
+  install_runtime_tree
+  record_base_state
+  install_default_modules
+  install_dashboard_if_selected
+  refresh_package_cache_if_selected
+  show_service_summary
+
+  log "InitBox installation complete"
+  echo
+  echo "Installed commands:"
+  echo "  $BIN_DIR/initbox-installer.sh"
+  echo "  $BIN_DIR/initbox-sync.sh"
+  echo "  $BIN_DIR/initbox-module-runner.sh"
+  echo "  $BIN_DIR/initbox-package-cache.sh"
+}
+
+main "$@"
