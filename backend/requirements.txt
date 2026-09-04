@@ -1,0 +1,1 @@
+# InitBox React dashboard backend uses only the Python standard library at runtime.
