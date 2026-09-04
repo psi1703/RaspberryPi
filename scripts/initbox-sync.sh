@@ -4,6 +4,7 @@
 # Lab-only sync from GitHub raw content into the installed InitBox runtime.
 # No git checkout, no rollback, no GitHub Actions runner, no apt-get upgrade.
 # Files are compared by SHA-256 and replaced atomically when content differs.
+# After an update, repo-controlled runtime convergence is executed when present.
 
 set -euo pipefail
 
@@ -17,10 +18,12 @@ STATE_FILE="${INITBOX_SYNC_STATE_FILE:-${STATE_DIR}/sync-state.json}"
 LOG_DIR="${INITBOX_SYNC_LOG_DIR:-/var/log/initbox}"
 LOG_FILE="${INITBOX_SYNC_LOG_FILE:-${LOG_DIR}/sync.log}"
 RUNTIME_ROOT_DEFAULT="/usr/local/share/initbox"
+APPLY_CONFIG="${INITBOX_APPLY_CONFIG:-/usr/local/bin/initbox-apply-config.sh}"
 ASSUME_YES="0"
 NO_RESTART="0"
 REFRESH_CACHE="0"
 DRY_RUN="0"
+SKIP_APPLY="${INITBOX_SYNC_SKIP_APPLY:-0}"
 TMP_ROOT=""
 MANIFEST_LOCAL=""
 PROFILE_ID=""
@@ -39,7 +42,8 @@ Usage:
 
 Actions:
   check           Show which runtime files would be updated.
-  update          Download and atomically install changed runtime files.
+  update          Download and atomically install changed runtime files, then
+                  run repo-controlled config convergence if available.
   refresh-cache   Refresh the offline APT package cache for this Pi profile.
   status          Show local sync state summary.
 
@@ -50,9 +54,17 @@ Options:
   --manifest PATH     Manifest path in repository. Default: scripts/manifest.json.
   --yes, -y           Do not prompt before applying updates.
   --no-restart        Do not restart affected services after update.
+  --no-apply          Do not run initbox-apply-config.sh after update.
   --refresh-cache     After update, refresh offline APT package cache.
   --dry-run           For update, show plan but do not install files.
   --help, -h          Show this help.
+
+Notes:
+  - This is a lab-only tool. It requires Internet access.
+  - It does not run git.
+  - It does not use a GitHub Actions runner.
+  - It does not run apt-get upgrade.
+  - It uses raw.githubusercontent.com and avoids per-file GitHub API metadata.
 EOF_USAGE
 }
 
@@ -75,6 +87,7 @@ parse_args() {
       --manifest) [ "$#" -ge 2 ] || fail "--manifest requires a value"; MANIFEST_PATH="$2"; shift 2 ;;
       --yes|-y) ASSUME_YES="1"; shift ;;
       --no-restart) NO_RESTART="1"; shift ;;
+      --no-apply) SKIP_APPLY="1"; shift ;;
       --refresh-cache) REFRESH_CACHE="1"; shift ;;
       --dry-run) DRY_RUN="1"; shift ;;
       --help|-h|help) usage; exit 0 ;;
@@ -87,7 +100,12 @@ validate_input() {
   case "$REPOSITORY" in */*) ;; *) fail "invalid repository '$REPOSITORY'; expected OWNER/REPO" ;; esac
   case "$BRANCH" in ""|*".."*|*" "*|*"~"*|*"^"*|*":"*|*"?"*|*"["*|*"\\"*) fail "unsafe branch/ref: $BRANCH" ;; esac
   case "$MANIFEST_PATH" in ""|*".."*|*" "*|*"~"*|*"^"*|*":"*|*"?"*|*"["*|*"\\"*) fail "unsafe manifest path: $MANIFEST_PATH" ;; esac
-  case "$ACTION" in update|refresh-cache) [ "$(id -u)" -eq 0 ] || fail "action '$ACTION' must be run as root" ;; esac
+
+  case "$ACTION" in
+    update|refresh-cache)
+      [ "$(id -u)" -eq 0 ] || fail "action '$ACTION' must be run as root"
+      ;;
+  esac
 }
 
 prepare_dirs() {
@@ -105,8 +123,15 @@ read_pi_model() {
 
 detect_profile() {
   local model=""
+
   if [ -n "$PROFILE_OVERRIDE" ]; then
-    case "$PROFILE_OVERRIDE" in pi-zero2w|pi-full) PROFILE_ID="$PROFILE_OVERRIDE"; HARDWARE_NAME="manual profile override"; return 0 ;; esac
+    case "$PROFILE_OVERRIDE" in
+      pi-zero2w|pi-full)
+        PROFILE_ID="$PROFILE_OVERRIDE"
+        HARDWARE_NAME="manual profile override"
+        return 0
+        ;;
+    esac
     fail "unsupported profile override: $PROFILE_OVERRIDE"
   fi
 
@@ -405,9 +430,10 @@ apply_updates() {
   local source_hash=""
   local reason=""
   local cached_file=""
-  local installed_hash=""
+  local sha256_value=""
 
   [ "$CHANGED_FILES" -eq 0 ] && return 0
+
   if [ "$DRY_RUN" = "1" ]; then
     echo
     echo "Dry run selected; no files installed."
@@ -416,16 +442,17 @@ apply_updates() {
 
   while IFS="$FIELD_SEP" read -r source_path target_path mode owner group component restart_csv source_hash reason cached_file; do
     [ -n "$source_path" ] || continue
-    [ -n "$cached_file" ] || fail "internal plan error: missing cached file path for: $source_path"
     [ -f "$cached_file" ] || fail "cached download disappeared for: $source_path"
-    [ "$(sha256_file "$cached_file")" = "$source_hash" ] || fail "cached download SHA256 changed unexpectedly: $source_path"
+
+    sha256_value="$(sha256_file "$cached_file")"
+    [ "$sha256_value" = "$source_hash" ] || fail "cached download SHA256 changed unexpectedly: $source_path"
 
     log "Installing: $target_path"
     install_file_atomic "$cached_file" "$target_path" "$mode" "$owner" "$group"
-    installed_hash="$(sha256_file "$target_path")"
-    [ "$installed_hash" = "$source_hash" ] || fail "post-install SHA256 verification failed: $target_path"
-    state_update "$source_path" "$target_path" "$source_hash" "$installed_hash"
-    append_log "updated source=$source_path target=$target_path sha256=$installed_hash"
+    [ "$(sha256_file "$target_path")" = "$sha256_value" ] || fail "post-install SHA256 verification failed: $target_path"
+
+    state_update "$source_path" "$target_path" "$source_hash" "$sha256_value"
+    append_log "updated source=$source_path target=$target_path sha256=$sha256_value"
   done <"$UPDATE_FILE"
 }
 
@@ -433,7 +460,7 @@ restart_services() {
   local service=""
   [ "$NO_RESTART" = "1" ] && { log "Service restart skipped by --no-restart."; return 0; }
   [ -s "$RESTART_FILE" ] || return 0
-  command -v systemctl >/dev/null 2>&1 || { warn "systemctl unavailable; skipping service restarts"; return 0; }
+  command -v systemctl >/dev/null 2>&1 || { warn "systemctl is unavailable; skipping service restarts"; return 0; }
 
   echo
   echo "Restarting affected services"
@@ -442,21 +469,39 @@ restart_services() {
     [ -n "$service" ] || continue
     if systemctl cat "$service" >/dev/null 2>&1; then
       log "Restarting $service"
-      if systemctl restart "$service"; then
-        append_log "restarted service=$service"
-      else
-        warn "failed to restart $service"
-      fi
+      systemctl restart "$service" && append_log "restarted service=$service" || warn "failed to restart $service"
     else
       log "Service not installed; skipping $service"
     fi
   done <"$RESTART_FILE"
 }
 
+run_apply_config() {
+  [ "$ACTION" = "update" ] || return 0
+  [ "$DRY_RUN" = "0" ] || return 0
+  [ "$SKIP_APPLY" = "0" ] || { log "Post-sync config convergence skipped by --no-apply."; return 0; }
+
+  if [ ! -x "$APPLY_CONFIG" ]; then
+    log "Post-sync config convergence not installed yet; skipping: $APPLY_CONFIG"
+    return 0
+  fi
+
+  echo
+  echo "Applying runtime configuration"
+  echo "------------------------------"
+  if INITBOX_LOG_DIR="$LOG_DIR" "$APPLY_CONFIG" --from-sync; then
+    append_log "post-sync apply completed"
+  else
+    warn "post-sync apply reported failures; see /var/log/initbox/apply-config.log and validate-latest.log"
+    append_log "post-sync apply reported failures"
+  fi
+}
+
 refresh_package_cache() {
   local helper="/usr/local/share/initbox/scripts/lib/packages.sh"
   [ -f "$helper" ] || helper="$(pwd)/scripts/lib/packages.sh"
   [ -f "$helper" ] || fail "package helper not found; run update first or provide repository working tree"
+
   echo
   echo "Refreshing offline package cache"
   echo "--------------------------------"
@@ -471,7 +516,10 @@ show_status() {
   echo "==================="
   echo "State file: $STATE_FILE"
   echo
-  [ -f "$STATE_FILE" ] || { echo "No sync state recorded yet."; return 0; }
+  if [ ! -f "$STATE_FILE" ]; then
+    echo "No sync state recorded yet."
+    return 0
+  fi
   python3 - "$STATE_FILE" <<'PY'
 import json, sys
 with open(sys.argv[1], 'r', encoding='utf-8') as f:
@@ -491,14 +539,12 @@ PY
 }
 
 main() {
-  local manifest_repo=""
-  local manifest_branch=""
-
   parse_args "$@"
   validate_input
   need curl
   need python3
   need sha256sum
+
   TMP_ROOT="$(mktemp -d)"
   trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -516,8 +562,9 @@ main() {
   fi
 
   fetch_manifest
-  manifest_repo="$(manifest_value repository)"
-  manifest_branch="$(manifest_value branch)"
+
+  manifest_repo="$(manifest_value repository '')"
+  manifest_branch="$(manifest_value branch '')"
   [ -z "$manifest_repo" ] || [ "$manifest_repo" = "$REPOSITORY" ] || warn "manifest repository is '$manifest_repo' but sync is using '$REPOSITORY'"
   [ -z "$manifest_branch" ] || [ "$manifest_branch" = "$BRANCH" ] || warn "manifest branch is '$manifest_branch' but sync is using '$BRANCH'"
 
@@ -528,12 +575,17 @@ main() {
   if [ "$ACTION" = "check" ]; then
     exit 0
   fi
-  [ "$ACTION" = "update" ] || fail "unsupported action: $ACTION"
 
+  [ "$ACTION" = "update" ] || fail "unsupported action: $ACTION"
   confirm_update
   apply_updates
   restart_services
-  [ "$REFRESH_CACHE" = "1" ] && refresh_package_cache
+  run_apply_config
+
+  if [ "$REFRESH_CACHE" = "1" ]; then
+    refresh_package_cache
+  fi
+
   echo
   echo "Synchronization complete."
 }
