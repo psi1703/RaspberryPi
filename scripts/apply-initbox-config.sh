@@ -3,7 +3,7 @@
 #
 # Repo-controlled post-sync/maintenance step. It applies safe runtime
 # configuration corrections that cannot be fixed by copying files alone.
-# Default apply mode does not enable runtime roles and does not run apt-get.
+# Default apply mode does not enable ISI/sniff/FMS roles and does not run apt-get.
 # Dashboard mode intentionally invokes the Dashboard module when requested.
 
 set -euo pipefail
@@ -48,6 +48,7 @@ What apply does:
   - removes legacy /home/*/pi_logs directories
   - restores Pi-full hotspot dnsmasq captive DNS config if missing/drifted
   - asserts the hotspot IP on wlan0 and waits before validation
+  - keeps lab Ethernet managed while ISI/sniff roles are inactive
   - restarts dnsmasq/hostapd when hotspot DNS or IP state is repaired
   - keeps portal target sane when Dashboard is absent/present
   - removes stale bridge NetworkManager policy when no ISI/sniff role is active
@@ -90,10 +91,7 @@ state_value() {
   local line=""
   local value=""
 
-  if [ ! -r "$STATE_FILE" ]; then
-    return 1
-  fi
-
+  [ -r "$STATE_FILE" ] || return 1
   line="$(grep -m 1 "^${key}=" "$STATE_FILE" 2>/dev/null || true)"
   [ -n "$line" ] || return 1
   value="${line#*=}"
@@ -108,10 +106,7 @@ file_value() {
   local line=""
   local value=""
 
-  if [ ! -r "$file_path" ]; then
-    return 1
-  fi
-
+  [ -r "$file_path" ] || return 1
   line="$(grep -m 1 "^${key}=" "$file_path" 2>/dev/null || true)"
   [ -n "$line" ] || return 1
   value="${line#*=}"
@@ -135,15 +130,9 @@ detect_profile() {
   if [ -z "$PROFILE_ID" ]; then
     model="$(read_pi_model)"
     case "$model" in
-      *"Raspberry Pi Zero 2 W"*|*"Raspberry Pi Zero W"*)
-        PROFILE_ID="pi-zero2w"
-        ;;
-      *"Raspberry Pi 3"*|*"Raspberry Pi 4"*|*"Raspberry Pi 5"*|*"Compute Module 4"*|*"Compute Module 5"*)
-        PROFILE_ID="pi-full"
-        ;;
-      *)
-        fail "could not determine InitBox profile"
-        ;;
+      *"Raspberry Pi Zero 2 W"*|*"Raspberry Pi Zero W"*) PROFILE_ID="pi-zero2w" ;;
+      *"Raspberry Pi 3"*|*"Raspberry Pi 4"*|*"Raspberry Pi 5"*|*"Compute Module 4"*|*"Compute Module 5"*) PROFILE_ID="pi-full" ;;
+      *) fail "could not determine InitBox profile" ;;
     esac
   fi
 
@@ -156,9 +145,7 @@ detect_profile() {
       HOTSPOT_IP="$(state_value HOTSPOT_GATEWAY 2>/dev/null || true)"
       [ -n "$HOTSPOT_IP" ] || HOTSPOT_IP="192.168.20.1"
       ;;
-    *)
-      fail "unsupported InitBox profile: $PROFILE_ID"
-      ;;
+    *) fail "unsupported InitBox profile: $PROFILE_ID" ;;
   esac
 
   HOTSPOT_PREFIX="${HOTSPOT_IP%.*}"
@@ -295,14 +282,26 @@ restart_hotspot_services_if_needed() {
   assert_hotspot_ip
 }
 
-roles_include_bridge_runtime() {
-  if [ ! -r "$ROLE_FILE" ]; then
-    return 1
+active_roles_text() {
+  local role_text=""
+
+  if [ -r "$ROLE_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$ROLE_FILE" || true
+    role_text="${ROLES:-${roles:-}}"
+    role_text="${role_text,,}"
   fi
 
-  if grep -Eq 'isi|sniff|WSBR0=1|ISI=1' "$ROLE_FILE" 2>/dev/null; then
-    return 0
-  fi
+  printf '%s\n' "$role_text"
+}
+
+roles_include_bridge_runtime() {
+  local role_text=""
+
+  role_text="$(active_roles_text)"
+  case " $role_text " in
+    *" isi "*|*" sniff "*|*" wireshark "*|*" sniffer "*|*" sniffer-bridge "*) return 0 ;;
+  esac
 
   return 1
 }
@@ -317,11 +316,43 @@ remove_stale_bridge_policy_if_safe() {
   if [ -f "$nm_bridge_file" ]; then
     log "Removing stale bridge NetworkManager policy while ISI/sniff roles are inactive"
     rm -f "$nm_bridge_file"
-    if command -v nmcli >/dev/null 2>&1; then
-      nmcli general reload >/dev/null 2>&1 || true
-      nmcli device set eth0 managed yes >/dev/null 2>&1 || true
-    fi
     CONFIG_CHANGED="1"
+  fi
+}
+
+restore_lab_uplink_if_safe() {
+  if [ "$PROFILE_ID" != "pi-full" ]; then
+    return 0
+  fi
+
+  if roles_include_bridge_runtime; then
+    log "ISI/sniff role active; lab Ethernet restoration skipped"
+    return 0
+  fi
+
+  log "Ensuring lab Ethernet remains managed while field roles are inactive"
+
+  systemctl stop isirunall.service wireshark-autostart.service fms.service >/dev/null 2>&1 || true
+  systemctl disable isirunall.service wireshark-autostart.service fms.service >/dev/null 2>&1 || true
+
+  ip link set eth0 nomaster >/dev/null 2>&1 || true
+  ip link set eth1 nomaster >/dev/null 2>&1 || true
+
+  if ip link show br0 >/dev/null 2>&1; then
+    log "Removing inactive bridge br0"
+    ip link set br0 down >/dev/null 2>&1 || true
+    ip link delete br0 type bridge >/dev/null 2>&1 || true
+    CONFIG_CHANGED="1"
+  fi
+
+  if command -v nmcli >/dev/null 2>&1; then
+    nmcli general reload >/dev/null 2>&1 || true
+    nmcli device set eth0 managed yes >/dev/null 2>&1 || true
+    if ! ip route show default 2>/dev/null | grep -q '^default '; then
+      log "No default route detected; asking NetworkManager to reconnect eth0"
+      nmcli device connect eth0 >/dev/null 2>&1 || true
+      sleep 3
+    fi
   fi
 }
 
@@ -335,15 +366,11 @@ dashboard_service_is_active() {
 
 dashboard_requested() {
   case "$ACTION" in
-    dashboard|install-dashboard|enable-dashboard)
-      return 0
-      ;;
+    dashboard|install-dashboard|enable-dashboard) return 0 ;;
   esac
 
   case "$INSTALL_DASHBOARD_REQUEST" in
-    1|yes|YES|true|TRUE|dashboard)
-      return 0
-      ;;
+    1|yes|YES|true|TRUE|dashboard) return 0 ;;
   esac
 
   if [ "$(file_value "$DASHBOARD_REQUEST_FILE" DASHBOARD_REQUESTED 2>/dev/null || true)" = "yes" ]; then
@@ -441,6 +468,7 @@ apply_config() {
   assert_hotspot_ip
   restart_hotspot_services_if_needed
   remove_stale_bridge_policy_if_safe
+  restore_lab_uplink_if_safe
   install_dashboard_if_requested
   ensure_portal_target
 
@@ -455,16 +483,9 @@ apply_config() {
 
 main() {
   case "$ACTION" in
-    apply|dashboard|install-dashboard|enable-dashboard|validate)
-      ;;
-    -h|--help|help)
-      usage
-      exit 0
-      ;;
-    *)
-      usage >&2
-      fail "unknown action: $ACTION"
-      ;;
+    apply|dashboard|install-dashboard|enable-dashboard|validate) ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) usage >&2; fail "unknown action: $ACTION" ;;
   esac
 
   require_root
