@@ -429,6 +429,11 @@ install_runtime_tree() {
   install_file_atomic "$REPO_ROOT/scripts/bin/initbox-module-runner.sh" "$BIN_DIR/initbox-module-runner.sh" 0755
   install_file_atomic "$REPO_ROOT/scripts/bin/initbox-package-cache.sh" "$BIN_DIR/initbox-package-cache.sh" 0755
 
+  if [ -f "$REPO_ROOT/scripts/validate-initbox.sh" ]; then
+    install_file_atomic "$REPO_ROOT/scripts/validate-initbox.sh" "$BIN_DIR/initbox-validate.sh" 0755
+    install_file_atomic "$REPO_ROOT/scripts/validate-initbox.sh" "$RUNTIME_ROOT/scripts/validate-initbox.sh" 0644
+  fi
+
   install_file_atomic "$REPO_ROOT/scripts/manifest.json" "$RUNTIME_ROOT/manifest.json" 0644
 
   install -d -m 0755 "$RUNTIME_ROOT/profiles"
@@ -635,9 +640,26 @@ show_log_summary() {
   echo
   echo "Logs"
   echo "----"
-  echo "Installer: $INSTALL_LOG"
-  echo "Modules:   $LOG_DIR/module-<module>.log"
-  echo "Sync:      $LOG_DIR/sync.log"
+  echo "Installer:  $INSTALL_LOG"
+  echo "Modules:    $LOG_DIR/module-<module>.log"
+  echo "Sync:       $LOG_DIR/sync.log"
+  echo "Validator:  $LOG_DIR/validate-latest.log"
+}
+
+run_validation_summary() {
+  if [ ! -x "$BIN_DIR/initbox-validate.sh" ]; then
+    warn "Validator is not installed yet: $BIN_DIR/initbox-validate.sh"
+    return 0
+  fi
+
+  echo
+  echo "Running InitBox validation"
+  echo "--------------------------"
+  if "$BIN_DIR/initbox-validate.sh"; then
+    log "InitBox validation completed without failures"
+  else
+    warn "InitBox validation reported failures. See $LOG_DIR/validate-latest.log"
+  fi
 }
 
 run_install_flow() {
@@ -652,6 +674,7 @@ run_install_flow() {
   refresh_package_cache_if_selected
   show_service_summary
   show_log_summary
+  run_validation_summary
 
   log "InitBox installation complete"
   echo
@@ -660,6 +683,7 @@ run_install_flow() {
   echo "  $BIN_DIR/initbox-sync.sh"
   echo "  $BIN_DIR/initbox-module-runner.sh"
   echo "  $BIN_DIR/initbox-package-cache.sh"
+  echo "  $BIN_DIR/initbox-validate.sh"
   echo "  $BIN_DIR/initbox-bootstrap.sh"
 }
 
@@ -687,11 +711,13 @@ print_menu() {
     echo "3) Install baseline with Dashboard"
     echo "4) Full lab install: prompt OS upgrade, prompt Dashboard, refresh cache"
     echo "5) Refresh offline package cache only"
-    echo "6) Show installed state"
+    echo "6) Run validation only"
+    echo "7) Show installed state"
   else
     echo "3) Full Zero install: prompt OS upgrade, no Dashboard, refresh cache"
     echo "4) Refresh offline package cache only"
-    echo "5) Show installed state"
+    echo "5) Run validation only"
+    echo "6) Show installed state"
   fi
   echo "q) Quit"
   echo
@@ -733,6 +759,10 @@ run_menu() {
         refresh_cache_only
         ;;
       pi-full:6)
+        install_runtime_tree
+        run_validation_summary
+        ;;
+      pi-full:7)
         show_status
         ;;
       pi-zero2w:3)
@@ -746,6 +776,10 @@ run_menu() {
         refresh_cache_only
         ;;
       pi-zero2w:5)
+        install_runtime_tree
+        run_validation_summary
+        ;;
+      pi-zero2w:6)
         show_status
         ;;
       *:q|*:Q|*:quit|*:exit)
