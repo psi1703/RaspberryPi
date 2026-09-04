@@ -307,12 +307,12 @@ fi
 
 if [ "$want_isi" -eq 1 ] || [ "$want_sniff" -eq 1 ]; then
   [ "$arm_from_roles" -eq 1 ] && bridge_runtime_start
+  start_enable "$SVC_BRIDGE"
+  sleep 1
 else
   bridge_runtime_stop
+  stop_disable "$SVC_BRIDGE"
 fi
-
-start_enable "$SVC_BRIDGE"
-sleep 1
 
 if bridge_runtime_is_armed && [ "$want_sniff" -eq 1 ]; then
   start_enable "$SVC_SNIFF"
