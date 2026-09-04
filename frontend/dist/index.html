@@ -4,135 +4,167 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>InitBox Dashboard</title>
-    <script type="module" crossorigin src="/assets/index-Cng8s_jj.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-B3HGkxX8.css">
     <style>
-      .system-card {
-        overflow: visible !important;
+      :root {
+        color-scheme: dark;
+        --bg: #08111f;
+        --panel: #0f1b2d;
+        --panel2: #0b1525;
+        --line: #22324a;
+        --text: #eef5ff;
+        --muted: #93a4bd;
+        --blue: #2f6fed;
+        --blue2: #1d4ed8;
+        --green: #059669;
+        --green-bg: #063d31;
+        --red: #ef4444;
+        --red-bg: #4c1111;
+        --neutral: #2a3446;
+        --shadow: 0 14px 32px rgba(0, 0, 0, 0.22);
       }
 
-      .system-card .system-row {
-        display: grid !important;
-        grid-template-columns: 1fr !important;
-        gap: 10px !important;
-        width: 100% !important;
-        min-width: 0 !important;
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        background: radial-gradient(circle at top left, rgba(47, 111, 237, 0.14), transparent 32rem), var(--bg);
+        color: var(--text);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+        font-size: 14px;
       }
 
-      .system-card .metric-grid,
-      .system-card .metric-grid.dense {
-        display: grid !important;
-        grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)) !important;
-        gap: 8px !important;
-        width: 100% !important;
-        max-width: 100% !important;
-      }
+      h1, h2, p { margin-top: 0; }
+      h1 { font-size: clamp(1.45rem, 2vw, 2rem); margin: 0; }
+      h2 { font-size: 1.02rem; margin: 0; }
+      p { color: var(--muted); margin-bottom: 0; }
 
-      .system-card .info-grid,
-      .system-card .initbox-system-extra {
-        display: grid !important;
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)) !important;
-        gap: 8px !important;
-        width: 100% !important;
-        max-width: 100% !important;
-        margin-top: 8px !important;
-      }
-
-      .system-card .metric-grid > div,
-      .system-card .info-grid > div,
-      .system-card .initbox-system-extra > div {
-        min-width: 0 !important;
-        width: auto !important;
-        background: #0b1525;
-        border: 1px solid var(--line, #22324a);
-        border-radius: 14px;
-        min-height: 60px;
-        padding: 10px 11px;
-      }
-
-      .system-card .metric-grid span,
-      .system-card .info-grid span,
-      .system-card .initbox-system-extra span {
-        display: block;
-        color: var(--muted, #93a4bd);
-        font-size: 0.74rem;
-        line-height: 1.05;
-        margin-bottom: 6px;
-        white-space: nowrap;
-      }
-
-      .system-card .metric-grid strong,
-      .system-card .info-grid strong,
-      .system-card .initbox-system-extra strong {
-        display: block;
-        color: var(--text, #eef5ff);
-        font-size: 0.84rem;
+      button, .button {
+        border: 0;
+        border-radius: 10px;
+        background: var(--blue);
+        color: #fff;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 34px;
+        padding: 7px 12px;
         font-weight: 800;
-        line-height: 1.18;
-        overflow-wrap: anywhere;
-        white-space: normal;
+        text-decoration: none;
       }
+
+      button:hover, .button:hover { background: var(--blue2); }
+      button:disabled { cursor: not-allowed; opacity: 0.55; }
+      .secondary { background: #1d2a3e; border: 1px solid var(--line); }
+      .secondary:hover { background: #263853; }
+      .danger { background: #b42318; border: 1px solid #d92d20; }
+      .danger:hover { background: #d92d20; }
+
+      .topbar {
+        min-height: 72px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 12px 18px;
+        background: rgba(15, 27, 45, 0.86);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .brand { display: flex; align-items: center; gap: 12px; }
+      .brand img { width: 70px; height: 48px; object-fit: contain; background: #fff; border-radius: 4px; }
+      .brand p { margin-top: 3px; font-size: 0.82rem; }
+      .header-actions { display: flex; gap: 8px; align-items: center; }
+
+      .dashboard { padding: 14px; display: grid; gap: 14px; }
+      .card {
+        background: rgba(15, 27, 45, 0.92);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 14px;
+        box-shadow: var(--shadow);
+        min-width: 0;
+      }
+
+      .wide { grid-column: 1 / -1; }
+      .summary-grid { display: grid; grid-template-columns: minmax(360px, 0.48fr) minmax(620px, 1fr); gap: 14px; align-items: start; }
+      .card-head, .card-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+      .subtle, .muted { color: var(--muted); font-size: 0.82rem; font-weight: 700; }
+
+      .role-list { display: grid; grid-template-columns: repeat(3, minmax(105px, 1fr)); gap: 8px; }
+      .role-toggle {
+        min-height: 46px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--panel2);
+        color: var(--text);
+        padding: 8px 9px;
+        text-align: left;
+      }
+      .role-toggle:hover { background: #13243a; }
+      .role-toggle.on { border-color: rgba(5, 150, 105, 0.8); background: rgba(5, 150, 105, 0.14); }
+      .role-text strong { display: block; font-size: 0.9rem; line-height: 1.05; }
+      .role-text small { display: block; margin-top: 3px; color: var(--muted); font-size: 0.68rem; font-weight: 800; line-height: 1.1; }
+      .switch { width: 38px; height: 22px; border-radius: 999px; padding: 3px; background: #344155; flex: 0 0 auto; }
+      .switch span { display: block; width: 16px; height: 16px; border-radius: 999px; background: #fff; transition: transform 120ms ease; }
+      .role-toggle.on .switch { background: var(--green); }
+      .role-toggle.on .switch span { transform: translateX(16px); }
+
+      .metric-grid, .info-grid { display: grid; gap: 8px; }
+      .metric-grid { grid-template-columns: repeat(4, minmax(90px, 1fr)); margin-bottom: 8px; }
+      .info-grid { grid-template-columns: repeat(7, minmax(105px, 1fr)); }
+      .tile { min-width: 0; min-height: 56px; background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; padding: 9px 10px; }
+      .tile span { display: block; color: var(--muted); font-size: 0.72rem; font-weight: 800; margin-bottom: 6px; white-space: nowrap; }
+      .tile strong { display: block; color: var(--text); font-size: 0.84rem; line-height: 1.18; font-weight: 900; overflow-wrap: anywhere; }
+      .metric-grid .tile strong { font-size: 1.08rem; }
+
+      .ops-grid { display: grid; grid-template-columns: minmax(430px, 0.95fr) minmax(420px, 1.05fr); gap: 12px; align-items: stretch; }
+      .services-list, .logs-panel, .file-list { background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+      .service-row { width: 100%; min-height: 39px; display: grid; grid-template-columns: 94px minmax(170px, 1fr) auto; gap: 9px; align-items: center; border-radius: 0; border-bottom: 1px solid var(--line); background: transparent; padding: 7px 9px; text-align: left; }
+      .service-row:last-child { border-bottom: 0; }
+      .service-row:hover, .service-row.selected { background: #13243a; }
+      .service-name { font-weight: 900; color: var(--text); }
+      .service-unit { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pill-group { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }
+      .pill { border-radius: 999px; padding: 3px 7px; font-size: 0.72rem; font-weight: 900; background: var(--neutral); color: #dbeafe; }
+      .pill.ok { background: var(--green-bg); color: #a7f3d0; }
+      .pill.off { background: var(--red-bg); color: #fecaca; }
+      .logs-title { min-height: 36px; padding: 9px 11px; border-bottom: 1px solid var(--line); color: var(--muted); font-weight: 900; }
+      pre { margin: 0; height: 235px; overflow: auto; white-space: pre-wrap; padding: 11px; color: #dbeafe; font-size: 0.78rem; line-height: 1.35; }
+
+      .utility-grid { display: grid; grid-template-columns: 300px 250px minmax(520px, 1fr); gap: 14px; align-items: start; }
+      .utility-card { display: grid; gap: 10px; align-content: start; }
+      .utility-card code { display: block; background: #020817; border: 1px solid var(--line); border-radius: 10px; color: #dbeafe; padding: 7px 9px; overflow-wrap: anywhere; font-size: 0.76rem; }
+      .button-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .upload-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 9px; background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 10px; }
+      .upload-row input { color: var(--muted); max-width: 230px; }
+      .upload-row span { color: var(--muted); font-size: 0.82rem; font-weight: 800; }
+      .file-row { display: grid; grid-template-columns: minmax(180px, 1fr) 80px 110px; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+      .file-row:last-child { border-bottom: 0; }
+      .file-row span { font-weight: 800; overflow-wrap: anywhere; }
+      .file-row small { color: var(--muted); font-weight: 800; }
+
+      .error, .notice { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 11px; border-radius: 12px; border: 1px solid rgba(239, 68, 68, 0.35); background: var(--red-bg); color: #fecaca; }
+      .notice { border-color: rgba(47, 111, 237, 0.35); background: #0b2545; color: #dbeafe; }
+      .login-page { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+      .login-card { width: min(420px, 100%); background: rgba(15, 27, 45, 0.94); border: 1px solid var(--line); border-radius: 22px; padding: 26px; box-shadow: var(--shadow); }
+      .login-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+      .login-brand img { width: 76px; height: 52px; object-fit: contain; background: #fff; border-radius: 4px; }
+      .login-card form { display: grid; gap: 13px; }
+      .login-card label { display: grid; gap: 6px; color: var(--muted); font-weight: 800; }
+      .login-card input { min-height: 40px; border: 1px solid var(--line); border-radius: 10px; background: #07101e; color: var(--text); padding: 9px 11px; }
+
+      @media (max-width: 1450px) { .info-grid { grid-template-columns: repeat(4, minmax(130px, 1fr)); } .utility-grid { grid-template-columns: 300px minmax(320px, 1fr); } .files-card { grid-column: 1 / -1; } }
+      @media (max-width: 1080px) { .summary-grid, .ops-grid, .utility-grid { grid-template-columns: 1fr; } .role-list { grid-template-columns: 1fr; } .info-grid, .metric-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); } }
+      @media (max-width: 620px) { .topbar { align-items: flex-start; flex-direction: column; } .dashboard { padding: 10px; } .service-row, .file-row { grid-template-columns: 1fr; } .pill-group { justify-content: flex-start; } }
     </style>
+    <script defer src="/assets/initbox-lite.js?v=20260904b"></script>
   </head>
   <body>
-    <div id="root"></div>
-    <script>
-      (function () {
-        function formatUptime(seconds) {
-          var value = Number(seconds || 0);
-          if (!Number.isFinite(value) || value <= 0) return '-';
-          var days = Math.floor(value / 86400);
-          var hours = Math.floor((value % 86400) / 3600);
-          var minutes = Math.floor((value % 3600) / 60);
-          if (days > 0) return days + 'd ' + hours + 'h';
-          if (hours > 0) return hours + 'h ' + minutes + 'm';
-          return minutes + 'm';
-        }
-
-        function put(panel, label, value) {
-          var tile = document.createElement('div');
-          var labelNode = document.createElement('span');
-          var valueNode = document.createElement('strong');
-          labelNode.textContent = label;
-          valueNode.textContent = value || '-';
-          tile.appendChild(labelNode);
-          tile.appendChild(valueNode);
-          panel.appendChild(tile);
-        }
-
-        async function refreshSystemIdentity() {
-          try {
-            var response = await fetch('/api/status', { credentials: 'same-origin' });
-            if (!response.ok) return;
-            var status = await response.json();
-            var stats = status.stats || {};
-            var card = document.querySelector('.system-card');
-            if (!card) return;
-
-            var panel = card.querySelector('.initbox-system-extra');
-            if (!panel) {
-              panel = document.createElement('div');
-              panel.className = 'initbox-system-extra';
-              card.appendChild(panel);
-            }
-
-            panel.textContent = '';
-            put(panel, 'Hostname', stats.hostname || status.hostname || '-');
-            put(panel, 'IP address', stats.ip || '-');
-            put(panel, 'OS', stats.os || '-');
-            put(panel, 'Model', stats.model || '-');
-            put(panel, 'Serial', stats.serial || '-');
-            put(panel, 'Time', stats.time || '-');
-            put(panel, 'Uptime', formatUptime(stats.uptime_s));
-          } catch (err) {
-            // Dashboard identity panel is best-effort; the main React app remains authoritative.
-          }
-        }
-
-        window.setInterval(refreshSystemIdentity, 5000);
-        window.setTimeout(refreshSystemIdentity, 500);
-        window.setTimeout(refreshSystemIdentity, 1500);
-      })();
-    </script>
+    <div id="root"><main class="login-page"><section class="login-card"><h1>Loading InitBox Dashboard...</h1></section></main></div>
   </body>
 </html>
