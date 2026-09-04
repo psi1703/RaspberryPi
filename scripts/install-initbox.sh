@@ -106,6 +106,7 @@ require_root() {
 
 validate_yes_no_prompt() {
   local value="$1"
+
   case "$value" in
     yes|no|prompt)
       ;;
@@ -234,17 +235,17 @@ ask_yes_no() {
 }
 
 read_menu_choice() {
-  local reply=""
+  local choice=""
 
   if [ -e /dev/tty ]; then
-    read -r -p "Select option: " reply </dev/tty || reply=""
+    read -r -p "Select option: " choice </dev/tty || choice="q"
   elif [ -t 0 ]; then
-    read -r -p "Select option: " reply || reply=""
+    read -r -p "Select option: " choice || choice="q"
   else
-    reply="q"
+    choice="q"
   fi
 
-  printf '%s\n' "$reply"
+  printf '%s\n' "$choice"
 }
 
 prepare_base_dirs() {
@@ -253,7 +254,6 @@ prepare_base_dirs() {
   install -d -m 0755 "$STATE_DIR"
   install -d -m 0755 "$LOG_DIR"
   install -d -m 0755 "$PACKAGE_CACHE_ROOT" "$APT_CACHE_DIR"
-
   touch "$INSTALL_LOG"
   chmod 0644 "$INSTALL_LOG" 2>/dev/null || true
 }
@@ -337,14 +337,14 @@ print_plan() {
   echo "Source root:      $REPO_ROOT"
   echo "Runtime root:     $RUNTIME_ROOT"
   echo "Executable dir:   $BIN_DIR"
-  echo "Log dir:          $LOG_DIR"
+  echo "Log root:         $LOG_DIR"
   echo "Hardware:         $INITBOX_HARDWARE_NAME"
   echo "Model:            $INITBOX_MODEL_RAW"
   echo "Profile:          $PROFILE_ID"
   echo "Hotspot gateway:  $INITBOX_HOTSPOT_GATEWAY/24"
   echo "Default modules:  $DEFAULT_MODULES_LIST"
   if [ "$PROFILE_ID" = "pi-full" ]; then
-    echo "Dashboard policy: optional"
+    echo "Dashboard policy: optional prompt"
   else
     echo "Dashboard policy: disabled"
   fi
@@ -356,10 +356,21 @@ install_file_atomic() {
   local mode="$3"
   local target_dir=""
   local temp_path=""
+  local source_real=""
+  local target_real=""
 
   require_file "$source_path"
   target_dir="$(dirname "$target_path")"
   install -d -m 0755 "$target_dir"
+
+  source_real="$(readlink -f "$source_path")"
+  target_real="$(readlink -m "$target_path")"
+  if [ "$source_real" = "$target_real" ]; then
+    chmod "$mode" "$target_path"
+    chown root:root "$target_path" 2>/dev/null || true
+    return 0
+  fi
+
   temp_path="$(mktemp "${target_dir}/.install.XXXXXX")"
   install -m "$mode" -o root -g root "$source_path" "$temp_path"
   mv -f "$temp_path" "$target_path"
@@ -381,14 +392,39 @@ copy_directory_contents() {
   find "$target_dir" -type f -exec chmod 0644 {} +
 }
 
+resolve_installer_source() {
+  if [ -f "$REPO_ROOT/scripts/install-initbox.sh" ]; then
+    printf '%s\n' "$REPO_ROOT/scripts/install-initbox.sh"
+    return 0
+  fi
+
+  if [ -f "${BASH_SOURCE[0]}" ]; then
+    readlink -f "${BASH_SOURCE[0]}"
+    return 0
+  fi
+
+  return 1
+}
+
 install_runtime_tree() {
   local item=""
   local module_source=""
   local module_target_dir=""
+  local installer_source=""
+  local bootstrap_source=""
 
   log "Installing InitBox runtime tree"
 
-  install_file_atomic "$REPO_ROOT/scripts/install-initbox.sh" "$BIN_DIR/initbox-installer.sh" 0755
+  installer_source="$(resolve_installer_source)" || fail "could not resolve installer source"
+  install_file_atomic "$installer_source" "$BIN_DIR/initbox-installer.sh" 0755
+  install_file_atomic "$installer_source" "$RUNTIME_ROOT/scripts/install-initbox.sh" 0644
+
+  if [ -f "$REPO_ROOT/scripts/bootstrap-initbox.sh" ]; then
+    bootstrap_source="$REPO_ROOT/scripts/bootstrap-initbox.sh"
+    install_file_atomic "$bootstrap_source" "$BIN_DIR/initbox-bootstrap.sh" 0755
+    install_file_atomic "$bootstrap_source" "$RUNTIME_ROOT/scripts/bootstrap-initbox.sh" 0644
+  fi
+
   install_file_atomic "$REPO_ROOT/scripts/initbox-sync.sh" "$BIN_DIR/initbox-sync.sh" 0755
   install_file_atomic "$REPO_ROOT/scripts/bin/initbox-module-runner.sh" "$BIN_DIR/initbox-module-runner.sh" 0755
   install_file_atomic "$REPO_ROOT/scripts/bin/initbox-package-cache.sh" "$BIN_DIR/initbox-package-cache.sh" 0755
@@ -434,6 +470,46 @@ record_base_state() {
     "$INITBOX_HOTSPOT_GATEWAY" \
     "$INITBOX_DASHBOARD_CAPABLE"
   initbox_state_record_profile "$PROFILE_ID" "$PROFILE_NAME"
+}
+
+reset_runtime_roles_for_install_safety() {
+  if [ "$PROFILE_ID" != "pi-full" ]; then
+    return 0
+  fi
+
+  log "Resetting Pi-full runtime roles before module installation to protect the SSH/lab uplink"
+
+  install -d -m 0755 /etc
+  printf 'ROLES=""\n' >/etc/pi_roles.conf
+  chmod 0664 /etc/pi_roles.conf 2>/dev/null || true
+  chown root:"$OWNER" /etc/pi_roles.conf 2>/dev/null || chown root:root /etc/pi_roles.conf 2>/dev/null || true
+
+  systemctl stop isirunall.service wireshark-autostart.service bridge-check.service >/dev/null 2>&1 || true
+
+  if [ -x /usr/local/bin/bridge-check.sh ]; then
+    /usr/local/bin/bridge-check.sh cleanup >/dev/null 2>&1 || true
+  fi
+
+  ip link set eth0 nomaster >/dev/null 2>&1 || true
+  ip link set eth1 nomaster >/dev/null 2>&1 || true
+  ip link set eth0 up >/dev/null 2>&1 || true
+  ip link set eth1 up >/dev/null 2>&1 || true
+
+  if ip link show br0 >/dev/null 2>&1; then
+    ip addr flush dev br0 >/dev/null 2>&1 || true
+    ip link set br0 down >/dev/null 2>&1 || true
+    ip link delete br0 type bridge >/dev/null 2>&1 || true
+  fi
+
+  if command -v nmcli >/dev/null 2>&1; then
+    nmcli device set eth0 managed yes >/dev/null 2>&1 || true
+    nmcli device set eth1 managed yes >/dev/null 2>&1 || true
+    nmcli device connect eth0 >/dev/null 2>&1 || true
+  fi
+
+  if command -v dhcpcd >/dev/null 2>&1; then
+    dhcpcd -n eth0 >/dev/null 2>&1 || true
+  fi
 }
 
 run_first_install_system_upgrade() {
@@ -570,6 +646,7 @@ run_install_flow() {
   run_first_install_system_upgrade
   install_runtime_tree
   record_base_state
+  reset_runtime_roles_for_install_safety
   install_default_modules
   install_dashboard_if_selected
   refresh_package_cache_if_selected
@@ -583,6 +660,7 @@ run_install_flow() {
   echo "  $BIN_DIR/initbox-sync.sh"
   echo "  $BIN_DIR/initbox-module-runner.sh"
   echo "  $BIN_DIR/initbox-package-cache.sh"
+  echo "  $BIN_DIR/initbox-bootstrap.sh"
 }
 
 refresh_cache_only() {
@@ -611,7 +689,7 @@ print_menu() {
     echo "5) Refresh offline package cache only"
     echo "6) Show installed state"
   else
-    echo "3) Full Zero field install: prompt OS upgrade, no Dashboard, refresh cache"
+    echo "3) Full Zero install: prompt OS upgrade, no Dashboard, refresh cache"
     echo "4) Refresh offline package cache only"
     echo "5) Show installed state"
   fi
@@ -704,6 +782,9 @@ main() {
       ;;
     install)
       run_install_flow
+      ;;
+    *)
+      fail "unsupported action: $ACTION"
       ;;
   esac
 }
